@@ -41,10 +41,13 @@ Route::get('/is-checkin', [App\Http\Controllers\Api\AttendanceController::class,
 Route::post('/updateface', [App\Http\Controllers\Api\AuthController::class, 'updateProfile'])->middleware('auth:sanctum');
 
 //create permission
-Route::apiResource('/api-permissions', App\Http\Controllers\Api\PermissionController::class)->middleware('auth:sanctum');
+Route::post('/api-permissions', [App\Http\Controllers\Api\PermissionController::class, 'store'])->middleware('auth:sanctum');
 
 //notes
-Route::apiResource('/api-notes', App\Http\Controllers\Api\NoteController::class)->middleware('auth:sanctum');
+Route::post('/api-notes', [App\Http\Controllers\Api\NoteController::class, 'store'])->middleware('auth:sanctum');
 
 //update fcm token
 Route::post('/update-fcm-token', [App\Http\Controllers\Api\AuthController::class, 'updateFcmToken'])->middleware('auth:sanctum');
+
+//get attendance
+Route::get('/api-attendances', [App\Http\Controllers\Api\AttendanceController::class, 'index'])->middleware('auth:sanctum');

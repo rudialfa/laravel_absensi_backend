@@ -77,4 +77,26 @@ class AttendanceController extends Controller
 
         ], 200);
     }
+
+
+    //get attendance history
+    public function index(Request $request)
+    {
+        $date = $request->input('date');
+
+        $currentUser = $request->user();
+
+        $query = Attendance::where('user_id', $currentUser->id);
+
+        if ($date) {
+            $query->where('date', $date);
+        }
+
+        $attendance = $query->get();
+
+        return response([
+            'message' => 'Success',
+            'data' => $attendance
+        ], 200);
+    }
 }
