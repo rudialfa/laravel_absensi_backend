@@ -19,8 +19,11 @@ use App\Http\Controllers\Api\Company\CompanyPayrollController;
 use App\Http\Controllers\Api\Company\CompanyShiftController;
 use App\Http\Controllers\Api\Company\CompanyReportController;
 
-
-
+// ustadz
+use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
+use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
+use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
+use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 
 // ROUTE NEWS 2 #################################################################################
 
@@ -123,7 +126,45 @@ Route::prefix('pesantren')
             // Route::post('/profile', [AuthController::class, 'update']);
 
             // // Dashboard
-            // Route::get('/dashboard', [PesantrenDashboardController::class, 'ustadz']);
+            Route::get('/dashboard', [PesantrenDashboardController::class, 'ustadz']);
+
+            Route::prefix('attendances')->group(function () {
+
+                // === USTADZ (OWN ATTENDANCE)
+                Route::post('/check-in', [PesantrenUstadzAttendanceController::class, 'checkIn']);
+                Route::post('/check-out', [PesantrenUstadzAttendanceController::class, 'checkOut']);
+                Route::get('/is-checkin', [PesantrenUstadzAttendanceController::class, 'isCheckedIn']);
+
+                // === SANTRI ATTENDANCE
+                Route::get('/santri', [PesantrenUstadzAttendanceController::class, 'santriToday']);
+                Route::post('/santri/mark', [PesantrenUstadzAttendanceController::class, 'markSantriAttendance']);
+                Route::get('/santri/{id}/history', [PesantrenUstadzAttendanceController::class, 'santriHistory']);
+            });
+
+            Route::prefix('santri')->group(function () {
+
+                Route::get('/', [PesantrenSantriController::class, 'index']);
+                Route::post('/', [PesantrenSantriController::class, 'store']);
+                Route::get('/{id}', [PesantrenSantriController::class, 'show']);
+                Route::put('/{id}', [PesantrenSantriController::class, 'update']);
+                Route::delete('/{id}', [PesantrenSantriController::class, 'destroy']);
+
+                Route::get('/{id}/attendance', [PesantrenSantriController::class, 'attendance']);
+                Route::get('/{id}/permissions', [PesantrenSantriController::class, 'permissions']);
+            });
+
+            Route::prefix('schedules')->group(function () {
+                Route::get('/', [PesantrenSchedulesController::class, 'index']);         // list all (punya ustadz ini)
+                Route::get('/today', [PesantrenSchedulesController::class, 'today']);   // jadwal hari ini
+                Route::post('/', [PesantrenSchedulesController::class, 'store']);       // create
+                Route::get('/{id}', [PesantrenSchedulesController::class, 'show']);     // detail
+                Route::put('/{id}', [PesantrenSchedulesController::class, 'update']);   // update
+                Route::delete('/{id}', [PesantrenSchedulesController::class, 'destroy']); // delete
+
+                // optional status
+                Route::post('/{id}/status', [PesantrenSchedulesController::class, 'updateStatus']);
+            });
+
 
             // // Ustadz Own Attendance
             // Route::prefix('my-attendance')->group(function () {

@@ -40,6 +40,8 @@ class DatabaseSeeder extends Seeder
             PermissionSeeder::class,
             CompanySeeder::class,
             UserSeeder::class,
+            PrayerSeeder::class,
+            ScheduleSeeder::class,
         ]);
     }
 }
