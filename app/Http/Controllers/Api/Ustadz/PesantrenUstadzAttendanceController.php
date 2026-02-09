@@ -10,11 +10,29 @@ use App\Models\User;
 
 class PesantrenUstadzAttendanceController extends Controller
 {
+
+
+    // kode 2
+    // ==========================
+    // Helper: Pastikan role ustadz
+    // ==========================
+    private function ensureUstadz()
+    {
+        if (!auth()->check() || auth()->user()->role !== 'ustadz') {
+            abort(response()->json([
+                'status' => false,
+                'message' => 'Akses ditolak (khusus ustadz)'
+            ], 403));
+        }
+    }
+
+    // ==========================
+    // ABSEN USTADZ: CHECK-IN
+    // ==========================
     public function checkIn(Request $request)
     {
-        // ==========================
-        // VALIDASI LOKASI
-        // ==========================
+        $this->ensureUstadz();
+
         $request->validate([
             'latitude' => 'required',
             'longitude' => 'required',
@@ -22,11 +40,10 @@ class PesantrenUstadzAttendanceController extends Controller
 
         $today = Carbon::today();
 
-        // ==========================
-        // CEGAH DOUBLE CHECK-IN
-        // ==========================
+        // Cegah double check-in untuk ustadz
         $exists = Attendance::where('user_id', auth()->id())
             ->whereDate('date', $today)
+            ->whereNull('marked_by') // penting: ini attendance SELF
             ->first();
 
         if ($exists) {
@@ -36,11 +53,9 @@ class PesantrenUstadzAttendanceController extends Controller
             ], 422);
         }
 
-        // ==========================
-        // SIMPAN MANUAL (AMAN)
-        // ==========================
         $attendance = new Attendance();
         $attendance->user_id = auth()->id();
+        $attendance->marked_by = null; // SELF
         $attendance->date = $today;
         $attendance->time_in = Carbon::now()->format('H:i:s');
         $attendance->latlon_in = $request->latitude . ',' . $request->longitude;
@@ -54,11 +69,13 @@ class PesantrenUstadzAttendanceController extends Controller
         ], 200);
     }
 
+    // ==========================
+    // ABSEN USTADZ: CHECK-OUT
+    // ==========================
     public function checkOut(Request $request)
     {
-        // ==========================
-        // VALIDASI LOKASI
-        // ==========================
+        $this->ensureUstadz();
+
         $request->validate([
             'latitude' => 'required',
             'longitude' => 'required',
@@ -66,11 +83,9 @@ class PesantrenUstadzAttendanceController extends Controller
 
         $today = Carbon::today();
 
-        // ==========================
-        // AMBIL ABSEN HARI INI
-        // ==========================
         $attendance = Attendance::where('user_id', auth()->id())
             ->whereDate('date', $today)
+            ->whereNull('marked_by') // SELF
             ->first();
 
         if (!$attendance) {
@@ -80,9 +95,6 @@ class PesantrenUstadzAttendanceController extends Controller
             ], 422);
         }
 
-        // ==========================
-        // CEGAH CHECKOUT GANDA
-        // ==========================
         if ($attendance->time_out) {
             return response()->json([
                 'status' => false,
@@ -90,9 +102,6 @@ class PesantrenUstadzAttendanceController extends Controller
             ], 422);
         }
 
-        // ==========================
-        // SIMPAN CHECKOUT
-        // ==========================
         $attendance->time_out = Carbon::now()->format('H:i:s');
         $attendance->latlon_out = $request->latitude . ',' . $request->longitude;
         $attendance->save();
@@ -101,16 +110,21 @@ class PesantrenUstadzAttendanceController extends Controller
             'status' => true,
             'message' => 'Check-out berhasil',
             'attendance' => $attendance
-        ]);
+        ], 200);
     }
 
-    // isCheckedIn
+    // ==========================
+    // ABSEN USTADZ: STATUS HARI INI
+    // ==========================
     public function isCheckedIn()
     {
+        $this->ensureUstadz();
+
         $today = Carbon::today();
 
         $attendance = Attendance::where('user_id', auth()->id())
             ->whereDate('date', $today)
+            ->whereNull('marked_by') // SELF
             ->first();
 
         return response()->json([
@@ -118,72 +132,126 @@ class PesantrenUstadzAttendanceController extends Controller
             'checked_in' => $attendance ? true : false,
             'checked_out' => $attendance && $attendance->time_out ? true : false,
             'attendance' => $attendance
-        ]);
+        ], 200);
     }
 
     // =====================
     // LIST SANTRI TODAY
     // =====================
+
+    // kode revisi 2
     public function santriToday()
     {
+        $this->ensureUstadz();
+
         $today = Carbon::today();
 
-        $santri = User::where('role', 'santri')
+        $santri = User::query()
+            ->where('role', 'santri')
+            // Kalau kamu punya multi-pesantren, aktifkan filter ini sesuai kolom kamu:
+            // ->where('pesantren_id', auth()->user()->pesantren_id)
+            ->select(['id', 'name', 'face_embedding']) // <-- penting untuk face match
             ->with(['attendances' => function ($q) use ($today) {
-                $q->whereDate('date', $today);
+                $q->whereDate('date', $today)
+                    ->orderByDesc('marked_by')   // marked_by != null dianggap "lebih tinggi"
+                    ->orderByDesc('id');         // fallback: yang terakhir
             }])
             ->get()
             ->map(function ($s) {
-                $attendance = $s->attendances->first();
+                $attendance = $s->attendances->first(); // karena sudah di-order di query
 
                 return [
                     'id' => $s->id,
                     'name' => $s->name,
-                    'status' => $attendance->status ?? 'absent'
+                    'face_embedding' => $s->face_embedding, // <-- ini yang dibutuhkan Flutter
+                    'status' => $attendance->status ?? 'absent',
+                    'marked_by' => $attendance->marked_by ?? null,
+                    'time_in' => $attendance->time_in ?? null,
                 ];
             });
 
         return response()->json([
             'status' => true,
-            'data' => $santri
-        ]);
+            'date' => $today->toDateString(),
+            'data' => $santri,
+        ], 200);
     }
 
     // =====================
-    // MARK SANTRI ATTENDANCE
+    // MARK SANTRI ATTENDANCE (klik per santri)
     // =====================
     public function markSantriAttendance(Request $request)
     {
+        $this->ensureUstadz();
+
         $request->validate([
             'santri_id' => 'required|exists:users,id',
-            'status' => 'required|in:on_time,permission,absent'
+            'status' => 'required|in:on_time,permission,overtime,absent'
         ]);
+
+        // Pastikan yang diabsenkan benar2 santri
+        $santri = User::where('id', $request->santri_id)
+            ->where('role', 'santri')
+            ->first();
+
+        if (!$santri) {
+            return response()->json([
+                'status' => false,
+                'message' => 'User bukan santri'
+            ], 422);
+        }
 
         $today = Carbon::today();
 
-        Attendance::updateOrCreate(
+        // Kalau kamu sudah buat time_in nullable:
+        $timeIn = $request->status === 'absent'
+            ? null
+            : Carbon::now()->format('H:i:s');
+
+        $attendance = Attendance::updateOrCreate(
             [
                 'user_id' => $request->santri_id,
                 'date' => $today
             ],
             [
-                'time_in' => Carbon::now()->format('H:i:s'),
+                'time_in' => $timeIn,
                 'status' => $request->status,
-                'latlon_in' => '-'
+                'latlon_in' => '-',          // karena ini input klik
+                'marked_by' => auth()->id(), // ini penting
             ]
         );
 
         return response()->json([
             'status' => true,
-            'message' => 'Absensi santri diperbarui'
-        ]);
+            'message' => 'Absensi santri diperbarui',
+            'data' => [
+                'santri_id' => (int) $request->santri_id,
+                'status' => $request->status,
+                'date' => $today->toDateString(),
+                'marked_by' => auth()->id(),
+                'attendance_id' => $attendance->id
+            ]
+        ], 200);
     }
 
     // =====================
-    // SANTRI HISTORY
+    // SANTRI HISTORY (30 record terakhir)
     // =====================
     public function santriHistory($id)
     {
+        $this->ensureUstadz();
+
+        $santri = User::where('id', $id)
+            ->where('role', 'santri')
+            ->first();
+
+        if (!$santri) {
+            return response()->json([
+                'status' => false,
+                'message' => 'User bukan santri / tidak ditemukan'
+            ], 404);
+        }
+
         $history = Attendance::where('user_id', $id)
             ->orderBy('date', 'desc')
             ->limit(30)
@@ -191,7 +259,11 @@ class PesantrenUstadzAttendanceController extends Controller
 
         return response()->json([
             'status' => true,
+            'santri' => [
+                'id' => $santri->id,
+                'name' => $santri->name,
+            ],
             'data' => $history
-        ]);
+        ], 200);
     }
 }

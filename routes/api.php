@@ -25,6 +25,14 @@ use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 
+// santri
+use App\Http\Controllers\Api\Santri\SantriAttendanceController;
+
+
+// employee
+use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+
+
 // ROUTE NEWS 2 #################################################################################
 
 Route::prefix('auth')->group(function () {
@@ -57,13 +65,20 @@ Route::prefix('company')
         // =======================
         Route::middleware('context:company,employee')->group(function () {
 
-            // Route::get('/profile', [AuthController::class, 'show']);
-            // Route::post('/profile', [AuthController::class, 'update']);
+            Route::prefix('employee/attendances')->group(function () {
 
-            Route::get('/attendances', [AttendanceController::class, 'index']);
-            Route::post('/attendances/check-in', [AttendanceController::class, 'checkIn']);
-            Route::post('/attendances/check-out', [AttendanceController::class, 'checkOut']);
-            Route::get('/attendances/is-checkin', [AttendanceController::class, 'isCheckedIn']);
+                // Self attendance
+                Route::post('/check-in', [EmployeeAttendanceController::class, 'checkIn']);
+                Route::post('/check-out', [EmployeeAttendanceController::class, 'checkOut']);
+                Route::get('/is-checkin', [EmployeeAttendanceController::class, 'isCheckedIn']);
+
+                // History employee sendiri
+                Route::get('/history', [EmployeeAttendanceController::class, 'history']);
+
+                // Optional: Register/Update Face Embedding (kalau employee juga pakai face)
+                Route::post('/register-face', [EmployeeAttendanceController::class, 'registerFace']);
+            });
+
 
             Route::apiResource('/notes', NoteController::class);
             Route::apiResource('/schedules', ScheduleController::class);
@@ -121,21 +136,16 @@ Route::prefix('pesantren')
 
         // 🧑‍🏫 USTADZ
         Route::middleware('context:pesantren,ustadz')->group(function () {
-            // // Profile
-            // Route::get('/profile', [AuthController::class, 'show']);
-            // Route::post('/profile', [AuthController::class, 'update']);
-
             // // Dashboard
             Route::get('/dashboard', [PesantrenDashboardController::class, 'ustadz']);
 
             Route::prefix('attendances')->group(function () {
 
-                // === USTADZ (OWN ATTENDANCE)
                 Route::post('/check-in', [PesantrenUstadzAttendanceController::class, 'checkIn']);
                 Route::post('/check-out', [PesantrenUstadzAttendanceController::class, 'checkOut']);
                 Route::get('/is-checkin', [PesantrenUstadzAttendanceController::class, 'isCheckedIn']);
 
-                // === SANTRI ATTENDANCE
+                // ---- SANTRI ATTENDANCE (diinput ustadz)
                 Route::get('/santri', [PesantrenUstadzAttendanceController::class, 'santriToday']);
                 Route::post('/santri/mark', [PesantrenUstadzAttendanceController::class, 'markSantriAttendance']);
                 Route::get('/santri/{id}/history', [PesantrenUstadzAttendanceController::class, 'santriHistory']);
@@ -154,11 +164,11 @@ Route::prefix('pesantren')
             });
 
             Route::prefix('schedules')->group(function () {
-                Route::get('/', [PesantrenSchedulesController::class, 'index']);         // list all (punya ustadz ini)
-                Route::get('/today', [PesantrenSchedulesController::class, 'today']);   // jadwal hari ini
-                Route::post('/', [PesantrenSchedulesController::class, 'store']);       // create
-                Route::get('/{id}', [PesantrenSchedulesController::class, 'show']);     // detail
-                Route::put('/{id}', [PesantrenSchedulesController::class, 'update']);   // update
+                Route::get('/', [PesantrenSchedulesController::class, 'index']);        // list all (punya ustadz ini)
+                Route::get('/today', [PesantrenSchedulesController::class, 'today']);  // jadwal hari ini
+                Route::post('/', [PesantrenSchedulesController::class, 'store']);     // create
+                Route::get('/{id}', [PesantrenSchedulesController::class, 'show']);  // detail
+                Route::put('/{id}', [PesantrenSchedulesController::class, 'update']); // update
                 Route::delete('/{id}', [PesantrenSchedulesController::class, 'destroy']); // delete
 
                 // optional status
@@ -239,14 +249,19 @@ Route::prefix('pesantren')
             //     Route::get('/dashboard', [PesantrenDashboardController::class, 'santri']);
 
             //     // Attendance
-            //     Route::prefix('attendances')->group(function () {
-            //         Route::get('/', [PesantrenAttendanceController::class, 'myAttendances']);
-            //         Route::post('/check-in', [PesantrenAttendanceController::class, 'checkIn']);
-            //         Route::post('/check-out', [PesantrenAttendanceController::class, 'checkOut']);
-            //         Route::get('/is-checkin', [PesantrenAttendanceController::class, 'isCheckedIn']);
-            //         Route::get('/history', [PesantrenAttendanceController::class, 'history']);
-            //         Route::get('/statistics', [PesantrenAttendanceController::class, 'myStatistics']);
-            //     });
+            Route::prefix('santri/attendances')->group(function () {
+
+                // Self attendance (optional, kalau santri juga boleh checkin sendiri)
+                Route::post('/check-in', [SantriAttendanceController::class, 'checkIn']);
+                Route::post('/check-out', [SantriAttendanceController::class, 'checkOut']);
+                Route::get('/is-checkin', [SantriAttendanceController::class, 'isCheckedIn']);
+
+                // History santri sendiri
+                Route::get('/history', [SantriAttendanceController::class, 'history']);
+
+                // Register/Update Face Embedding (INI WAJIB)
+                Route::post('/register-face', [SantriAttendanceController::class, 'registerFace']);
+            });
 
             //     // Permission (Izin)
             //     Route::prefix('permissions')->group(function () {
