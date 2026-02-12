@@ -2,42 +2,34 @@
 
 use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\Company\CompanyAttendanceController;
-use App\Http\Controllers\Api\Company\CompanyEmployeeController;
-use App\Http\Controllers\Api\Company\CompanyLoanController;
-use App\Http\Controllers\Api\Company\CompanyPayrollController;
-use App\Http\Controllers\Api\Company\CompanyPermissionController;
-use App\Http\Controllers\Api\Company\CompanyProfileController;
-use App\Http\Controllers\Api\Company\CompanyReportController;
-use App\Http\Controllers\Api\Company\CompanyShiftController;
-use App\Http\Controllers\Api\Company\DashboardController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+use App\Http\Controllers\Api\Employee\EmployeePermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 
 // ustadz
+use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
-use App\Http\Controllers\Api\LoanController;
 
 // santri
-use App\Http\Controllers\Api\NoteController;
+use App\Http\Controllers\Api\LoanController;
 
 
 // employee
-use App\Http\Controllers\Api\PayrollController;
+use App\Http\Controllers\Api\NoteController;
 
 
 // hr company
 
+use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PermissionController;
+
+
+
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
-
-
-
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
@@ -91,6 +83,47 @@ Route::prefix('company')
 
                 // Optional: Register/Update Face Embedding (kalau employee juga pakai face)
                 Route::post('/register-face', [EmployeeAttendanceController::class, 'registerFace']);
+            });
+
+            // ===== Permissions (baru)
+            Route::prefix('employee/permissions')->group(function () {
+                Route::get('/', [EmployeePermissionController::class, 'index']);
+                Route::post('/', [EmployeePermissionController::class, 'store']);
+                Route::get('/{id}', [EmployeePermissionController::class, 'show']);
+                Route::post('/{id}/cancel', [EmployeePermissionController::class, 'cancel']);
+            });
+
+            // ===== Notes (baru)
+            Route::prefix('employee/notes')->group(function () {
+                Route::get('/', [EmployeeNotesController::class, 'index']);
+                Route::post('/', [EmployeeNotesController::class, 'store']);
+                Route::get('/{id}', [EmployeeNotesController::class, 'show']);
+                Route::put('/{id}', [EmployeeNotesController::class, 'update']);
+                Route::delete('/{id}', [EmployeeNotesController::class, 'destroy']);
+            });
+
+            // ===== Schedules (baru)
+            Route::prefix('employee/schedules')->group(function () {
+                Route::get('/', [EmployeeSchedulesController::class, 'index']);
+                Route::get('/today', [EmployeeSchedulesController::class, 'today']);
+                Route::post('/', [EmployeeSchedulesController::class, 'store']);
+                Route::get('/{id}', [EmployeeSchedulesController::class, 'show']);
+                Route::put('/{id}', [EmployeeSchedulesController::class, 'update']);
+                Route::delete('/{id}', [EmployeeSchedulesController::class, 'destroy']);
+                Route::post('/{id}/status', [EmployeeSchedulesController::class, 'updateStatus']);
+            });
+
+            // ===== Loans (baru)
+            Route::prefix('employee/loans')->group(function () {
+                Route::get('/', [EmployeeLoanController::class, 'index']);
+                Route::post('/', [EmployeeLoanController::class, 'store']);
+                Route::get('/{id}', [EmployeeLoanController::class, 'show']);
+            });
+
+            // ===== Payrolls (baru)
+            Route::prefix('employee/payrolls')->group(function () {
+                Route::get('/', [EmployeePayrollController::class, 'index']);
+                Route::get('/{id}', [EmployeePayrollController::class, 'show']);
             });
         });
 
