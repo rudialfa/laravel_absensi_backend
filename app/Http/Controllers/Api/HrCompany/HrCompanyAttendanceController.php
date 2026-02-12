@@ -299,4 +299,82 @@ class HrCompanyAttendanceController extends Controller
             'data' => $history
         ], 200);
     }
+
+    // tambahan new
+    public function today(Request $request)
+    {
+        $this->ensureHr();
+        $companyId = $this->companyId();
+        $date = $request->get('date', Carbon::today()->toDateString());
+
+        $data = Attendance::with('user')
+            ->where('company_id', $companyId)
+            ->whereDate('date', $date)
+            ->orderByDesc('id')
+            ->paginate(30);
+
+        return response()->json(['status' => true, 'message' => "Attendances $date", 'data' => $data]);
+    }
+
+    public function history(Request $request)
+    {
+        $this->ensureHr();
+        $companyId = $this->companyId();
+
+        $request->validate([
+            'user_id' => 'nullable|integer',
+            'from' => 'nullable|date',
+            'to' => 'nullable|date',
+        ]);
+
+        $q = Attendance::with('user')->where('company_id', $companyId);
+
+        if ($request->filled('user_id')) $q->where('user_id', $request->user_id);
+        if ($request->filled('from')) $q->whereDate('date', '>=', $request->from);
+        if ($request->filled('to')) $q->whereDate('date', '<=', $request->to);
+
+        return response()->json(['status' => true, 'message' => 'History attendances', 'data' => $q->orderByDesc('date')->paginate(30)]);
+    }
+
+    public function markManual(Request $request)
+    {
+        $this->ensureHr();
+        $companyId = $this->companyId();
+
+        $validated = $request->validate([
+            'user_id' => 'required|integer',
+            'date' => 'required|date',
+            'check_in' => 'nullable|date_format:H:i',
+            'check_out' => 'nullable|date_format:H:i',
+            'status' => 'nullable|string|max:50',
+            'remarks' => 'nullable|string',
+        ]);
+
+        $employee = User::where('company_id', $companyId)->where('role', 'employee')->findOrFail($validated['user_id']);
+
+        $attendance = Attendance::updateOrCreate(
+            ['company_id' => $companyId, 'user_id' => $employee->id, 'date' => Carbon::parse($validated['date'])->toDateString()],
+            [
+                'check_in' => $validated['check_in'] ?? null,
+                'check_out' => $validated['check_out'] ?? null,
+                'status' => $validated['status'] ?? 'manual',
+                'remarks' => $validated['remarks'] ?? null,
+                'marked_by' => auth()->id(),
+            ]
+        );
+
+        return response()->json(['status' => true, 'message' => 'Attendance manual tersimpan', 'data' => $attendance]);
+    }
+
+    public function approveOvertime($id)
+    {
+        $this->ensureHr();
+        $companyId = $this->companyId();
+
+        $attendance = Attendance::where('company_id', $companyId)->findOrFail($id);
+        $attendance->approved_overtime = true;
+        $attendance->save();
+
+        return response()->json(['status' => true, 'message' => 'Overtime disetujui', 'data' => $attendance]);
+    }
 }

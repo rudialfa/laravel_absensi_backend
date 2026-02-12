@@ -1,40 +1,51 @@
 <?php
 
-use App\Http\Controllers\Api\AuthController;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AttendanceController;
-use App\Http\Controllers\Api\PermissionController;
-use App\Http\Controllers\Api\NoteController;
-use App\Http\Controllers\Api\ScheduleController;
-use App\Http\Controllers\Api\LoanController;
-use App\Http\Controllers\Api\PayrollController;
-use App\Http\Controllers\Api\Company\CompanyProfileController;
-use App\Http\Controllers\Api\Company\DashboardController;
-use App\Http\Controllers\Api\Company\CompanyEmployeeController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Company\CompanyAttendanceController;
-use App\Http\Controllers\Api\Company\CompanyPermissionController;
+use App\Http\Controllers\Api\Company\CompanyEmployeeController;
 use App\Http\Controllers\Api\Company\CompanyLoanController;
 use App\Http\Controllers\Api\Company\CompanyPayrollController;
-use App\Http\Controllers\Api\Company\CompanyShiftController;
+use App\Http\Controllers\Api\Company\CompanyPermissionController;
+use App\Http\Controllers\Api\Company\CompanyProfileController;
 use App\Http\Controllers\Api\Company\CompanyReportController;
+use App\Http\Controllers\Api\Company\CompanyShiftController;
+use App\Http\Controllers\Api\Company\DashboardController;
+use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 
 // ustadz
-use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
-use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
-use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
-use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
+use App\Http\Controllers\Api\LoanController;
 
 // santri
-use App\Http\Controllers\Api\Santri\SantriAttendanceController;
+use App\Http\Controllers\Api\NoteController;
 
 
 // employee
-use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+use App\Http\Controllers\Api\PayrollController;
 
 
 // hr company
-use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
+
+use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\Api\Santri\SantriAttendanceController;
+
+
+
+use App\Http\Controllers\Api\ScheduleController;
+use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
+use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
+use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
+use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+
 
 // ROUTE NEWS 2 #################################################################################
 
@@ -81,18 +92,6 @@ Route::prefix('company')
                 // Optional: Register/Update Face Embedding (kalau employee juga pakai face)
                 Route::post('/register-face', [EmployeeAttendanceController::class, 'registerFace']);
             });
-
-
-            Route::apiResource('/notes', NoteController::class);
-            Route::apiResource('/schedules', ScheduleController::class);
-            Route::post('/schedules/{id}/status', [ScheduleController::class, 'updateStatus']);
-
-            Route::get('/payrolls', [PayrollController::class, 'index']);
-            Route::get('/payrolls/{id}', [PayrollController::class, 'show']);
-
-            Route::get('/loans', [LoanController::class, 'index']);
-            Route::post('/loans', [LoanController::class, 'store']);
-            Route::get('/loans/{id}', [LoanController::class, 'show']);
         });
 
         // =======================
@@ -100,12 +99,8 @@ Route::prefix('company')
         // =======================
         Route::middleware('context:company,hr')->group(function () {
 
-            Route::get('/dashboard', [DashboardController::class, 'index']);
+            Route::get('/dashboard', [HrCompanyDashboardController::class, 'index']);
 
-            Route::get('/employees', [CompanyEmployeeController::class, 'index']);
-            Route::post('/employees', [CompanyEmployeeController::class, 'store']);
-            Route::put('/employees/{id}', [CompanyEmployeeController::class, 'update']);
-            Route::delete('/employees/{id}', [CompanyEmployeeController::class, 'destroy']);
 
             Route::prefix('hr/attendances')->group(function () {
 
@@ -117,25 +112,71 @@ Route::prefix('company')
                 Route::get('/employees', [HrCompanyAttendanceController::class, 'employeesToday']);
                 Route::post('/employees/mark', [HrCompanyAttendanceController::class, 'markEmployeeAttendance']);
                 Route::get('/employees/{id}/history', [HrCompanyAttendanceController::class, 'employeeHistory']);
+
+                // TAMBAHAN FITUR HR ATTENDANCE
+                // ===============================
+                Route::get('/today', [HrCompanyAttendanceController::class, 'today']);
+                Route::get('/history', [HrCompanyAttendanceController::class, 'history']);
+                Route::post('/mark-manual', [HrCompanyAttendanceController::class, 'markManual']);
+                Route::post('/{id}/approve-overtime', [HrCompanyAttendanceController::class, 'approveOvertime']);
             });
-            Route::get('/permissions', [CompanyPermissionController::class, 'index']);
-            Route::post('/permissions/{id}/approve', [CompanyPermissionController::class, 'approve']);
-            Route::post('/permissions/{id}/reject', [CompanyPermissionController::class, 'reject']);
 
-            Route::apiResource('/shifts', CompanyShiftController::class);
-            Route::patch('/shifts/{id}/default', [CompanyShiftController::class, 'setDefault']);
 
-            Route::apiResource('/payrolls', CompanyPayrollController::class);
-            Route::post('/payrolls/{id}/status', [CompanyPayrollController::class, 'changeStatus']);
+            // =========================
+            // Employees Management (HR)
+            // =========================
+            Route::prefix('hr/employees')->group(function () {
+                Route::get('/', [HrCompanyEmployeeController::class, 'index']);
+                Route::post('/', [HrCompanyEmployeeController::class, 'store']);
+                Route::get('/{id}', [HrCompanyEmployeeController::class, 'show']);
+                Route::put('/{id}', [HrCompanyEmployeeController::class, 'update']);
+                Route::delete('/{id}', [HrCompanyEmployeeController::class, 'destroy']);
+            });
 
-            Route::apiResource('/loans', CompanyLoanController::class);
-            Route::post('/loans/{id}/status', [CompanyLoanController::class, 'changeStatus']);
+            // =========================
+            // Permissions (HR)
+            // =========================
+            Route::prefix('hr/permissions')->group(function () {
+                Route::get('/', [HrCompanyPermissionController::class, 'index']);
+                Route::get('/{id}', [HrCompanyPermissionController::class, 'show']);
+                Route::post('/{id}/approve', [HrCompanyPermissionController::class, 'approve']);
+                Route::post('/{id}/reject', [HrCompanyPermissionController::class, 'reject']);
+            });
 
-            Route::get('/reports/attendance', [CompanyReportController::class, 'attendance']);
-            Route::get('/reports/permission', [CompanyReportController::class, 'permission']);
-            Route::get('/reports/overtime', [CompanyReportController::class, 'overtime']);
-            Route::get('/reports/loan', [CompanyReportController::class, 'loan']);
-            Route::get('/reports/payroll', [CompanyReportController::class, 'payroll']);
+            // =========================
+            // Shifts (HR)
+            // =========================
+            Route::prefix('hr/shifts')->group(function () {
+                Route::get('/', [HrCompanyShiftController::class, 'index']);
+                Route::post('/', [HrCompanyShiftController::class, 'store']);
+                Route::get('/{id}', [HrCompanyShiftController::class, 'show']);
+                Route::put('/{id}', [HrCompanyShiftController::class, 'update']);
+                Route::delete('/{id}', [HrCompanyShiftController::class, 'destroy']);
+                Route::post('/{id}/set-default', [HrCompanyShiftController::class, 'setDefault']);
+            });
+
+            // =========================
+            // Loans (HR)
+            // =========================
+            Route::prefix('hr/loans')->group(function () {
+                Route::get('/', [HrCompanyLoanController::class, 'index']);
+                Route::get('/{id}', [HrCompanyLoanController::class, 'show']);
+                Route::post('/{id}/approve', [HrCompanyLoanController::class, 'approve']);
+                Route::post('/{id}/reject', [HrCompanyLoanController::class, 'reject']);
+                Route::post('/{id}/mark-paid', [HrCompanyLoanController::class, 'markPaid']);
+            });
+
+            // =========================
+            // Payrolls (HR)
+            // =========================
+            Route::prefix('hr/payrolls')->group(function () {
+                Route::get('/', [HrCompanyPayrollController::class, 'index']);
+                Route::post('/', [HrCompanyPayrollController::class, 'store']);
+                Route::get('/{id}', [HrCompanyPayrollController::class, 'show']);
+                Route::put('/{id}', [HrCompanyPayrollController::class, 'update']);
+                Route::post('/{id}/approve', [HrCompanyPayrollController::class, 'approve']);
+                Route::post('/{id}/mark-paid', [HrCompanyPayrollController::class, 'markPaid']);
+            });
         });
     });
 
