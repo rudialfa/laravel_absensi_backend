@@ -33,6 +33,9 @@ use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
 
 
+// hr company
+use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
+
 // ROUTE NEWS 2 #################################################################################
 
 Route::prefix('auth')->group(function () {
@@ -104,10 +107,17 @@ Route::prefix('company')
             Route::put('/employees/{id}', [CompanyEmployeeController::class, 'update']);
             Route::delete('/employees/{id}', [CompanyEmployeeController::class, 'destroy']);
 
-            Route::get('/attendances', [CompanyAttendanceController::class, 'index']);
-            Route::get('/attendances/{id}', [CompanyAttendanceController::class, 'show']);
-            Route::patch('/attendances/{id}/overtime', [CompanyAttendanceController::class, 'approveOvertime']);
+            Route::prefix('hr/attendances')->group(function () {
 
+                // === HR SETTINGS (radius + lokasi kantor) -> update companies table
+                Route::get('/settings', [HrCompanyAttendanceController::class, 'settings']);
+                Route::post('/settings', [HrCompanyAttendanceController::class, 'updateSettings']);
+
+                // === HR: MARK EMPLOYEE ATTENDANCE (pakai 1 device + face)
+                Route::get('/employees', [HrCompanyAttendanceController::class, 'employeesToday']);
+                Route::post('/employees/mark', [HrCompanyAttendanceController::class, 'markEmployeeAttendance']);
+                Route::get('/employees/{id}/history', [HrCompanyAttendanceController::class, 'employeeHistory']);
+            });
             Route::get('/permissions', [CompanyPermissionController::class, 'index']);
             Route::post('/permissions/{id}/approve', [CompanyPermissionController::class, 'approve']);
             Route::post('/permissions/{id}/reject', [CompanyPermissionController::class, 'reject']);
