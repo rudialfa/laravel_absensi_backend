@@ -3,32 +3,36 @@
 use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+use App\Http\Controllers\Api\Employee\EmployeeLoanController;
+use App\Http\Controllers\Api\Employee\EmployeeNotesController;
+use App\Http\Controllers\Api\Employee\EmployeePayrollController;
 use App\Http\Controllers\Api\Employee\EmployeePermissionController;
+
+// ustadz
+use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
 
-// ustadz
-use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
-
 // santri
-use App\Http\Controllers\Api\LoanController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 
 
 // employee
-use App\Http\Controllers\Api\NoteController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 
 
 // hr company
 
+use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
+
+
+
+use App\Http\Controllers\Api\LoanController;
+use App\Http\Controllers\Api\NoteController;
 use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PermissionController;
-
-
-
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
