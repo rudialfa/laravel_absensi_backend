@@ -36,9 +36,11 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
+use App\Http\Controllers\Api\Ustadz\PesantrenPrayerController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
+use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -263,75 +265,23 @@ Route::prefix('pesantren')
                 Route::post('/{id}/status', [PesantrenSchedulesController::class, 'updateStatus']);
             });
 
+            // Prayers (read)
+            Route::prefix('prayers')->group(function () {
+                Route::get('/today', [PesantrenPrayerController::class, 'today']);
+                Route::get('/{date}', [PesantrenPrayerController::class, 'byDate']); // YYYY-MM-DD
+            });
 
-            // // Ustadz Own Attendance
-            // Route::prefix('my-attendance')->group(function () {
-            //     Route::get('/', [PesantrenAttendanceController::class, 'myAttendances']);
-            //     Route::post('/check-in', [PesantrenAttendanceController::class, 'checkIn']);
-            //     Route::post('/check-out', [PesantrenAttendanceController::class, 'checkOut']);
-            //     Route::get('/is-checkin', [PesantrenAttendanceController::class, 'isCheckedIn']);
-            // });
-
-            // // Santri Management
-            // Route::prefix('santri')->group(function () {
-            //     Route::get('/', [SantriController::class, 'index']);
-            //     Route::get('/{id}', [SantriController::class, 'show']);
-            //     Route::get('/{id}/attendances', [SantriController::class, 'attendances']);
-            //     Route::get('/{id}/hafalan', [SantriController::class, 'hafalan']);
-            //     Route::get('/{id}/report', [SantriController::class, 'report']);
-            // });
-
-            // // Santri Attendance Management
-            // Route::prefix('attendances')->group(function () {
-            //     Route::get('/', [PesantrenAttendanceController::class, 'index']);
-            //     Route::get('/{id}', [PesantrenAttendanceController::class, 'show']);
-            //     Route::post('/mark', [PesantrenAttendanceController::class, 'markAttendance']);
-            //     Route::get('/export', [PesantrenAttendanceController::class, 'export']);
-            // });
-
-            // // Permission Management (Santri Permissions)
-            // Route::prefix('permissions')->group(function () {
-            //     Route::get('/', [PesantrenPermissionController::class, 'index']);
-            //     Route::get('/pending', [PesantrenPermissionController::class, 'pending']);
-            //     Route::get('/{id}', [PesantrenPermissionController::class, 'show']);
-            //     Route::post('/{id}/approve', [PesantrenPermissionController::class, 'approve']);
-            //     Route::post('/{id}/reject', [PesantrenPermissionController::class, 'reject']);
-            // });
-
-            // // Schedule Management
-            // Route::prefix('schedules')->group(function () {
-            //     Route::get('/my', [PesantrenScheduleController::class, 'mySchedules']);
-            //     Route::get('/class', [PesantrenScheduleController::class, 'classSchedules']);
-            //     Route::post('/', [PesantrenScheduleController::class, 'store']);
-            //     Route::put('/{id}', [PesantrenScheduleController::class, 'update']);
-            //     Route::delete('/{id}', [PesantrenScheduleController::class, 'destroy']);
-            // });
-
-            // // Hafalan Management
-            // Route::prefix('hafalan')->group(function () {
-            //     Route::get('/', [HafalanController::class, 'index']);
-            //     Route::post('/', [HafalanController::class, 'store']);
-            //     Route::get('/{id}', [HafalanController::class, 'show']);
-            //     Route::put('/{id}', [HafalanController::class, 'update']);
-            //     Route::delete('/{id}', [HafalanController::class, 'destroy']);
-            //     Route::post('/{id}/verify', [HafalanController::class, 'verify']);
-            // });
-
-            // // Notes
-            // Route::apiResource('/notes', PesantrenNoteController::class);
-
-            // // Prayer Times
-            // Route::prefix('prayers')->group(function () {
-            //     Route::get('/today', [PrayerController::class, 'today']);
-            //     Route::get('/month', [PrayerController::class, 'month']);
-            // });
+            // (Opsional) Permission santri (kalau ustadz yang approve)
+            Route::prefix('permissions/santri')->group(function () {
+                Route::get('/', [PesantrenUstadzSantriPermissionController::class, 'index']);
+                Route::get('/{id}', [PesantrenUstadzSantriPermissionController::class, 'show']);
+                Route::post('/{id}/approve', [PesantrenUstadzSantriPermissionController::class, 'approve']);
+                Route::post('/{id}/reject', [PesantrenUstadzSantriPermissionController::class, 'reject']);
+            });
         });
 
         // 👦 SANTRI
         Route::middleware('context:pesantren,santri')->group(function () {
-            // // Profile
-            // Route::get('/profile', [AuthController::class, 'show']);
-            // Route::post('/profile', [AuthController::class, 'update']);
 
             //     // Dashboard
             //     Route::get('/dashboard', [PesantrenDashboardController::class, 'santri']);
@@ -350,49 +300,6 @@ Route::prefix('pesantren')
                 // Register/Update Face Embedding (INI WAJIB)
                 Route::post('/register-face', [SantriAttendanceController::class, 'registerFace']);
             });
-
-            //     // Permission (Izin)
-            //     Route::prefix('permissions')->group(function () {
-            //         Route::get('/', [PesantrenPermissionController::class, 'myPermissions']);
-            //         Route::post('/', [PesantrenPermissionController::class, 'store']);
-            //         Route::get('/{id}', [PesantrenPermissionController::class, 'show']);
-            //         Route::delete('/{id}', [PesantrenPermissionController::class, 'destroy']);
-            //     });
-
-            //     // Schedules (Jadwal Pelajaran/Kegiatan)
-            //     Route::prefix('schedules')->group(function () {
-            //         Route::get('/', [PesantrenScheduleController::class, 'mySchedules']);
-            //         Route::get('/today', [PesantrenScheduleController::class, 'today']);
-            //         Route::get('/week', [PesantrenScheduleController::class, 'week']);
-            //         Route::get('/{id}', [PesantrenScheduleController::class, 'show']);
-            //         Route::post('/{id}/status', [PesantrenScheduleController::class, 'updateStatus']);
-            //     });
-
-            //     // Hafalan (Tahfidz Progress)
-            //     Route::prefix('hafalan')->group(function () {
-            //         Route::get('/', [HafalanController::class, 'myHafalan']);
-            //         Route::get('/progress', [HafalanController::class, 'myProgress']);
-            //         Route::get('/{id}', [HafalanController::class, 'show']);
-            //     });
-
-            //     // Notes (Catatan Pribadi)
-            //     Route::apiResource('/notes', PesantrenNoteController::class);
-
-            //     // Prayer Times
-            //     Route::prefix('prayers')->group(function () {
-            //         Route::get('/today', [PrayerController::class, 'today']);
-            //         Route::get('/month', [PrayerController::class, 'month']);
-            //     });
-
-            //     // Ustadz List
-            //     Route::get('/ustadz', [SantriController::class, 'ustadzList']);
-            // });
-
-            // Route::prefix('prayers')->group(function () {
-            //     Route::get('/today', [PrayerController::class, 'today']);
-            //     Route::get('/month', [PrayerController::class, 'month']);
-            //     Route::get('/date/{date}', [PrayerController::class, 'byDate']);
-            // });
         });
     });
 
