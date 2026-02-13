@@ -1,6 +1,5 @@
 <?php
 
-use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
 use App\Http\Controllers\Api\Employee\EmployeeLoanController;
@@ -27,13 +26,11 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 
-
-
-use App\Http\Controllers\Api\LoanController;
-use App\Http\Controllers\Api\NoteController;
-use App\Http\Controllers\Api\PayrollController;
-use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
+use App\Http\Controllers\Api\Santri\SantriNotesController;
+use App\Http\Controllers\Api\Santri\SantriPermissionController;
+use App\Http\Controllers\Api\Santri\SantriPrayerController;
+use App\Http\Controllers\Api\Santri\SantriSchedulesController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
 use App\Http\Controllers\Api\Ustadz\PesantrenPrayerController;
@@ -299,6 +296,36 @@ Route::prefix('pesantren')
 
                 // Register/Update Face Embedding (INI WAJIB)
                 Route::post('/register-face', [SantriAttendanceController::class, 'registerFace']);
+            });
+
+            // Permissions santri
+            Route::prefix('santri/permissions')->group(function () {
+                Route::get('/', [SantriPermissionController::class, 'index']);
+                Route::post('/', [SantriPermissionController::class, 'store']);
+                Route::get('/{id}', [SantriPermissionController::class, 'show']);
+                Route::post('/{id}/cancel', [SantriPermissionController::class, 'cancel']);
+            });
+
+            // Notes santri
+            Route::prefix('santri/notes')->group(function () {
+                Route::get('/', [SantriNotesController::class, 'index']);
+                Route::post('/', [SantriNotesController::class, 'store']);
+                Route::get('/{id}', [SantriNotesController::class, 'show']);
+                Route::put('/{id}', [SantriNotesController::class, 'update']);
+                Route::delete('/{id}', [SantriNotesController::class, 'destroy']);
+            });
+
+            // Schedules santri (read / optional CRUD)
+            Route::prefix('santri/schedules')->group(function () {
+                Route::get('/', [SantriSchedulesController::class, 'index']);
+                Route::get('/today', [SantriSchedulesController::class, 'today']);
+                Route::get('/{id}', [SantriSchedulesController::class, 'show']);
+            });
+
+            // Prayers (read)
+            Route::prefix('prayers')->group(function () {
+                Route::get('/today', [SantriPrayerController::class, 'today']);
+                Route::get('/{date}', [SantriPrayerController::class, 'byDate']); // YYYY-MM-DD
             });
         });
     });
