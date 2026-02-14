@@ -38,7 +38,6 @@ use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 
