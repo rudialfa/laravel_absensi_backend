@@ -5,21 +5,37 @@ namespace App\Http\Controllers\Api\Santri;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Permission;
+use Illuminate\Support\Facades\File;
 
 class SantriPermissionController extends Controller
 {
     private function ensureSantri()
     {
         if (!auth()->check() || auth()->user()->role !== 'santri') {
-            abort(response()->json(['status' => false, 'message' => 'Akses ditolak (khusus santri)'], 403));
+            abort(response()->json([
+                'status' => false,
+                'message' => 'Akses ditolak (khusus santri)'
+            ], 403));
         }
     }
 
     private function companyId()
     {
-        return auth()->user()->company_id ?? null;
+        $companyId = auth()->user()->company_id ?? null;
+
+        if (!$companyId) {
+            abort(response()->json([
+                'status' => false,
+                'message' => 'Company ID tidak ditemukan'
+            ], 422));
+        }
+
+        return $companyId;
     }
 
+    // =========================
+    // LIST
+    // =========================
     public function index()
     {
         $this->ensureSantri();
@@ -29,31 +45,64 @@ class SantriPermissionController extends Controller
             ->orderByDesc('id')
             ->paginate(20);
 
-        return response()->json(['status' => true, 'message' => 'List permission santri', 'data' => $data]);
+        return response()->json([
+            'status' => true,
+            'message' => 'List permission santri',
+            'data' => $data
+        ]);
     }
 
+    // =========================
+    // STORE (UPLOAD IMAGE)
+    // =========================
     public function store(Request $request)
     {
         $this->ensureSantri();
 
         $validated = $request->validate([
-            'type' => 'required|string|max:50',
-            'date' => 'required|date',
+            'date_permission' => 'required|date',
             'reason' => 'required|string|max:500',
+            'image' => 'nullable|image|mimes:jpg,jpeg,png|max:2048'
         ]);
+
+        $imagePath = null;
+
+        if ($request->hasFile('image')) {
+
+            // folder public/image/permission
+            $destinationPath = public_path('image/permission');
+
+            if (!File::exists($destinationPath)) {
+                File::makeDirectory($destinationPath, 0755, true);
+            }
+
+            $file = $request->file('image');
+            $fileName = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+
+            $file->move($destinationPath, $fileName);
+
+            $imagePath = 'image/permission/' . $fileName;
+        }
 
         $perm = Permission::create([
             'company_id' => $this->companyId(),
             'user_id' => auth()->id(),
-            'type' => $validated['type'],
-            'date' => $validated['date'],
+            'date_permission' => $validated['date_permission'],
             'reason' => $validated['reason'],
-            'is_approved' => false,
+            'image' => $imagePath,
+            'is_approved' => null, // ✅ pending
         ]);
 
-        return response()->json(['status' => true, 'message' => 'Permission dibuat', 'data' => $perm], 201);
+        return response()->json([
+            'status' => true,
+            'message' => 'Permission berhasil dibuat',
+            'data' => $perm
+        ], 201);
     }
 
+    // =========================
+    // DETAIL
+    // =========================
     public function show($id)
     {
         $this->ensureSantri();
@@ -62,9 +111,16 @@ class SantriPermissionController extends Controller
             ->where('user_id', auth()->id())
             ->findOrFail($id);
 
-        return response()->json(['status' => true, 'message' => 'Detail permission', 'data' => $perm]);
+        return response()->json([
+            'status' => true,
+            'message' => 'Detail permission',
+            'data' => $perm
+        ]);
     }
 
+    // =========================
+    // CANCEL
+    // =========================
     public function cancel($id)
     {
         $this->ensureSantri();
@@ -73,12 +129,23 @@ class SantriPermissionController extends Controller
             ->where('user_id', auth()->id())
             ->findOrFail($id);
 
-        if ($perm->is_approved) {
-            return response()->json(['status' => false, 'message' => 'Tidak bisa cancel, permission sudah disetujui'], 422);
+        if ($perm->is_approved === true) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Tidak bisa cancel, permission sudah disetujui'
+            ], 422);
+        }
+
+        // hapus file image jika ada
+        if ($perm->image && File::exists(public_path($perm->image))) {
+            File::delete(public_path($perm->image));
         }
 
         $perm->delete();
 
-        return response()->json(['status' => true, 'message' => 'Permission dibatalkan']);
+        return response()->json([
+            'status' => true,
+            'message' => 'Permission dibatalkan'
+        ]);
     }
 }
