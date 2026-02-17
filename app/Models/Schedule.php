@@ -10,7 +10,7 @@ class Schedule extends Model
     use HasFactory;
     protected $guarded = [];
 
-     protected $casts = [
+    protected $casts = [
         'reminder_offsets' => 'array',
         'location'         => 'array',
         'start_datetime'   => 'datetime',
@@ -21,5 +21,4 @@ class Schedule extends Model
     {
         return $this->belongsTo(User::class);
     }
-
 }

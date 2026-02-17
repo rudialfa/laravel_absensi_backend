@@ -9,15 +9,48 @@ use Illuminate\Support\Carbon;
 
 class PesantrenSchedulesController extends Controller
 {
+
+    private function ensureUstadz(): void
+    {
+        if (!auth()->check() || auth()->user()->role !== 'ustadz') {
+            abort(response()->json([
+                'status' => false,
+                'message' => 'Akses ditolak (khusus ustadz)',
+            ], 403));
+        }
+    }
+
+    private function companyId(): int
+    {
+        $companyId = auth()->user()->company_id ?? null;
+        if (!$companyId) {
+            abort(response()->json([
+                'status' => false,
+                'message' => 'Company ID tidak ditemukan pada akun ustadz',
+            ], 422));
+        }
+        return $companyId;
+    }
+
+    // private function baseQuery(Request $request)
+    private function baseQuery()
+    {
+
+        return Schedule::query()
+            ->where('company_id', $this->companyId())
+            ->where('user_id', auth()->id());
+    }
+
     // =====================
     // LIST SCHEDULE (USTADZ)
     // =====================
     public function index(Request $request)
     {
-        $query = Schedule::where('user_id', auth()->id())
-            ->orderBy('start_datetime', 'asc');
 
-        // optional filter: status
+        $this->ensureUstadz();
+
+        $query = $this->baseQuery()->orderBy('start_datetime', 'asc');
+
         if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
@@ -33,11 +66,14 @@ class PesantrenSchedulesController extends Controller
     // =====================
     // TODAY SCHEDULE
     // =====================
-    public function today()
+    public function today(Request $request)
     {
+
+        $this->ensureUstadz();
+
         $today = Carbon::today();
 
-        $data = Schedule::where('user_id', auth()->id())
+        $data = $this->baseQuery()
             ->whereDate('start_datetime', $today)
             ->orderBy('start_datetime')
             ->get()
@@ -54,40 +90,47 @@ class PesantrenSchedulesController extends Controller
     // =====================
     public function store(Request $request)
     {
-        $request->validate([
-            'title' => 'required|string',
+        $this->ensureUstadz();
+
+        $validated = $request->validate([
+            'title' => 'required|string|max:120',
             'description' => 'nullable|string',
             'start_datetime' => 'required|date',
             'reminder_offsets' => 'nullable|array',
+            'reminder_offsets.*' => 'integer|min:0',
             'is_task_duty' => 'nullable|boolean',
             'location' => 'nullable|array',
+            'status' => 'nullable|in:upcoming,done,canceled',
         ]);
 
         $schedule = Schedule::create([
+            'company_id' => $this->companyId(), // ✅ WAJIB
             'user_id' => auth()->id(),
-            'title' => $request->title,
-            'description' => $request->description,
-            'start_datetime' => $request->start_datetime,
-            'reminder_offsets' => $request->reminder_offsets,
-            'is_task_duty' => $request->is_task_duty ?? false,
-            'location' => $request->location,
+            'title' => $validated['title'],
+            'description' => $validated['description'] ?? null,
+            'start_datetime' => $validated['start_datetime'],
+            'reminder_offsets' => $validated['reminder_offsets'] ?? null,
+            'is_task_duty' => $validated['is_task_duty'] ?? false,
+            'location' => $validated['location'] ?? null,
             'status' => 'upcoming',
         ]);
 
         return response()->json([
             'status' => true,
             'message' => 'Jadwal berhasil dibuat',
-            'data' => $this->formatSchedule($schedule)
+            'data' => $this->formatSchedule($schedule),
         ], 201);
     }
 
     // =====================
     // DETAIL
     // =====================
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $schedule = Schedule::where('user_id', auth()->id())
-            ->findOrFail($id);
+
+        $this->ensureUstadz();
+
+        $schedule = $this->baseQuery()->findOrFail($id);
 
         return response()->json([
             'status' => true,
@@ -100,8 +143,10 @@ class PesantrenSchedulesController extends Controller
     // =====================
     public function update(Request $request, $id)
     {
-        $schedule = Schedule::where('user_id', auth()->id())
-            ->findOrFail($id);
+
+        $this->ensureUstadz();
+
+        $schedule = $this->baseQuery()->findOrFail($id);
 
         $request->validate([
             'title' => 'required|string',
@@ -131,11 +176,12 @@ class PesantrenSchedulesController extends Controller
     // =====================
     // DELETE
     // =====================
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
-        $schedule = Schedule::where('user_id', auth()->id())
-            ->findOrFail($id);
 
+        $this->ensureUstadz();
+
+        $schedule = $this->baseQuery()->findOrFail($id);
         $schedule->delete();
 
         return response()->json([
@@ -149,8 +195,10 @@ class PesantrenSchedulesController extends Controller
     // =====================
     public function updateStatus(Request $request, $id)
     {
-        $schedule = Schedule::where('user_id', auth()->id())
-            ->findOrFail($id);
+
+        $this->ensureUstadz();
+
+        $schedule = $this->baseQuery()->findOrFail($id); // ✅ fix disini
 
         $request->validate([
             'status' => 'required|in:upcoming,done,canceled'
@@ -162,22 +210,24 @@ class PesantrenSchedulesController extends Controller
 
         return response()->json([
             'status' => true,
-            'message' => 'Status jadwal diperbarui'
+            'message' => 'Status jadwal diperbarui',
+            'data' => $this->formatSchedule($schedule),
         ]);
     }
 
     // =====================
-    // HELPER FORMAT RESPONSE (UI Friendly)
+    // HELPER FORMAT RESPONSE
     // =====================
-    private function formatSchedule(Schedule $s)
+    private function formatSchedule(Schedule $s): array
     {
-        $start = Carbon::parse($s->start_datetime);
 
-        // default durasi 90 menit biar cocok UI (bisa kamu ubah)
+
+        $start = Carbon::parse($s->start_datetime);
         $end = (clone $start)->addMinutes(90);
 
         return [
             'id' => $s->id,
+            'company_id' => $s->company_id ?? null,
             'title' => $s->title,
             'description' => $s->description,
             'date' => $start->format('Y-m-d'),
@@ -187,7 +237,7 @@ class PesantrenSchedulesController extends Controller
             'status' => $s->status,
             'is_task_duty' => (bool) $s->is_task_duty,
             'reminder_offsets' => $s->reminder_offsets,
-            'location' => $s->location, // json
+            'location' => $s->location,
         ];
     }
 }
