@@ -12,28 +12,29 @@ use App\Http\Controllers\Api\Employee\EmployeePermissionController;
 
 // hr company
 use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
+use App\Http\Controllers\Api\Employee\EmployeeShiftController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 
 // pesantren santri
+use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\Santri\SantriNotesController;
 use App\Http\Controllers\Api\Santri\SantriPermissionController;
-use App\Http\Controllers\Api\Santri\SantriPrayerController;
 
 // pesantren ustadz
+use App\Http\Controllers\Api\Santri\SantriPrayerController;
 use App\Http\Controllers\Api\Santri\SantriSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
 use App\Http\Controllers\Api\Ustadz\PesantrenPrayerController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
-use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 
+use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
 use Illuminate\Support\Facades\Route;
 
@@ -96,6 +97,12 @@ Route::prefix('company')
                 Route::get('/status', [EmployeeMonthlyReportController::class, 'status']);
                 Route::post('/', [EmployeeMonthlyReportController::class, 'store']);
                 Route::get('/current', [EmployeeMonthlyReportController::class, 'current']); // optional
+            });
+
+            Route::prefix('employee/shifts')->group(function () {
+                Route::get('/', [EmployeeShiftController::class, 'index']);
+                Route::get('/today', [EmployeeShiftController::class, 'today']);
+                Route::get('/range', [EmployeeShiftController::class, 'range']);
             });
 
             Route::prefix('employee/schedules')->group(function () {
