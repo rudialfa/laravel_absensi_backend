@@ -3,37 +3,38 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
 use App\Http\Controllers\Api\Employee\EmployeeLoanController;
+use App\Http\Controllers\Api\Employee\EmployeeMonthlyReportController;
 use App\Http\Controllers\Api\Employee\EmployeeNotesController;
 use App\Http\Controllers\Api\Employee\EmployeePayrollController;
-use App\Http\Controllers\Api\Employee\EmployeePermissionController;
 
 // employee schedules (kamu taruh di ustadz tapi ini controller employee)
-use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
+use App\Http\Controllers\Api\Employee\EmployeePermissionController;
 
 // hr company
+use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 
 // pesantren santri
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\Santri\SantriNotesController;
 use App\Http\Controllers\Api\Santri\SantriPermissionController;
 use App\Http\Controllers\Api\Santri\SantriPrayerController;
-use App\Http\Controllers\Api\Santri\SantriSchedulesController;
 
 // pesantren ustadz
+use App\Http\Controllers\Api\Santri\SantriSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
 use App\Http\Controllers\Api\Ustadz\PesantrenPrayerController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
-use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
 
+use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
 use Illuminate\Support\Facades\Route;
 
 // ROUTE NEWS 2 #################################################################################
@@ -89,8 +90,12 @@ Route::prefix('company')
                 Route::get('/', [EmployeeNotesController::class, 'index']);
                 Route::post('/', [EmployeeNotesController::class, 'store']);
                 Route::get('/{id}', [EmployeeNotesController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [EmployeeNotesController::class, 'update'])->whereNumber('id');
-                Route::delete('/{id}', [EmployeeNotesController::class, 'destroy'])->whereNumber('id');
+            });
+
+            Route::prefix('employee/monthly-reports')->group(function () {
+                Route::get('/status', [EmployeeMonthlyReportController::class, 'status']);
+                Route::post('/', [EmployeeMonthlyReportController::class, 'store']);
+                Route::get('/current', [EmployeeMonthlyReportController::class, 'current']); // optional
             });
 
             Route::prefix('employee/schedules')->group(function () {

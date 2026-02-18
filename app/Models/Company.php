@@ -31,4 +31,8 @@ class Company extends Model
     {
         return $this->hasMany(User::class);
     }
+    public function monthlyReports()
+    {
+        return $this->hasMany(MonthlyReport::class);
+    }
 }

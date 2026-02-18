@@ -60,4 +60,9 @@ class User extends Authenticatable
     {
         return $this->company?->type . '.' . $this->role;
     }
+
+    public function monthlyReports()
+    {
+        return $this->hasMany(MonthlyReport::class);
+    }
 }
