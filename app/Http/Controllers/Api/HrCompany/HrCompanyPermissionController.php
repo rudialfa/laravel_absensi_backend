@@ -8,67 +8,178 @@ use App\Models\Permission;
 
 class HrCompanyPermissionController extends Controller
 {
-    private function ensureHr()
+    // private function ensureHr()
+    // {
+    //     if (!auth()->check() || auth()->user()->role !== 'hr') {
+    //         abort(response()->json(['status' => false, 'message' => 'Akses ditolak (khusus HR)'], 403));
+    //     }
+    // }
+
+    // private function companyId()
+    // {
+    //     return auth()->user()->company_id ?? null;
+    // }
+
+    // public function index(Request $request)
+    // {
+    //     $this->ensureHr();
+    //     $companyId = $this->companyId();
+
+    //     $q = Permission::with('user')->where('company_id', $companyId);
+
+    //     if ($request->filled('is_approved')) {
+    //         $q->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
+    //     }
+
+    //     return response()->json([
+    //         'status' => true,
+    //         'message' => 'List permissions',
+    //         'data' => $q->orderByDesc('id')->paginate(20),
+    //     ]);
+    // }
+
+    // public function show($id)
+    // {
+    //     $this->ensureHr();
+    //     $companyId = $this->companyId();
+
+    //     $perm = Permission::with('user')->where('company_id', $companyId)->findOrFail($id);
+
+    //     return response()->json(['status' => true, 'message' => 'Detail permission', 'data' => $perm]);
+    // }
+
+    // public function approve($id)
+    // {
+    //     $this->ensureHr();
+    //     $companyId = $this->companyId();
+
+    //     $perm = Permission::where('company_id', $companyId)->findOrFail($id);
+    //     $perm->is_approved = true;
+    //     $perm->save();
+
+    //     return response()->json(['status' => true, 'message' => 'Permission disetujui', 'data' => $perm]);
+    // }
+
+    // public function reject($id)
+    // {
+    //     $this->ensureHr();
+    //     $companyId = $this->companyId();
+
+    //     $perm = Permission::where('company_id', $companyId)->findOrFail($id);
+    //     $perm->is_approved = false; // reject = tetap false (kalau mau alasan reject, nanti tambah kolom)
+    //     $perm->save();
+
+    //     return response()->json(['status' => true, 'message' => 'Permission ditolak', 'data' => $perm]);
+    // }
+
+    // kode 2
+    private function ensureHr(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'hr') {
             abort(response()->json(['status' => false, 'message' => 'Akses ditolak (khusus HR)'], 403));
         }
     }
 
-    private function companyId()
+    private function companyId(): int
     {
-        return auth()->user()->company_id ?? null;
+        $companyId = auth()->user()->company_id ?? null;
+        if (!$companyId) {
+            abort(response()->json(['status' => false, 'message' => 'Company ID tidak ditemukan'], 422));
+        }
+        return (int) $companyId;
+    }
+
+    private function baseQuery(Request $request)
+    {
+        $q = Permission::query()
+            ->with('user')
+            ->where('company_id', $this->companyId());
+
+        // filter status: pending|approved|rejected
+        if ($request->filled('status')) {
+            $status = $request->status;
+            if ($status === 'pending') $q->whereNull('is_approved');
+            if ($status === 'approved') $q->where('is_approved', true);
+            if ($status === 'rejected') $q->where('is_approved', false);
+        }
+
+        // optional search
+        if ($request->filled('q')) {
+            $keyword = $request->q;
+            $q->whereHas('user', function ($u) use ($keyword) {
+                $u->where('name', 'like', "%$keyword%")
+                    ->orWhere('email', 'like', "%$keyword%");
+            });
+        }
+
+        return $q;
     }
 
     public function index(Request $request)
     {
         $this->ensureHr();
-        $companyId = $this->companyId();
 
-        $q = Permission::with('user')->where('company_id', $companyId);
-
-        if ($request->filled('is_approved')) {
-            $q->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
-        }
+        $data = $this->baseQuery($request)
+            ->orderByDesc('id')
+            ->paginate(20);
 
         return response()->json([
             'status' => true,
-            'message' => 'List permissions',
-            'data' => $q->orderByDesc('id')->paginate(20),
+            'message' => 'List permission company',
+            'data' => $data,
         ]);
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
         $this->ensureHr();
-        $companyId = $this->companyId();
 
-        $perm = Permission::with('user')->where('company_id', $companyId)->findOrFail($id);
+        $perm = $this->baseQuery($request)
+            ->where('id', $id)
+            ->firstOrFail();
 
-        return response()->json(['status' => true, 'message' => 'Detail permission', 'data' => $perm]);
+        return response()->json([
+            'status' => true,
+            'message' => 'Detail permission',
+            'data' => $perm,
+        ]);
     }
 
-    public function approve($id)
+    public function approve(Request $request, $id)
     {
         $this->ensureHr();
-        $companyId = $this->companyId();
 
-        $perm = Permission::where('company_id', $companyId)->findOrFail($id);
+        $perm = Permission::query()
+            ->where('company_id', $this->companyId())
+            ->where('id', $id)
+            ->firstOrFail();
+
         $perm->is_approved = true;
         $perm->save();
 
-        return response()->json(['status' => true, 'message' => 'Permission disetujui', 'data' => $perm]);
+        return response()->json([
+            'status' => true,
+            'message' => 'Permission disetujui',
+            'data' => $perm->fresh('user'),
+        ]);
     }
 
-    public function reject($id)
+    public function reject(Request $request, $id)
     {
         $this->ensureHr();
-        $companyId = $this->companyId();
 
-        $perm = Permission::where('company_id', $companyId)->findOrFail($id);
-        $perm->is_approved = false; // reject = tetap false (kalau mau alasan reject, nanti tambah kolom)
+        $perm = Permission::query()
+            ->where('company_id', $this->companyId())
+            ->where('id', $id)
+            ->firstOrFail();
+
+        $perm->is_approved = false;
         $perm->save();
 
-        return response()->json(['status' => true, 'message' => 'Permission ditolak', 'data' => $perm]);
+        return response()->json([
+            'status' => true,
+            'message' => 'Permission ditolak',
+            'data' => $perm->fresh('user'),
+        ]);
     }
 }
