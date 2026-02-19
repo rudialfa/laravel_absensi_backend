@@ -134,6 +134,7 @@ Route::prefix('company')
         Route::middleware('context:company,hr')->group(function () {
 
             Route::get('/dashboard', [HrCompanyDashboardController::class, 'index']);
+            Route::get('/hr/summary-stats', [HrCompanyDashboardController::class, 'summaryStats']);
 
             Route::prefix('hr/attendances')->group(function () {
 
