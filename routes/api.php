@@ -119,6 +119,7 @@ Route::prefix('company')
                 Route::get('/', [EmployeeLoanController::class, 'index']);
                 Route::post('/', [EmployeeLoanController::class, 'store']);
                 Route::get('/{id}', [EmployeeLoanController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/cancel', [EmployeeLoanController::class, 'cancel'])->whereNumber('id');
             });
 
             Route::prefix('employee/payrolls')->group(function () {
