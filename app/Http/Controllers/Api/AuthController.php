@@ -226,40 +226,64 @@ class AuthController extends Controller
 
     public function changePassword(Request $request)
     {
-        $request->validate([
-            'old_password' => 'required',
-            'new_password' => 'required|min:6'
+        $user = auth()->user();
+
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'new_password' => 'required|string|min:6|confirmed',
         ]);
 
-        $user = $request->user();
-
-        if (!Hash::check($request->old_password, $user->password)) {
+        // cek password lama
+        if (!Hash::check($validated['current_password'], $user->password)) {
             return response()->json([
-                'message' => 'Password lama salah'
-            ], 400);
+                'status' => false,
+                'message' => 'Password lama tidak sesuai'
+            ], 422);
         }
 
-        $user->update([
-            'password' => Hash::make($request->new_password)
-        ]);
+        // update password
+        $user->password = Hash::make($validated['new_password']);
+        $user->save();
 
         return response()->json([
-            'message' => 'Password berhasil diubah'
+            'status' => true,
+            'message' => 'Password berhasil diganti'
         ]);
     }
+
 
     /**
      * SHOW PROFILE
      */
-    public function show(Request $request)
-    {
+    // public function show(Request $request)
+    // {
 
-        $user = $request->user()->load('company');
+    //     $user = $request->user()->load('company');
+
+    //     return response()->json([
+    //         'status' => true,
+    //         'message' => 'Success',
+    //         'data' => $user
+    //     ]);
+    // }
+
+    public function show()
+    {
+        $user = auth()->user()->load('company');
+
+        // ubah image_url jadi full URL
+        if ($user->image_url) {
+            $user->image_url = asset($user->image_url);
+        }
+
+        if ($user->company && $user->company->image_url) {
+            $user->company->image_url = asset($user->company->image_url);
+        }
 
         return response()->json([
             'status' => true,
-            'message' => 'Success',
-            'data' => $user
+            'message' => 'Profile user',
+            'data' => $user,
         ]);
     }
 

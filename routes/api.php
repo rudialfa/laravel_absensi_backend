@@ -2,38 +2,34 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+use App\Http\Controllers\Api\Employee\EmployeeLeaveController;
 use App\Http\Controllers\Api\Employee\EmployeeLoanController;
 use App\Http\Controllers\Api\Employee\EmployeeMonthlyReportController;
 use App\Http\Controllers\Api\Employee\EmployeeNotesController;
+use App\Http\Controllers\Api\Employee\EmployeeOvertimeRequestController;
 use App\Http\Controllers\Api\Employee\EmployeePayrollController;
-
-// employee schedules (kamu taruh di ustadz tapi ini controller employee)
 use App\Http\Controllers\Api\Employee\EmployeePermissionController;
-
-// hr company
 use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
 use App\Http\Controllers\Api\Employee\EmployeeShiftController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyHolidayController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyLeaveController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
-
-// pesantren santri
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\Santri\SantriNotesController;
 use App\Http\Controllers\Api\Santri\SantriPermissionController;
-
-// pesantren ustadz
 use App\Http\Controllers\Api\Santri\SantriPrayerController;
 use App\Http\Controllers\Api\Santri\SantriSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
 use App\Http\Controllers\Api\Ustadz\PesantrenPrayerController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
-
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
 use Illuminate\Support\Facades\Route;
@@ -126,6 +122,22 @@ Route::prefix('company')
                 Route::get('/', [EmployeePayrollController::class, 'index']);
                 Route::get('/{id}', [EmployeePayrollController::class, 'show'])->whereNumber('id');
             });
+
+            // EMPLOYEE - LEAVES (CUTI)
+            Route::prefix('employee/leaves')->group(function () {
+                Route::get('/', [EmployeeLeaveController::class, 'index']);
+                Route::post('/', [EmployeeLeaveController::class, 'store']);
+                Route::get('/{id}', [EmployeeLeaveController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/cancel', [EmployeeLeaveController::class, 'cancel'])->whereNumber('id');
+            });
+
+            // EMPLOYEE - OVERTIME REQUESTS
+            Route::prefix('employee/overtimes')->group(function () {
+                Route::get('/', [EmployeeOvertimeRequestController::class, 'index']);
+                Route::post('/', [EmployeeOvertimeRequestController::class, 'store']);
+                Route::get('/{id}', [EmployeeOvertimeRequestController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/cancel', [EmployeeOvertimeRequestController::class, 'cancel'])->whereNumber('id');
+            });
         });
 
         // =======================
@@ -190,6 +202,31 @@ Route::prefix('company')
                 Route::put('/{id}', [HrCompanyPayrollController::class, 'update'])->whereNumber('id');
                 Route::post('/{id}/approve', [HrCompanyPayrollController::class, 'approve'])->whereNumber('id');
                 Route::post('/{id}/mark-paid', [HrCompanyPayrollController::class, 'markPaid'])->whereNumber('id');
+            });
+
+            // HR - COMPANY HOLIDAYS
+            Route::prefix('hr/holidays')->group(function () {
+                Route::get('/', [HrCompanyHolidayController::class, 'index']);
+                Route::post('/', [HrCompanyHolidayController::class, 'store']);
+                Route::get('/{id}', [HrCompanyHolidayController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}', [HrCompanyHolidayController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}', [HrCompanyHolidayController::class, 'destroy'])->whereNumber('id');
+            });
+
+            // HR - LEAVES (approve/reject)
+            Route::prefix('hr/leaves')->group(function () {
+                Route::get('/', [HrCompanyLeaveController::class, 'index']);
+                Route::get('/{id}', [HrCompanyLeaveController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/approve', [HrCompanyLeaveController::class, 'approve'])->whereNumber('id');
+                Route::post('/{id}/reject', [HrCompanyLeaveController::class, 'reject'])->whereNumber('id');
+            });
+
+            // HR - OVERTIMES (approve/reject)
+            Route::prefix('hr/overtimes')->group(function () {
+                Route::get('/', [HrCompanyOvertimeRequestController::class, 'index']);
+                Route::get('/{id}', [HrCompanyOvertimeRequestController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/approve', [HrCompanyOvertimeRequestController::class, 'approve'])->whereNumber('id');
+                Route::post('/{id}/reject', [HrCompanyOvertimeRequestController::class, 'reject'])->whereNumber('id');
             });
         });
     });
