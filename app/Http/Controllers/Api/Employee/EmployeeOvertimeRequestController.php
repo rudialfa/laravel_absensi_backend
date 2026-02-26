@@ -7,6 +7,7 @@ use App\Models\Attendance;
 use App\Models\OvertimeRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 
@@ -67,7 +68,9 @@ class EmployeeOvertimeRequestController extends Controller
             'end_time' => ['required', 'date_format:H:i'],
             'reason' => ['nullable', 'string'],
             'attendance_id' => ['nullable', 'integer', 'exists:attendances,id'],
-            'evidence_image' => ['nullable', 'string'], // kalau upload file, ganti ke handle upload
+
+            // ✅ DARI string -> file image
+            'evidence_image' => ['nullable', 'image', 'mimes:jpg,jpeg,png', 'max:2048'],
         ]);
 
         if ($v->fails()) {
@@ -129,6 +132,24 @@ class EmployeeOvertimeRequestController extends Controller
             }
         }
 
+        // ✅ HANDLE UPLOAD FILE (gunakan key evidence_image, bukan image)
+        $imagePath = null;
+        if ($request->hasFile('evidence_image')) {
+            // folder: public/image/permission
+            $destinationPath = public_path('image/permission');
+
+            if (!File::exists($destinationPath)) {
+                File::makeDirectory($destinationPath, 0755, true);
+            }
+
+            $file = $request->file('evidence_image');
+            $fileName = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+
+            $file->move($destinationPath, $fileName);
+
+            $imagePath = 'image/permission/' . $fileName;
+        }
+
         $overtime = OvertimeRequest::create([
             'company_id' => $user->company_id,
             'user_id' => $user->id,
@@ -138,9 +159,17 @@ class EmployeeOvertimeRequestController extends Controller
             'end_time' => $request->end_time,
             'minutes' => $minutes,
             'reason' => $request->reason,
-            'evidence_image' => $request->evidence_image,
+
+            // ✅ simpan path hasil upload
+            'evidence_image' => $imagePath,
+
             'status' => 'pending',
         ]);
+
+        // ✅ optional: jadikan full URL biar Flutter tinggal Image.network
+        $overtime->evidence_image = $overtime->evidence_image
+            ? asset($overtime->evidence_image)
+            : null;
 
         return response()->json([
             'status' => true,
