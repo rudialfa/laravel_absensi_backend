@@ -20,7 +20,10 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
-use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupAssignmentController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupUserController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyUserShiftOverrideController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\Santri\SantriNotesController;
 use App\Http\Controllers\Api\Santri\SantriPermissionController;
@@ -178,13 +181,46 @@ Route::prefix('company')
                 Route::post('/{id}/reject', [HrCompanyPermissionController::class, 'reject'])->whereNumber('id');
             });
 
-            Route::prefix('hr/shifts')->group(function () {
-                Route::get('/', [HrCompanyShiftController::class, 'index']);
-                Route::post('/', [HrCompanyShiftController::class, 'store']);
-                Route::get('/{id}', [HrCompanyShiftController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [HrCompanyShiftController::class, 'update'])->whereNumber('id');
-                Route::delete('/{id}', [HrCompanyShiftController::class, 'destroy'])->whereNumber('id');
-                Route::post('/{id}/set-default', [HrCompanyShiftController::class, 'setDefault'])->whereNumber('id');
+            // Route::prefix('hr/shifts')->group(function () {
+            //     Route::get('/', [HrCompanyShiftController::class, 'index']);
+            //     Route::post('/', [HrCompanyShiftController::class, 'store']);
+            //     Route::get('/{id}', [HrCompanyShiftController::class, 'show'])->whereNumber('id');
+            //     Route::put('/{id}', [HrCompanyShiftController::class, 'update'])->whereNumber('id');
+            //     Route::delete('/{id}', [HrCompanyShiftController::class, 'destroy'])->whereNumber('id');
+            //     Route::post('/{id}/set-default', [HrCompanyShiftController::class, 'setDefault'])->whereNumber('id');
+            // });
+
+            // versi new
+            Route::prefix('hr/shift-groups')->group(function () {
+                Route::get('/', [HrCompanyShiftGroupController::class, 'index']);
+                Route::post('/', [HrCompanyShiftGroupController::class, 'store']);
+                Route::get('/{id}', [HrCompanyShiftGroupController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}', [HrCompanyShiftGroupController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}', [HrCompanyShiftGroupController::class, 'destroy'])->whereNumber('id');
+
+                // Members
+                Route::get('/{id}/users', [HrCompanyShiftGroupUserController::class, 'index'])->whereNumber('id');
+
+                // attach: bisa lewat user_ids (checklist) ATAU filter departemen/position (bulk)
+                Route::post('/{id}/users/attach', [HrCompanyShiftGroupUserController::class, 'attach'])->whereNumber('id');
+                Route::post('/{id}/users/detach', [HrCompanyShiftGroupUserController::class, 'detach'])->whereNumber('id');
+
+                // Assignments (set shift + range tanggal untuk group)
+                Route::get('/{id}/assignments', [HrCompanyShiftGroupAssignmentController::class, 'index'])->whereNumber('id');
+                Route::post('/{id}/assignments', [HrCompanyShiftGroupAssignmentController::class, 'store'])->whereNumber('id');
+
+
+                // Update / delete assignment by assignment id
+                Route::put('/shift-group-assignments/{id}', [HrCompanyShiftGroupAssignmentController::class, 'update'])->whereNumber('id');
+                Route::delete('/shift-group-assignments/{id}', [HrCompanyShiftGroupAssignmentController::class, 'destroy'])->whereNumber('id');
+
+                /**
+                 * USER SHIFT OVERRIDES (pengecualian per user)
+                 */
+                Route::get('/users/{userId}/shift-overrides', [HrCompanyUserShiftOverrideController::class, 'index'])->whereNumber('userId');
+                Route::post('/users/{userId}/shift-overrides', [HrCompanyUserShiftOverrideController::class, 'store'])->whereNumber('userId');
+                Route::delete('/user-shift-overrides/{id}', [HrCompanyUserShiftOverrideController::class, 'destroy'])->whereNumber('id');
+                Route::patch('/user-shift-overrides/{id}/cancel', [HrCompanyUserShiftOverrideController::class, 'cancel'])->whereNumber('id');
             });
 
             Route::prefix('hr/loans')->group(function () {

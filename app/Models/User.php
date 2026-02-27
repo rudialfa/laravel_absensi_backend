@@ -2,7 +2,8 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Models\ShiftGroup;
+use App\Models\UserShiftOverride;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -64,5 +65,17 @@ class User extends Authenticatable
     public function monthlyReports()
     {
         return $this->hasMany(MonthlyReport::class);
+    }
+
+    public function shiftGroups()
+    {
+        return $this->belongsToMany(ShiftGroup::class, 'shift_group_users')
+            ->withPivot(['start_date', 'end_date'])
+            ->withTimestamps();
+    }
+
+    public function shiftOverrides()
+    {
+        return $this->hasMany(UserShiftOverride::class);
     }
 }
