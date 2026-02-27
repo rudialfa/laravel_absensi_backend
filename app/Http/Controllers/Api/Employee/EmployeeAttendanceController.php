@@ -79,6 +79,7 @@ class EmployeeAttendanceController extends Controller
         }
 
         $attendance = new Attendance();
+        $attendance->company_id = auth()->user()->company_id; // ✅
         $attendance->user_id = auth()->id();
         $attendance->marked_by = null; // SELF
         $attendance->date = $today;
