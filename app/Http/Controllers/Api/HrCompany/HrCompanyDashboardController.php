@@ -3,104 +3,109 @@
 namespace App\Http\Controllers\Api\HrCompany;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use App\Models\User;
 use App\Models\Attendance;
-use App\Models\Loan;
+use App\Models\Leaves;
 use App\Models\Permission;
-use App\Models\Payrool;
 use Carbon\Carbon;
 
 
 class HrCompanyDashboardController extends Controller
 {
-    private function ensureHr(): void
-    {
-        if (!auth()->check() || auth()->user()->role !== 'hr') {
-            abort(response()->json([
-                'status' => false,
-                'message' => 'Akses ditolak (khusus HR)',
-            ], 403));
-        }
-    }
-
     private function companyId(): int
     {
-        $companyId = auth()->user()->company_id ?? null;
-
-        if (!$companyId) {
-            abort(response()->json([
-                'status' => false,
-                'message' => 'Company ID tidak ditemukan',
-            ], 422));
-        }
-
-        return (int) $companyId;
+        return (int) auth()->user()->company_id;
     }
 
-    /**
-     * Summary stats untuk dashboard HR:
-     * - total employee
-     * - hadir hari ini
-     * - permission pending
-     * - loan pending
-     * - payroll draft
-     */
-    public function summaryStats(Request $request)
+    // =========================================================
+    // GET /api/company/hr/dashboard/summary
+    //
+    // Response: {
+    //   "success": true,
+    //   "data": {
+    //     "today": "2026-03-01",
+    //     "total_karyawan":     { "count": 248 },
+    //     "hadir_hari_ini":     { "count": 231 },
+    //     "terlambat_hari_ini": { "count": 5 },
+    //     "izin_pending":       { "count": 3 },
+    //     "cuti_pending":       { "count": 2 },
+    //     "absensi_terbaru":    [ { user, position, time_in, status } ... ],
+    //     "izin_pending_list":  [ { id, user, date, reason } ... ],
+    //   }
+    // }
+    // =========================================================
+    public function summary()
     {
-        $this->ensureHr();
-
         $companyId = $this->companyId();
+        $today     = Carbon::now()->toDateString();
 
-        // pakai timezone app (pastikan config/app.php timezone Asia/Jakarta)
-        $today = Carbon::today()->toDateString();
-
-        // 1) total employee
-        $totalEmployee = User::query()
-            ->where('company_id', $companyId)
-            ->where('role', 'employee')
+        // ── Total karyawan aktif perusahaan ──
+        $totalKaryawan = User::where('company_id', $companyId)
+            ->where('role', '!=', 'company')
             ->count();
 
-        // 2) hadir hari ini
-        // Asumsi: tabel attendances ada company_id, user_id, check_in / check_in_at / tanggal.
-        // Aku buat versi paling umum: hitung yang check_in tidak null & tanggal hari ini.
-        // ✅ Sesuaikan nama kolom check_in kamu kalau beda.
-        $hadirHariIni = Attendance::query()
-            ->where('company_id', $companyId)
-            ->whereDate('created_at', $today)
-            ->whereNotNull('check_in') // jika kolom kamu check_in_at, ganti di sini
-            ->count();
+        // ── Absensi hari ini ──
+        $attendancesToday = Attendance::where('date', $today)
+            ->whereHas('user', fn($q) => $q->where('company_id', $companyId))
+            ->get();
 
-        // 3) permission pending (is_approved NULL)
-        $permissionPending = Permission::query()
-            ->where('company_id', $companyId)
+        $hadirHariIni     = $attendancesToday->whereIn('status', ['on_time', 'overtime', 'guest'])->count();
+        $terlambatHariIni = $attendancesToday->where('status', 'late')->count();
+
+        // ── Izin pending (is_approved = null) ──
+        $izinPending = Permission::where('company_id', $companyId)
             ->whereNull('is_approved')
             ->count();
 
-        // 4) loan pending
-        // Asumsi: loans.status = pending|approved|rejected|paid
-        $loanPending = Loan::query()
-            ->where('company_id', $companyId)
+        // ── Cuti pending ──
+        $cutiPending = Leaves::where('company_id', $companyId)
             ->where('status', 'pending')
             ->count();
 
-        // 5) payroll draft
-        // Asumsi: payrools.status = draft|approved|paid
-        $payrollDraft = Payrool::query()
-            ->where('company_id', $companyId)
-            ->where('status', 'draft')
-            ->count();
+        // ── Absensi terbaru (10 terakhir hari ini) ──
+        $absensiTerbaru = Attendance::where('date', $today)
+            ->whereHas('user', fn($q) => $q->where('company_id', $companyId))
+            ->with(['user:id,name,position,department'])
+            ->orderBy('time_in', 'desc')
+            ->limit(10)
+            ->get()
+            ->map(fn($a) => [
+                'id'         => $a->id,
+                'name'       => $a->user?->name,
+                'position'   => $a->user?->position,
+                'department' => $a->user?->department,
+                'time_in'    => $a->time_in,
+                'time_out'   => $a->time_out,
+                'status'     => $a->status,
+            ]);
+
+        // ── Izin pending list (5 terbaru) ──
+        $izinPendingList = Permission::where('company_id', $companyId)
+            ->whereNull('is_approved')
+            ->with(['user:id,name,position,department'])
+            ->orderBy('date_permission', 'asc')
+            ->limit(5)
+            ->get()
+            ->map(fn($p) => [
+                'id'      => $p->id,
+                'name'    => $p->user?->name,
+                'position' => $p->user?->position,
+                'date'    => $p->date_permission,
+                'reason'  => $p->reason,
+            ]);
 
         return response()->json([
-            'status' => true,
-            'message' => 'Summary stats HR',
-            'data' => [
-                'total_employee' => $totalEmployee,
-                'hadir_hari_ini' => $hadirHariIni,
-                'permission_pending' => $permissionPending,
-                'loan_pending' => $loanPending,
-                'payroll_draft' => $payrollDraft,
-                'date' => $today,
+            'success' => true,
+            'message' => 'Summary dashboard HR',
+            'data'    => [
+                'today'              => $today,
+                'total_karyawan'     => ['count' => $totalKaryawan,     'label' => 'Total Karyawan'],
+                'hadir_hari_ini'     => ['count' => $hadirHariIni,      'label' => 'Hadir Hari Ini'],
+                'terlambat_hari_ini' => ['count' => $terlambatHariIni,  'label' => 'Terlambat'],
+                'izin_pending'       => ['count' => $izinPending,       'label' => 'Izin Pending'],
+                'cuti_pending'       => ['count' => $cutiPending,       'label' => 'Cuti Pending'],
+                'absensi_terbaru'    => $absensiTerbaru,
+                'izin_pending_list'  => $izinPendingList,
             ],
         ]);
     }

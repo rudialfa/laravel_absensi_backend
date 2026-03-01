@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\Employee\EmployeePayrollController;
 use App\Http\Controllers\Api\Employee\EmployeePermissionController;
 use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
 use App\Http\Controllers\Api\Employee\EmployeeShiftController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyAnalyticsController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
@@ -20,6 +21,7 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
+use App\Http\Controllers\Api\HrCompany\HrCompanySettingController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupAssignmentController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupController;
@@ -159,8 +161,45 @@ Route::prefix('company')
         // =======================
         Route::middleware('context:company,hr')->group(function () {
 
-            Route::get('/dashboard', [HrCompanyDashboardController::class, 'index']);
-            Route::get('/hr/summary-stats', [HrCompanyDashboardController::class, 'summaryStats']);
+            Route::get('/hr/summary-stats', [HrCompanyDashboardController::class, 'summary']);
+
+            Route::prefix('hr/analytics')->group(function () {
+
+                // GET /api/company/hr/analytics/monthly?month=3&year=2026
+                // → breakdown harian + ringkasan + top terlambat + top alpha
+                Route::get('/monthly', [HrCompanyAnalyticsController::class, 'monthly']);
+
+                // GET /api/company/hr/analytics/employee/{userId}?month=3&year=2026
+                // → detail laporan per-karyawan (absensi + izin + cuti)
+                Route::get('/employee/{userId}', [HrCompanyAnalyticsController::class, 'employeeDetail']);
+
+                // GET /api/company/hr/analytics/attendance-recap?start=&end=&per_page=
+                // → rekap tabel absensi range tanggal (maks 93 hari), paginated
+                Route::get('/attendance-recap', [HrCompanyAnalyticsController::class, 'attendanceRecap']);
+            });
+
+            // ==============================================================
+            // 3. PENGATURAN PERUSAHAAN
+            // ==============================================================
+            Route::prefix('hr/settings')->group(function () {
+
+                // GET    /api/company/hr/settings/company  → ambil data perusahaan
+                Route::get('/company', [HrCompanySettingController::class, 'show']);
+
+                // PUT    /api/company/hr/settings/company  → update data perusahaan
+                Route::put('/company', [HrCompanySettingController::class, 'update']);
+
+                // POST   /api/company/hr/settings/company/logo  → upload logo
+                Route::post('/company/logo', [HrCompanySettingController::class, 'uploadLogo']);
+
+                // GET    /api/company/hr/settings/company/employees?search=&department=&per_page=
+                // → list karyawan (untuk tabel di pengaturan)
+                Route::get('/company/employees', [HrCompanySettingController::class, 'employees']);
+
+                // GET    /api/company/hr/settings/company/departments
+                // → list departemen unik
+                Route::get('/company/departments', [HrCompanySettingController::class, 'departments']);
+            });
 
             Route::prefix('hr/attendances')->group(function () {
 
