@@ -129,10 +129,29 @@ Route::prefix('company')
             });
 
             Route::prefix('employee/loans')->group(function () {
+
+                // GET /api/company/employee/loans/active
+                Route::get('/active', [EmployeeLoanController::class, 'active']);
+
+                // List semua pinjaman milik sendiri → ?status=pending
+                // GET /api/company/employee/loans
                 Route::get('/', [EmployeeLoanController::class, 'index']);
-                Route::post('/', [EmployeeLoanController::class, 'store']);
+
+                // Detail pinjaman + histori bayar + progress
+                // GET /api/company/employee/loans/{id}
                 Route::get('/{id}', [EmployeeLoanController::class, 'show'])->whereNumber('id');
-                Route::post('/{id}/cancel', [EmployeeLoanController::class, 'cancel'])->whereNumber('id');
+
+                // Ajukan pinjaman baru (self-service) → status: pending
+                // POST /api/company/employee/loans
+                Route::post('/', [EmployeeLoanController::class, 'store']);
+
+                // Batalkan pengajuan (hanya bisa saat status pending)
+                // PUT /api/company/employee/loans/{id}/cancel
+                Route::put('/{id}/cancel', [EmployeeLoanController::class, 'cancel'])->whereNumber('id');
+
+                // Histori pembayaran cicilan milik sendiri
+                // GET /api/company/employee/loans/{id}/payments
+                Route::get('/{id}/payments', [EmployeeLoanController::class, 'paymentHistory'])->whereNumber('id');
             });
 
             Route::prefix('employee/payrolls')->group(function () {
