@@ -10,7 +10,7 @@ class Payrool extends Model
     use HasFactory;
     protected $guarded = [];
 
-      public function user()
+    public function user()
     {
         return $this->belongsTo(User::class);
     }
@@ -27,4 +27,9 @@ class Payrool extends Model
         return date('d M Y', strtotime($this->period_start)) . ' - ' . date('d M Y', strtotime($this->period_end));
     }
 
+    // Relasi ke komponen tunjangan/potongan
+    public function components()
+    {
+        return $this->hasMany(PayrollComponent::class, 'payroll_id');
+    }
 }

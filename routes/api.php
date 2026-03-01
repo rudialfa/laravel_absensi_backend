@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyHolidayController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLeaveController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollComponentController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanySettingController;
@@ -280,15 +281,41 @@ Route::prefix('company')
                 Route::post('/{id}/reject', [HrCompanyLoanController::class, 'reject'])->whereNumber('id');
                 Route::post('/{id}/mark-paid', [HrCompanyLoanController::class, 'markPaid'])->whereNumber('id');
             });
+            Route::prefix('hr/payrolls')->name('payrolls.')->group(function () {
 
-            Route::prefix('hr/payrolls')->group(function () {
-                Route::get('/', [HrCompanyPayrollController::class, 'index']);
-                Route::post('/', [HrCompanyPayrollController::class, 'store']);
-                Route::get('/{id}', [HrCompanyPayrollController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [HrCompanyPayrollController::class, 'update'])->whereNumber('id');
-                Route::post('/{id}/approve', [HrCompanyPayrollController::class, 'approve'])->whereNumber('id');
-                Route::post('/{id}/mark-paid', [HrCompanyPayrollController::class, 'markPaid'])->whereNumber('id');
+                // Statis — harus di atas /{id} agar tidak bentrok
+                Route::post('generate', [HrCompanyPayrollController::class, 'generate'])->name('generate');
+                Route::get('summary',   [HrCompanyPayrollController::class, 'summary'])->name('summary');
+
+                // CRUD standar
+                Route::get('/',       [HrCompanyPayrollController::class, 'index'])->name('index');
+                Route::post('/',      [HrCompanyPayrollController::class, 'store'])->name('store');
+                Route::get('{id}',    [HrCompanyPayrollController::class, 'show'])->name('show')->whereNumber('id');
+                Route::put('{id}',    [HrCompanyPayrollController::class, 'update'])->name('update')->whereNumber('id');
+                Route::delete('{id}', [HrCompanyPayrollController::class, 'destroy'])->name('destroy')->whereNumber('id');
+
+                // Workflow status
+                Route::patch('{id}/approve',   [HrCompanyPayrollController::class, 'approve'])->name('approve')->whereNumber('id');
+                Route::patch('{id}/mark-paid', [HrCompanyPayrollController::class, 'markAsPaid'])->name('mark-paid')->whereNumber('id');
+
+                // Slip gaji
+                Route::get('{id}/slip', [HrCompanyPayrollController::class, 'slip'])->name('slip')->whereNumber('id');
+
+                // ─────────────────────────────────────────────────────────
+                // PAYROLL COMPONENTS (nested)
+                // ─────────────────────────────────────────────────────────
+                Route::prefix('{payrollId}/components')->name('components.')->whereNumber('payrollId')->group(function () {
+
+                    Route::get('/',    [HrCompanyPayrollComponentController::class, 'index'])->name('index');
+                    Route::post('/',   [HrCompanyPayrollComponentController::class, 'store'])->name('store');
+                    Route::post('bulk', [HrCompanyPayrollComponentController::class, 'storeBulk'])->name('bulk');
+
+                    // FIX: whereNumber('componentId') — bukan 'id'
+                    Route::put('{componentId}',    [HrCompanyPayrollComponentController::class, 'update'])->name('update')->whereNumber('componentId');
+                    Route::delete('{componentId}', [HrCompanyPayrollComponentController::class, 'destroy'])->name('destroy')->whereNumber('componentId');
+                });
             });
+
 
             // HR - COMPANY HOLIDAYS
             Route::prefix('hr/holidays')->group(function () {
