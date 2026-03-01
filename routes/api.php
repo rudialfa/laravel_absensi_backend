@@ -20,6 +20,7 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupAssignmentController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupUserController;
@@ -79,6 +80,11 @@ Route::prefix('company')
                 Route::post('/register-face', [EmployeeAttendanceController::class, 'registerFace']);
             });
 
+            Route::prefix('employee/stats')->group(function () {
+                // GET /api/company/employee/stats/summary?month=3&year=2026
+                Route::get('/summary', [EmployeeAttendanceController::class, 'summary']);
+            });
+
             Route::prefix('employee/permissions')->group(function () {
                 Route::get('/', [EmployeePermissionController::class, 'index']);
                 Route::post('/', [EmployeePermissionController::class, 'store']);
@@ -99,9 +105,14 @@ Route::prefix('company')
             });
 
             Route::prefix('employee/shifts')->group(function () {
-                Route::get('/', [EmployeeShiftController::class, 'index']);
+                // shift aktif hari ini
                 Route::get('/today', [EmployeeShiftController::class, 'today']);
-                Route::get('/range', [EmployeeShiftController::class, 'range']);
+
+                // shift aktif untuk tanggal tertentu (YYYY-MM-DD)
+                Route::get('/date/{date}', [EmployeeShiftController::class, 'byDate']);
+
+                // jadwal shift (range tanggal)
+                Route::get('/schedule', [EmployeeShiftController::class, 'schedule']);
             });
 
             Route::prefix('employee/schedules')->group(function () {
@@ -181,14 +192,14 @@ Route::prefix('company')
                 Route::post('/{id}/reject', [HrCompanyPermissionController::class, 'reject'])->whereNumber('id');
             });
 
-            // Route::prefix('hr/shifts')->group(function () {
-            //     Route::get('/', [HrCompanyShiftController::class, 'index']);
-            //     Route::post('/', [HrCompanyShiftController::class, 'store']);
-            //     Route::get('/{id}', [HrCompanyShiftController::class, 'show'])->whereNumber('id');
-            //     Route::put('/{id}', [HrCompanyShiftController::class, 'update'])->whereNumber('id');
-            //     Route::delete('/{id}', [HrCompanyShiftController::class, 'destroy'])->whereNumber('id');
-            //     Route::post('/{id}/set-default', [HrCompanyShiftController::class, 'setDefault'])->whereNumber('id');
-            // });
+            Route::prefix('hr/shifts')->group(function () {
+                Route::get('/', [HrCompanyShiftController::class, 'index']);
+                Route::post('/', [HrCompanyShiftController::class, 'store']);
+                Route::get('/{id}', [HrCompanyShiftController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}', [HrCompanyShiftController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}', [HrCompanyShiftController::class, 'destroy'])->whereNumber('id');
+                Route::post('/{id}/set-default', [HrCompanyShiftController::class, 'setDefault'])->whereNumber('id');
+            });
 
             // versi new
             Route::prefix('hr/shift-groups')->group(function () {
