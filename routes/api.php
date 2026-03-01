@@ -275,12 +275,47 @@ Route::prefix('company')
             });
 
             Route::prefix('hr/loans')->group(function () {
+                // Dashboard ringkasan
+                // GET /api/hr/loans/summary
+                Route::get('/summary', [HrCompanyLoanController::class, 'summary']);
+
+                // List semua pinjaman  → ?status=pending  ?user_id=5  ?payment_type=scheduled_date
+                // GET /api/hr/loans
                 Route::get('/', [HrCompanyLoanController::class, 'index']);
+
+                // Detail pinjaman + histori bayar + progress
+                // GET /api/hr/loans/{id}
                 Route::get('/{id}', [HrCompanyLoanController::class, 'show'])->whereNumber('id');
-                Route::post('/{id}/approve', [HrCompanyLoanController::class, 'approve'])->whereNumber('id');
-                Route::post('/{id}/reject', [HrCompanyLoanController::class, 'reject'])->whereNumber('id');
-                Route::post('/{id}/mark-paid', [HrCompanyLoanController::class, 'markPaid'])->whereNumber('id');
+
+                // HR buat pinjaman langsung untuk employee (sebelum self-service aktif)
+                // POST /api/hr/loans
+                Route::post('/', [HrCompanyLoanController::class, 'store']);
+
+                // Approve pinjaman (pending → active), bisa override monthly_installment
+                // PUT /api/hr/loans/{id}/approve
+                Route::put('/{id}/approve', [HrCompanyLoanController::class, 'approve'])->whereNumber('id');
+
+                // Reject pinjaman (wajib isi alasan)
+                // PUT /api/hr/loans/{id}/reject
+                Route::put('/{id}/reject', [HrCompanyLoanController::class, 'reject'])->whereNumber('id');
+
+                // Cancel pinjaman (pending atau active → canceled)
+                // PUT /api/hr/loans/{id}/cancel
+                Route::put('/{id}/cancel', [HrCompanyLoanController::class, 'cancel'])->whereNumber('id');
+
+                // Histori bayar detail + summary (total_paid, progress %, total_diff)
+                // GET /api/hr/loans/{id}/payments
+                Route::get('/{id}/payments', [HrCompanyLoanController::class, 'paymentHistory'])->whereNumber('id');
+
+                // Input pembayaran cicilan (partial OK)
+                // POST /api/hr/loans/{id}/payments
+                Route::post('/{id}/payments', [HrCompanyLoanController::class, 'recordPayment'])->whereNumber('id');
+
+                // Hapus record bayar jika salah input → balance otomatis dikembalikan
+                // DELETE /api/hr/loans/{id}/payments/{paymentId}
+                Route::delete('/{id}/payments/{paymentId}', [HrCompanyLoanController::class, 'deletePayment'])->whereNumber('id');
             });
+
             Route::prefix('hr/payrolls')->name('payrolls.')->group(function () {
 
                 // Statis — harus di atas /{id} agar tidak bentrok
