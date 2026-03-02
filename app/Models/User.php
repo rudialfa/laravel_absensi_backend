@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Models\ShiftGroup;
 use App\Models\UserShiftOverride;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -78,5 +79,23 @@ class User extends Authenticatable
     public function shiftOverrides()
     {
         return $this->hasMany(UserShiftOverride::class);
+    }
+
+    // Jadwal yang dimiliki user
+    public function schedules(): HasMany
+    {
+        return $this->hasMany(Schedule::class, 'user_id');
+    }
+
+    // Jadwal yang dibuat oleh user ini (sebagai HR/creator)
+    public function createdSchedules(): HasMany
+    {
+        return $this->hasMany(Schedule::class, 'created_by');
+    }
+
+    // Jadwal yang diikuti sebagai peserta
+    public function scheduleParticipations(): HasMany
+    {
+        return $this->hasMany(ScheduleParticipant::class, 'user_id');
     }
 }

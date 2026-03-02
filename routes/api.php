@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollComponentController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyScheduleController;
 use App\Http\Controllers\Api\HrCompany\HrCompanySettingController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupAssignmentController;
@@ -119,13 +120,17 @@ Route::prefix('company')
             });
 
             Route::prefix('employee/schedules')->group(function () {
-                Route::get('/', [EmployeeSchedulesController::class, 'index']);
-                Route::get('/today', [EmployeeSchedulesController::class, 'today']);
-                Route::post('/', [EmployeeSchedulesController::class, 'store']);
-                Route::get('/{id}', [EmployeeSchedulesController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [EmployeeSchedulesController::class, 'update'])->whereNumber('id');
-                Route::delete('/{id}', [EmployeeSchedulesController::class, 'destroy'])->whereNumber('id');
-                Route::post('/{id}/status', [EmployeeSchedulesController::class, 'updateStatus'])->whereNumber('id');
+                // Route::get('/', [EmployeeSchedulesController::class, 'index']);
+                // Route::get('/today', [EmployeeSchedulesController::class, 'today']);
+                // Route::post('/', [EmployeeSchedulesController::class, 'store']);
+                // Route::get('/{id}', [EmployeeSchedulesController::class, 'show'])->whereNumber('id');
+                // Route::put('/{id}', [EmployeeSchedulesController::class, 'update'])->whereNumber('id');
+                // Route::delete('/{id}', [EmployeeSchedulesController::class, 'destroy'])->whereNumber('id');
+                // Route::post('/{id}/status', [EmployeeSchedulesController::class, 'updateStatus'])->whereNumber('id');
+                Route::get('/',                  [EmployeeSchedulesController::class, 'index']);
+                Route::get('/invitations',       [EmployeeSchedulesController::class, 'invitations']);
+                Route::get('/{id}',              [EmployeeSchedulesController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/respond',     [EmployeeSchedulesController::class, 'respond'])->whereNumber('id');
             });
 
             Route::prefix('employee/loans')->group(function () {
@@ -394,6 +399,21 @@ Route::prefix('company')
                 Route::get('/{id}', [HrCompanyOvertimeRequestController::class, 'show'])->whereNumber('id');
                 Route::post('/{id}/approve', [HrCompanyOvertimeRequestController::class, 'approve'])->whereNumber('id');
                 Route::post('/{id}/reject', [HrCompanyOvertimeRequestController::class, 'reject'])->whereNumber('id');
+            });
+
+            // HR SCHEDULES
+            Route::prefix('hr/schedules')->group(function () {
+                // CRUD Jadwal
+                Route::get('/',             [HrCompanyScheduleController::class, 'index']);
+                Route::post('/',            [HrCompanyScheduleController::class, 'store']);
+                Route::get('/{id}',        [HrCompanyScheduleController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}',        [HrCompanyScheduleController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}',     [HrCompanyScheduleController::class, 'destroy'])->whereNumber('id');
+
+                // Participants
+                Route::get('/{id}/participants',              [HrCompanyScheduleController::class, 'getParticipants'])->whereNumber('id');
+                Route::post('/{id}/participants',             [HrCompanyScheduleController::class, 'addParticipants'])->whereNumber('id');
+                Route::delete('/{id}/participants/{userId}',  [HrCompanyScheduleController::class, 'removeParticipant'])->whereNumber('id');
             });
         });
     });
