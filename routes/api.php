@@ -13,14 +13,18 @@ use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
 use App\Http\Controllers\Api\Employee\EmployeeShiftController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAnalyticsController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyAttendanceController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyDailyReportController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyDashboardController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyEmployeeController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyHolidayController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLeaveController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyLoanController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyMonthlyReportController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyNotesController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyOvertimeRequestController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollComponentController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPayrollController;
+use App\Http\Controllers\Api\HrCompany\HrCompanyPerformanceScoreController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyPermissionController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyScheduleController;
 use App\Http\Controllers\Api\HrCompany\HrCompanySettingController;
@@ -120,13 +124,6 @@ Route::prefix('company')
             });
 
             Route::prefix('employee/schedules')->group(function () {
-                // Route::get('/', [EmployeeSchedulesController::class, 'index']);
-                // Route::get('/today', [EmployeeSchedulesController::class, 'today']);
-                // Route::post('/', [EmployeeSchedulesController::class, 'store']);
-                // Route::get('/{id}', [EmployeeSchedulesController::class, 'show'])->whereNumber('id');
-                // Route::put('/{id}', [EmployeeSchedulesController::class, 'update'])->whereNumber('id');
-                // Route::delete('/{id}', [EmployeeSchedulesController::class, 'destroy'])->whereNumber('id');
-                // Route::post('/{id}/status', [EmployeeSchedulesController::class, 'updateStatus'])->whereNumber('id');
                 Route::get('/',                  [EmployeeSchedulesController::class, 'index']);
                 Route::get('/invitations',       [EmployeeSchedulesController::class, 'invitations']);
                 Route::get('/{id}',              [EmployeeSchedulesController::class, 'show'])->whereNumber('id');
@@ -414,6 +411,38 @@ Route::prefix('company')
                 Route::get('/{id}/participants',              [HrCompanyScheduleController::class, 'getParticipants'])->whereNumber('id');
                 Route::post('/{id}/participants',             [HrCompanyScheduleController::class, 'addParticipants'])->whereNumber('id');
                 Route::delete('/{id}/participants/{userId}',  [HrCompanyScheduleController::class, 'removeParticipant'])->whereNumber('id');
+            });
+
+            // HR NOTES
+            Route::prefix('hr/notes')->group(function () {
+                Route::get('/summary',   [HrCompanyNotesController::class, 'summary']);   // harus sebelum /{id}
+                Route::get('/',          [HrCompanyNotesController::class, 'index']);
+                Route::post('/',         [HrCompanyNotesController::class, 'store']);
+                Route::get('/{id}',      [HrCompanyNotesController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}',     [HrCompanyNotesController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}',   [HrCompanyNotesController::class, 'destroy'])->whereNumber('id');
+            });
+
+            Route::prefix('daily-reports')->group(function () {
+                Route::get('/summary',   [HrCompanyDailyReportController::class, 'summary']);  // harus sebelum /{id}
+                Route::get('/today',     [HrCompanyDailyReportController::class, 'today']);
+                Route::get('/',          [HrCompanyDailyReportController::class, 'index']);
+                Route::get('/{id}',      [HrCompanyDailyReportController::class, 'show'])->whereNumber('id');
+            });
+
+            Route::prefix('monthly-reports')->group(function () {
+                Route::get('/summary',        [HrCompanyMonthlyReportController::class, 'summary']); // harus sebelum /{id}
+                Route::get('/',               [HrCompanyMonthlyReportController::class, 'index']);
+                Route::get('/{id}',           [HrCompanyMonthlyReportController::class, 'show'])->whereNumber('id');
+                Route::patch('/{id}/approve', [HrCompanyMonthlyReportController::class, 'approve'])->whereNumber('id');
+                Route::patch('/{id}/reject',  [HrCompanyMonthlyReportController::class, 'reject'])->whereNumber('id');
+            });
+
+            Route::prefix('performance-scores')->group(function () {
+                Route::get('/leaderboard',  [HrCompanyPerformanceScoreController::class, 'leaderboard']); // harus sebelum /{id}
+                Route::get('/',             [HrCompanyPerformanceScoreController::class, 'index']);
+                Route::post('/generate',    [HrCompanyPerformanceScoreController::class, 'generate']);
+                Route::get('/{id}',         [HrCompanyPerformanceScoreController::class, 'show'])->whereNumber('id');
             });
         });
     });

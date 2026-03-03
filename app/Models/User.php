@@ -69,6 +69,16 @@ class User extends Authenticatable
         return $this->hasMany(MonthlyReport::class);
     }
 
+    public function dailyReports()
+    {
+        return $this->hasMany(DailyReport::class);
+    }
+
+    public function performanceScores()
+    {
+        return $this->hasMany(PerformanceScore::class);
+    }
+
     public function shiftGroups()
     {
         return $this->belongsToMany(ShiftGroup::class, 'shift_group_users')

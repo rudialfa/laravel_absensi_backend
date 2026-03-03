@@ -13,12 +13,12 @@ return new class extends Migration
     {
         Schema::create('notes', function (Blueprint $table) {
             $table->id();
-             //user_id is a foreign key that references the id column on the users table
-             $table->foreignId('user_id')->constrained('users')->onDelete('cascade');
-             //title
-             $table->string('title');
-             //content
-             $table->text('note');
+            //user_id is a foreign key that references the id column on the users table
+            $table->foreignId('user_id')->constrained('users')->onDelete('cascade');
+            //title
+            $table->string('title');
+            //content
+            $table->text('note');
             $table->timestamps();
         });
     }
