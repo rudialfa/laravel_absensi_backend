@@ -2,12 +2,14 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
+use App\Http\Controllers\Api\Employee\EmployeeDailyReportController;
 use App\Http\Controllers\Api\Employee\EmployeeLeaveController;
 use App\Http\Controllers\Api\Employee\EmployeeLoanController;
 use App\Http\Controllers\Api\Employee\EmployeeMonthlyReportController;
 use App\Http\Controllers\Api\Employee\EmployeeNotesController;
 use App\Http\Controllers\Api\Employee\EmployeeOvertimeRequestController;
 use App\Http\Controllers\Api\Employee\EmployeePayrollController;
+use App\Http\Controllers\Api\Employee\EmployeePerformanceScoreController;
 use App\Http\Controllers\Api\Employee\EmployeePermissionController;
 use App\Http\Controllers\Api\Employee\EmployeeSchedulesController;
 use App\Http\Controllers\Api\Employee\EmployeeShiftController;
@@ -100,10 +102,40 @@ Route::prefix('company')
                 Route::post('/{id}/cancel', [EmployeePermissionController::class, 'cancel'])->whereNumber('id');
             });
 
+            // ─── NOTES (Read Only — lihat catatan yang ditujukan ke dirinya) ──────────
             Route::prefix('employee/notes')->group(function () {
-                Route::get('/', [EmployeeNotesController::class, 'index']);
-                Route::post('/', [EmployeeNotesController::class, 'store']);
-                Route::get('/{id}', [EmployeeNotesController::class, 'show'])->whereNumber('id');
+                Route::get('/summary', [EmployeeNotesController::class, 'summary']); // harus sebelum /{id}
+                Route::get('/',        [EmployeeNotesController::class, 'index']);
+                Route::get('/{id}',    [EmployeeNotesController::class, 'show'])->whereNumber('id');
+                Route::patch('/{id}/read', [EmployeeNotesController::class, 'markRead'])->whereNumber('id');
+            });
+
+            // ─── DAILY REPORTS (CRUD — submit target pagi & pencapaian sore) ─────────
+            Route::prefix('employee/daily-reports')->group(function () {
+                Route::get('/today',  [EmployeeDailyReportController::class, 'today']);   // harus sebelum /{id}
+                Route::get('/summary', [EmployeeDailyReportController::class, 'summary']); // harus sebelum /{id}
+                Route::get('/',       [EmployeeDailyReportController::class, 'index']);
+                Route::post('/',      [EmployeeDailyReportController::class, 'store']);    // submit target pagi
+                Route::get('/{id}',   [EmployeeDailyReportController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}',  [EmployeeDailyReportController::class, 'update'])->whereNumber('id'); // update pencapaian sore
+            });
+
+            // ─── MONTHLY REPORTS (CRUD — buat draft, edit, submit) ───────────────────
+            Route::prefix('employee/monthly-reports')->group(function () {
+                Route::get('/summary', [EmployeeMonthlyReportController::class, 'summary']); // harus sebelum /{id}
+                Route::get('/',        [EmployeeMonthlyReportController::class, 'index']);
+                Route::post('/',       [EmployeeMonthlyReportController::class, 'store']);
+                Route::get('/{id}',    [EmployeeMonthlyReportController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}',   [EmployeeMonthlyReportController::class, 'update'])->whereNumber('id');
+                Route::patch('/{id}/submit', [EmployeeMonthlyReportController::class, 'submit'])->whereNumber('id');
+                Route::delete('/{id}', [EmployeeMonthlyReportController::class, 'destroy'])->whereNumber('id');
+            });
+
+            // ─── PERFORMANCE SCORES (Read Only — lihat skor sendiri + leaderboard) ───
+            Route::prefix('employee/performance-scores')->group(function () {
+                Route::get('/leaderboard', [EmployeePerformanceScoreController::class, 'leaderboard']); // harus sebelum /{id}
+                Route::get('/',            [EmployeePerformanceScoreController::class, 'index']);
+                Route::get('/{id}',        [EmployeePerformanceScoreController::class, 'show'])->whereNumber('id');
             });
 
             Route::prefix('employee/monthly-reports')->group(function () {

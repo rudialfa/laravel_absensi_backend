@@ -19,4 +19,9 @@ class MonthlyReport extends Model
     {
         return $this->belongsTo(Company::class);
     }
+
+    public function approver()
+    {
+        return $this->belongsTo(User::class, 'approved_by');
+    }
 }
