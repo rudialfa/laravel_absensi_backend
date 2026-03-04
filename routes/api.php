@@ -46,14 +46,103 @@ use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 
 // ROUTE NEWS 2 #################################################################################
+
+// Form reset password via API route (tanpa session/csrf)
+Route::get('/reset-form', function (Request $request) {
+    return view('auth.reset-password', [
+        'token' => $request->token,
+        'email' => $request->email,
+    ]);
+});
+
+Route::post('/reset-form', function (Request $request) {
+    // Validasi manual
+    if (
+        empty($request->token) || empty($request->email) ||
+        empty($request->password) || empty($request->password_confirmation)
+    ) {
+        return view('auth.reset-password', [
+            'token' => $request->token,
+            'email' => $request->email,
+            'error' => 'Semua field wajib diisi'
+        ]);
+    }
+
+    if ($request->password !== $request->password_confirmation) {
+        return view('auth.reset-password', [
+            'token' => $request->token,
+            'email' => $request->email,
+            'error' => 'Konfirmasi password tidak cocok'
+        ]);
+    }
+
+    if (strlen($request->password) < 6) {
+        return view('auth.reset-password', [
+            'token' => $request->token,
+            'email' => $request->email,
+            'error' => 'Password minimal 6 karakter'
+        ]);
+    }
+
+    $record = DB::table('password_reset_tokens')
+        ->where('email', $request->email)
+        ->first();
+
+    if (!$record) {
+        return view('auth.reset-password', [
+            'token' => $request->token,
+            'email' => $request->email,
+            'error' => 'Token tidak ditemukan'
+        ]);
+    }
+
+    if (\Carbon\Carbon::parse($record->created_at)->addMinutes(60)->isPast()) {
+        DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+        return view('auth.reset-password', [
+            'token' => $request->token,
+            'email' => $request->email,
+            'error' => 'Token sudah expired, minta link baru'
+        ]);
+    }
+
+    if (!\Illuminate\Support\Facades\Hash::check($request->token, $record->token)) {
+        return view('auth.reset-password', [
+            'token' => $request->token,
+            'email' => $request->email,
+            'error' => 'Token tidak valid'
+        ]);
+    }
+
+    $user = \App\Models\User::where('email', $request->email)->first();
+    $user->forceFill([
+        'password'       => \Illuminate\Support\Facades\Hash::make($request->password),
+        'remember_token' => \Illuminate\Support\Str::random(60),
+    ])->save();
+
+    $user->tokens()->delete();
+    DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+
+    return view('auth.reset-password-success');
+});
+
+Route::get('/test-view', function () {
+    return '<h1>Hello World</h1>';
+});
+
 
 Route::prefix('auth')->group(function () {
 
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/register-organization', [AuthController::class, 'registerOrganization']);
+
+    // Forgot Password (tidak perlu login)
+    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/logout', [AuthController::class, 'logout']);

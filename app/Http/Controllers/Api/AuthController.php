@@ -3,18 +3,20 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\User;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Http\Request;
 use App\Models\Company;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Password;
 
 
 class AuthController extends Controller
 {
-
 
     public function login(Request $request)
     {
@@ -338,5 +340,104 @@ class AuthController extends Controller
             'message' => 'Profile berhasil diperbarui',
             'data'    => $user,
         ], 200);
+    }
+
+
+    public function forgotPassword(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email|exists:users,email'
+        ]);
+
+        $user  = User::where('email', $request->email)->first();
+        $token = Str::random(64);
+
+        // Simpan token (ter-hash) ke tabel password_reset_tokens
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $request->email],
+            [
+                'email'      => $request->email,
+                'token'      => Hash::make($token),
+                'created_at' => now()
+            ]
+        );
+
+        // Link mengarah ke form web buatan kita sendiri
+        // $resetUrl = url('/reset-password-form?token=' . $token . '&email=' . urlencode($request->email));
+
+        $resetUrl = config('app.url') . '/api/reset-form?token=' . $token . '&email=' . urlencode($request->email);
+
+        Mail::send('emails.reset_password', [
+            'resetUrl' => $resetUrl,
+            'user'     => $user
+        ], function ($message) use ($user) {
+            $message->to($user->email)
+                ->subject('Reset Password - Absensi App');
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Link reset password telah dikirim ke email kamu'
+        ]);
+    }
+
+    // -------------------------------------------
+    // RESET PASSWORD — verifikasi token manual
+    // -------------------------------------------
+    public function resetPassword(Request $request)
+    {
+        $request->validate([
+            'token'                 => 'required',
+            'email'                 => 'required|email',
+            'password'              => 'required|min:6|confirmed',
+            'password_confirmation' => 'required'
+        ]);
+
+        $record = DB::table('password_reset_tokens')
+            ->where('email', $request->email)
+            ->first();
+
+        // Token tidak ditemukan
+        if (!$record) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Token tidak ditemukan'
+            ], 422);
+        }
+
+        // Token expired (60 menit)
+        if (Carbon::parse($record->created_at)->addMinutes(60)->isPast()) {
+            DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+            return response()->json([
+                'status'  => false,
+                'message' => 'Token sudah expired, silakan minta link baru'
+            ], 422);
+        }
+
+        // Token tidak cocok
+        if (!Hash::check($request->token, $record->token)) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Token tidak valid'
+            ], 422);
+        }
+
+        // Update password
+        $user = User::where('email', $request->email)->first();
+        $user->forceFill([
+            'password'       => Hash::make($request->password),
+            'remember_token' => Str::random(60),
+        ])->save();
+
+        // Hapus semua token sanctum lama
+        $user->tokens()->delete();
+
+        // Hapus record reset token
+        DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Password berhasil direset, silakan login'
+        ]);
     }
 }
