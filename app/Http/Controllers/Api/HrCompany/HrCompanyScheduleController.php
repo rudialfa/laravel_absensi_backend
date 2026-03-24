@@ -289,4 +289,53 @@ class HrCompanyScheduleController extends Controller
             'data'    => $participants,
         ]);
     }
+
+    public function export(Request $request)
+    {
+        $companyId = $request->user()->company_id;
+
+        $query = Schedule::with(['user:id,name,position,department', 'participants'])
+            ->where('company_id', $companyId)
+            ->orderBy('start_datetime', 'asc');
+
+        if ($request->filled('status'))     $query->where('status', $request->status);
+        if ($request->filled('type'))       $query->where('type',   $request->type);
+        if ($request->filled('user_id'))    $query->where('user_id', $request->user_id);
+        if ($request->filled('start_date') && $request->filled('end_date')) {
+            $query->whereBetween('start_datetime', [$request->start_date, $request->end_date]);
+        } elseif ($request->filled('start_date')) {
+            $query->whereDate('start_datetime', '>=', $request->start_date);
+        }
+
+        $schedules = $query->get();
+
+        $stats = [
+            'total'    => $schedules->count(),
+            'upcoming' => $schedules->where('status', 'upcoming')->count(),
+            'done'     => $schedules->where('status', 'done')->count(),
+            'canceled' => $schedules->where('status', 'canceled')->count(),
+        ];
+
+        $typeLabels = [
+            'meeting'   => 'Meeting',
+            'task_duty' => 'Tugas',
+            'visit'     => 'Kunjungan',
+            'training'  => 'Training',
+            'other'     => 'Lainnya',
+        ];
+
+        $fileName = 'schedules-' . now()->format('Y-m-d') . '.pdf';
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.hr_schedule', [
+            'company'     => $request->user()->company ?? (object)['name' => ''],
+            'schedules'   => $schedules,
+            'stats'       => $stats,
+            'typeLabels'  => $typeLabels,
+            'generatedAt' => now()->format('d/m/Y H:i'),
+        ])
+            ->setPaper('a4', 'landscape')
+            ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
+
+        return $pdf->download($fileName);
+    }
 }

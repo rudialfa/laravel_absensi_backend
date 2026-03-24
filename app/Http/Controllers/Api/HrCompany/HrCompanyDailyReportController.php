@@ -4,88 +4,64 @@ namespace App\Http\Controllers\Api\HrCompany;
 
 use App\Http\Controllers\Controller;
 use App\Models\DailyReport;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
+use App\Models\User;
 
 class HrCompanyDailyReportController extends Controller
 {
-    // ─── GET /hr/daily-reports ────────────────────────────────────────────────
-    // Lihat semua daily report semua karyawan
+
+    // kode 2
+    // ─── GET /hr/daily-reports (tidak berubah) ────────────────────────────────
     public function index(Request $request)
     {
         $query = DailyReport::with('user:id,name,position,department,image_url')
             ->where('company_id', Auth::user()->company_id);
 
-        // Filter per karyawan
-        if ($request->filled('user_id')) {
-            $query->where('user_id', $request->user_id);
-        }
-
-        // Filter per tanggal spesifik
-        if ($request->filled('date')) {
-            $query->where('date', $request->date);
-        }
-
-        // Filter range (mingguan / custom)
+        if ($request->filled('user_id'))    $query->where('user_id', $request->user_id);
+        if ($request->filled('date'))       $query->where('date', $request->date);
         if ($request->filled('start') && $request->filled('end')) {
             $query->whereBetween('date', [$request->start, $request->end]);
         }
-
-        // Filter bulanan
         if ($request->filled('month') && $request->filled('year')) {
-            $query->whereMonth('date', $request->month)
-                ->whereYear('date', $request->year);
+            $query->whereMonth('date', $request->month)->whereYear('date', $request->year);
         }
-
-        // Filter yang tidak tercapai saja
         if ($request->filled('is_achieved')) {
             $query->where('is_achieved', filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN));
         }
-
-        // Filter per departemen
         if ($request->filled('department')) {
             $query->whereHas('user', fn($q) => $q->where('department', $request->department));
         }
-
-        // Filter yang belum submit sore (belum ada achievement)
         if ($request->filled('pending_evening') && $request->pending_evening) {
             $query->whereNull('achievement');
         }
 
-        $reports = $query->orderByDesc('date')
-            ->paginate($request->get('per_page', 15));
-
         return response()->json([
             'status'  => true,
             'message' => 'Berhasil mengambil data daily report',
-            'data'    => $reports,
+            'data'    => $query->orderByDesc('date')->paginate($request->get('per_page', 15)),
         ]);
     }
 
-    // ─── GET /hr/daily-reports/{id} ───────────────────────────────────────────
-    // Detail satu daily report
+    // ─── GET /hr/daily-reports/{id} (tidak berubah) ───────────────────────────
     public function show($id)
     {
         $report = DailyReport::with('user:id,name,position,department,image_url')
             ->where('company_id', Auth::user()->company_id)
             ->findOrFail($id);
 
-        return response()->json([
-            'status' => true,
-            'data'   => $report,
-        ]);
+        return response()->json(['status' => true, 'data' => $report]);
     }
 
-    // ─── GET /hr/daily-reports/summary ───────────────────────────────────────
-    // Rekap pencapaian semua karyawan per bulan
+    // ─── GET /hr/daily-reports/summary (tidak berubah) ────────────────────────
     public function summary(Request $request)
     {
         $validator = Validator::make($request->all(), [
             'month' => 'required|integer|between:1,12',
             'year'  => 'required|integer',
         ]);
-
         if ($validator->fails()) {
             return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
         }
@@ -108,18 +84,13 @@ class HrCompanyDailyReportController extends Controller
             ->with('user:id,name,department,position,image_url')
             ->get();
 
-        return response()->json([
-            'status' => true,
-            'data'   => $summary,
-        ]);
+        return response()->json(['status' => true, 'data' => $summary]);
     }
 
-    // ─── GET /hr/daily-reports/today ─────────────────────────────────────────
-    // Snapshot hari ini: siapa yang sudah/belum submit pagi & sore
-    public function today(Request $request)
+    // ─── GET /hr/daily-reports/today (tidak berubah) ─────────────────────────
+    public function today()
     {
-        $today = now()->toDateString();
-
+        $today     = now()->toDateString();
         $submitted = DailyReport::with('user:id,name,department,position,image_url')
             ->where('company_id', Auth::user()->company_id)
             ->where('date', $today)
@@ -135,5 +106,149 @@ class HrCompanyDailyReportController extends Controller
             ],
             'data' => $submitted,
         ]);
+    }
+
+    // ─── GET /hr/daily-reports/employees (BARU) ───────────────────────────────
+    // List semua employee + status laporan hari ini
+    // Berguna untuk HR lihat siapa yang belum submit
+    public function employees(): JsonResponse
+    {
+        $companyId = Auth::user()->company_id;
+        $today     = now()->toDateString();
+
+        $employees = User::where('company_id', $companyId)
+            ->where('role', 'employee')
+            ->select(['id', 'name', 'position', 'department', 'image_url'])
+            ->with(['dailyReports' => function ($q) use ($today) {
+                $q->where('date', $today)->latest('id');
+            }])
+            ->orderBy('name')
+            ->get()
+            ->map(function ($user) {
+                $report = $user->dailyReports->first();
+                return [
+                    'id'                => (int) $user->id,
+                    'name'              => $user->name,
+                    'position'          => $user->position,
+                    'department'        => $user->department,
+                    'image_url'         => $user->image_url,
+                    'today_report'      => $report,
+                    'submitted_morning' => $report !== null,
+                    'submitted_evening' => $report?->achievement !== null,
+                    'is_achieved'       => (bool) ($report?->is_achieved ?? false),
+                ];
+            });
+
+        $total     = $employees->count();
+        $submitted = $employees->where('submitted_morning', true)->count();
+        $completed = $employees->where('submitted_evening', true)->count();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Status laporan karyawan hari ini',
+            'date'    => $today,
+            'summary' => [
+                'total'         => $total,
+                'submitted'     => $submitted,
+                'completed'     => $completed,
+                'not_submitted' => $total - $submitted,
+            ],
+            'data' => $employees->values(),
+        ]);
+    }
+
+    // ─── GET /hr/daily-reports/export (BARU) ─────────────────────────────────
+    // Export PDF laporan harian bulanan seluruh karyawan
+    //
+    // Query params:
+    //   month (required)
+    //   year  (required)
+    //   user_id (opsional — filter 1 karyawan saja)
+    //
+    // Cara install PDF library:
+    //   composer require barryvdh/laravel-dompdf
+    //   php artisan vendor:publish --provider="Barryvdh\DomPDF\ServiceProvider"
+    // ─────────────────────────────────────────────────────────────────────────
+    public function export(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'month' => 'required|integer|between:1,12',
+            'year'  => 'required|integer|min:2020|max:2099',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
+        }
+
+        $companyId = Auth::user()->company_id;
+        $month     = (int) $request->month;
+        $year      = (int) $request->year;
+
+        $bulanLabel = [
+            1 => 'Januari',
+            2 => 'Februari',
+            3 => 'Maret',
+            4 => 'April',
+            5 => 'Mei',
+            6 => 'Juni',
+            7 => 'Juli',
+            8 => 'Agustus',
+            9 => 'September',
+            10 => 'Oktober',
+            11 => 'November',
+            12 => 'Desember',
+        ];
+
+        $query = DailyReport::where('company_id', $companyId)
+            ->whereMonth('date', $month)
+            ->whereYear('date', $year)
+            ->with('user:id,name,position,department')
+            ->orderBy('date')
+            ->orderBy('user_id');
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', (int) $request->user_id);
+        }
+
+        $reports = $query->get();
+
+        // Summary per karyawan
+        $summaryPerUser = $reports->groupBy('user_id')->map(function ($items) {
+            $total    = $items->count();
+            $achieved = $items->where('is_achieved', true)->count();
+            $notAchieved = $items->where('is_achieved', false)
+                ->whereNotNull('achievement')->count();
+            $pending  = $items->whereNull('achievement')->count();
+            $rate     = $total > 0
+                ? round(($achieved / max($total - $pending, 1)) * 100, 1)
+                : 0;
+
+            return [
+                'user'             => $items->first()->user,
+                'total_days'       => $total,
+                'total_achieved'   => $achieved,
+                'total_not_achieved' => $notAchieved,
+                'total_pending'    => $pending,
+                'achievement_rate' => $rate,
+                'reports'          => $items,
+            ];
+        })->values();
+
+        $company   = Auth::user()->company;
+        $periodLabel = ($bulanLabel[$month] ?? $month) . ' ' . $year;
+        $fileName  = 'daily-report-' . strtolower(str_replace(' ', '-', $periodLabel)) . '.pdf';
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.hr_daily_report', [
+            'company'      => $company,
+            'periodLabel'  => $periodLabel,
+            'month'        => $month,
+            'year'         => $year,
+            'summaryPerUser' => $summaryPerUser,
+            'totalReports' => $reports->count(),
+            'generatedAt'  => now()->format('d/m/Y H:i'),
+        ])
+            ->setPaper('a4', 'portrait')
+            ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
+
+        return $pdf->download($fileName);
     }
 }

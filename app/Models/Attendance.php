@@ -10,20 +10,55 @@ class Attendance extends Model
     use HasFactory;
     protected $guarded = [];
 
+    protected $casts = [
+        'date'                => 'date',
+        'approved_overtime'   => 'boolean',
+        'face_verified'       => 'boolean',
+        'late_minutes'        => 'integer',
+        'early_leave_minutes' => 'integer',
+        'overtime_minutes'    => 'integer',
+    ];
+
+    // ----------------------------------------------------------
+    // RELATIONS
+    // ----------------------------------------------------------
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
     public function user()
     {
         return $this->belongsTo(User::class);
     }
 
-
-    public function marker()
+    public function shift()
     {
-        return $this->belongsTo(\App\Models\User::class, 'marked_by');
+        return $this->belongsTo(Shift::class);
     }
 
+    public function markedBy()
+    {
+        return $this->belongsTo(User::class, 'marked_by');
+    }
 
-    protected $casts = [
-        'approved_overtime' => 'boolean',
-        'date' => 'date',
-    ];
+    // ----------------------------------------------------------
+    // SCOPES
+    // ----------------------------------------------------------
+
+    public function scopeForCompany($query, int $companyId)
+    {
+        return $query->where('company_id', $companyId);
+    }
+
+    public function scopeToday($query)
+    {
+        return $query->whereDate('date', now()->toDateString());
+    }
+
+    public function scopeForDate($query, string $date)
+    {
+        return $query->whereDate('date', $date);
+    }
 }

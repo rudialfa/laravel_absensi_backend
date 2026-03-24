@@ -516,4 +516,46 @@ class HrCompanyLoanController extends Controller
             ],
         ]);
     }
+
+    // export
+    public function export(Request $request)
+    {
+        $companyId = Auth::user()->company_id;
+
+        $query = Loan::where('company_id', $companyId)
+            ->with(['user:id,name,position,department', 'approvedBy:id,name'])
+            ->orderByDesc('created_at');
+
+        if ($request->filled('status'))  $query->where('status', $request->status);
+        if ($request->filled('user_id')) $query->where('user_id', $request->user_id);
+
+        $loans = $query->get();
+
+        // Summary stats
+        $stats = [
+            'total'          => $loans->count(),
+            'pending'        => $loans->where('status', 'pending')->count(),
+            'active'         => $loans->where('status', 'active')->count(),
+            'paid'           => $loans->where('status', 'paid')->count(),
+            'rejected'       => $loans->where('status', 'rejected')->count(),
+            'canceled'       => $loans->where('status', 'canceled')->count(),
+            'total_balance'  => $loans->where('status', 'active')->sum('balance'),
+            'total_disbursed' => $loans->whereIn('status', ['active', 'paid'])->sum('amount'),
+        ];
+
+        $statusLabel = $request->filled('status') ? ' - ' . ucfirst($request->status) : '';
+        $fileName    = 'loans-' . now()->format('Y-m-d') . '.pdf';
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.hr_loan', [
+            'company'     => Auth::user()->company ?? (object)['name' => ''],
+            'loans'       => $loans,
+            'stats'       => $stats,
+            'statusLabel' => $statusLabel,
+            'generatedAt' => now()->format('d/m/Y H:i'),
+        ])
+            ->setPaper('a4', 'landscape')
+            ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
+
+        return $pdf->download($fileName);
+    }
 }
