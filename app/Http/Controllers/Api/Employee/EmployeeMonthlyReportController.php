@@ -11,18 +11,15 @@ use Illuminate\Support\Facades\Validator;
 
 class EmployeeMonthlyReportController extends Controller
 {
-    // // ─── HELPER: Upload attachment ────────────────────────────────────────────
+
     // private function uploadAttachment($file): string
     // {
     //     $destinationPath = public_path('image/monthly-reports');
-
     //     if (!File::exists($destinationPath)) {
     //         File::makeDirectory($destinationPath, 0755, true);
     //     }
-
     //     $fileName = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
     //     $file->move($destinationPath, $fileName);
-
     //     return 'image/monthly-reports/' . $fileName;
     // }
 
@@ -33,26 +30,16 @@ class EmployeeMonthlyReportController extends Controller
     //     }
     // }
 
-    // // ─── GET /employee/monthly-reports ────────────────────────────────────────
-    // // Lihat semua laporan bulanan milik sendiri
+    // // GET /employee/monthly-reports
     // public function index(Request $request)
     // {
     //     $query = MonthlyReport::with('approver:id,name')
     //         ->where('company_id', Auth::user()->company_id)
     //         ->where('user_id', Auth::id());
 
-    //     if ($request->filled('month')) {
-    //         $query->where('month', $request->month);
-    //     }
-
-    //     if ($request->filled('year')) {
-    //         $query->where('year', $request->year);
-    //     }
-
-    //     // Filter status: draft | submitted | approved | rejected
-    //     if ($request->filled('status')) {
-    //         $query->where('status', $request->status);
-    //     }
+    //     if ($request->filled('month'))  $query->where('month', $request->month);
+    //     if ($request->filled('year'))   $query->where('year', $request->year);
+    //     if ($request->filled('status')) $query->where('status', $request->status);
 
     //     $reports = $query->orderByDesc('year')
     //         ->orderByDesc('month')
@@ -65,8 +52,7 @@ class EmployeeMonthlyReportController extends Controller
     //     ]);
     // }
 
-    // // ─── GET /employee/monthly-reports/summary ────────────────────────────────
-    // // Ringkasan laporan (berapa approved, rejected, draft, avg score)
+    // // GET /employee/monthly-reports/summary
     // public function summary(Request $request)
     // {
     //     $reports = MonthlyReport::where('company_id', Auth::user()->company_id)
@@ -74,22 +60,20 @@ class EmployeeMonthlyReportController extends Controller
     //         ->when($request->filled('year'), fn($q) => $q->where('year', $request->year))
     //         ->get();
 
-    //     $stats = [
-    //         'total'     => $reports->count(),
-    //         'approved'  => $reports->where('status', 'approved')->count(),
-    //         'rejected'  => $reports->where('status', 'rejected')->count(),
-    //         'submitted' => $reports->where('status', 'submitted')->count(),
-    //         'draft'     => $reports->where('status', 'draft')->count(),
-    //         'avg_score' => round($reports->where('status', 'approved')->avg('score') ?? 0, 2),
-    //     ];
-
     //     return response()->json([
     //         'status' => true,
-    //         'data'   => $stats,
+    //         'data'   => [
+    //             'total'     => $reports->count(),
+    //             'approved'  => $reports->where('status', 'approved')->count(),
+    //             'rejected'  => $reports->where('status', 'rejected')->count(),
+    //             'submitted' => $reports->where('status', 'submitted')->count(),
+    //             'draft'     => $reports->where('status', 'draft')->count(),
+    //             'avg_score' => round($reports->where('status', 'approved')->avg('score') ?? 0, 2),
+    //         ],
     //     ]);
     // }
 
-    // // ─── GET /employee/monthly-reports/{id} ───────────────────────────────────
+    // // GET /employee/monthly-reports/{id}
     // public function show($id)
     // {
     //     $report = MonthlyReport::with('approver:id,name')
@@ -97,28 +81,27 @@ class EmployeeMonthlyReportController extends Controller
     //         ->where('user_id', Auth::id())
     //         ->findOrFail($id);
 
-    //     return response()->json([
-    //         'status' => true,
-    //         'data'   => $report,
-    //     ]);
+    //     return response()->json(['status' => true, 'data' => $report]);
     // }
 
-    // // ─── POST /employee/monthly-reports ───────────────────────────────────────
-    // // Buat laporan baru (sebagai draft)
+    // // POST /employee/monthly-reports — Buat draft baru
     // public function store(Request $request)
     // {
     //     $validator = Validator::make($request->all(), [
-    //         'month'      => 'required|integer|between:1,12',
-    //         'year'       => 'required|integer',
-    //         'content'    => 'required|string',
-    //         'attachment' => 'nullable|image|mimes:jpg,jpeg,png,pdf|max:5120',
+    //         'month'       => 'required|integer|between:1,12',
+    //         'year'        => 'required|integer',
+    //         'target'      => 'required|string',
+    //         'achievement' => 'required|string',
+    //         'problem'     => 'required|string',
+    //         'solution'    => 'required|string',
+    //         'attachment'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
     //     ]);
 
     //     if ($validator->fails()) {
     //         return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
     //     }
 
-    //     // Cek sudah ada laporan bulan ini belum
+    //     // Cek duplikat bulan
     //     $exists = MonthlyReport::where('company_id', Auth::user()->company_id)
     //         ->where('user_id', Auth::id())
     //         ->where('month', $request->month)
@@ -133,12 +116,15 @@ class EmployeeMonthlyReportController extends Controller
     //     }
 
     //     $data = [
-    //         'company_id' => Auth::user()->company_id,
-    //         'user_id'    => Auth::id(),
-    //         'month'      => $request->month,
-    //         'year'       => $request->year,
-    //         'content'    => $request->content,
-    //         'status'     => 'draft',
+    //         'company_id'  => Auth::user()->company_id,
+    //         'user_id'     => Auth::id(),
+    //         'month'       => $request->month,
+    //         'year'        => $request->year,
+    //         'target'      => $request->target,
+    //         'achievement' => $request->achievement,
+    //         'problem'     => $request->problem,
+    //         'solution'    => $request->solution,
+    //         'status'      => 'draft',
     //     ];
 
     //     if ($request->hasFile('attachment')) {
@@ -154,16 +140,13 @@ class EmployeeMonthlyReportController extends Controller
     //     ], 201);
     // }
 
-    // // ─── POST /employee/monthly-reports/{id} ──────────────────────────────────
-    // // Edit laporan — hanya bisa jika masih draft atau rejected
-    // // Pakai POST bukan PUT karena ada kemungkinan file upload
+    // // POST /employee/monthly-reports/{id} — Edit (hanya draft/rejected)
     // public function update(Request $request, $id)
     // {
     //     $report = MonthlyReport::where('company_id', Auth::user()->company_id)
     //         ->where('user_id', Auth::id())
     //         ->findOrFail($id);
 
-    //     // Hanya bisa edit jika draft atau rejected
     //     if (!in_array($report->status, ['draft', 'rejected'])) {
     //         return response()->json([
     //             'status'  => false,
@@ -172,26 +155,30 @@ class EmployeeMonthlyReportController extends Controller
     //     }
 
     //     $validator = Validator::make($request->all(), [
-    //         'content'    => 'sometimes|string',
-    //         'attachment' => 'nullable|image|mimes:jpg,jpeg,png,pdf|max:5120',
+    //         'target'      => 'sometimes|string',
+    //         'achievement' => 'sometimes|string',
+    //         'problem'     => 'sometimes|string',
+    //         'solution'    => 'sometimes|string',
+    //         'attachment'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
     //     ]);
 
     //     if ($validator->fails()) {
     //         return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
     //     }
 
-    //     $data = [];
-
-    //     if ($request->filled('content')) {
-    //         $data['content'] = $request->content;
-    //     }
+    //     $data = array_filter([
+    //         'target'      => $request->target,
+    //         'achievement' => $request->achievement,
+    //         'problem'     => $request->problem,
+    //         'solution'    => $request->solution,
+    //     ]);
 
     //     if ($request->hasFile('attachment')) {
     //         $this->deleteAttachment($report->attachment);
     //         $data['attachment'] = $this->uploadAttachment($request->file('attachment'));
     //     }
 
-    //     // Jika rejected dan diedit, kembalikan ke draft
+    //     // Jika rejected → kembali ke draft saat diedit
     //     if ($report->status === 'rejected') {
     //         $data['status']      = 'draft';
     //         $data['approved_by'] = null;
@@ -208,8 +195,7 @@ class EmployeeMonthlyReportController extends Controller
     //     ]);
     // }
 
-    // // ─── PATCH /employee/monthly-reports/{id}/submit ──────────────────────────
-    // // Submit laporan ke HR (dari draft → submitted)
+    // // PATCH /employee/monthly-reports/{id}/submit
     // public function submit($id)
     // {
     //     $report = MonthlyReport::where('company_id', Auth::user()->company_id)
@@ -232,8 +218,7 @@ class EmployeeMonthlyReportController extends Controller
     //     ]);
     // }
 
-    // // ─── DELETE /employee/monthly-reports/{id} ────────────────────────────────
-    // // Hapus laporan — hanya bisa jika masih draft
+    // // DELETE /employee/monthly-reports/{id}
     // public function destroy($id)
     // {
     //     $report = MonthlyReport::where('company_id', Auth::user()->company_id)
@@ -250,12 +235,11 @@ class EmployeeMonthlyReportController extends Controller
     //     $this->deleteAttachment($report->attachment);
     //     $report->delete();
 
-    //     return response()->json([
-    //         'status'  => true,
-    //         'message' => 'Laporan berhasil dihapus',
-    //     ]);
+    //     return response()->json(['status' => true, 'message' => 'Laporan berhasil dihapus']);
     // }
 
+
+    // KODE 2
     private function uploadAttachment($file): string
     {
         $destinationPath = public_path('image/monthly-reports');
@@ -328,7 +312,7 @@ class EmployeeMonthlyReportController extends Controller
         return response()->json(['status' => true, 'data' => $report]);
     }
 
-    // POST /employee/monthly-reports — Buat draft baru
+    // POST /employee/monthly-reports
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -345,7 +329,6 @@ class EmployeeMonthlyReportController extends Controller
             return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
         }
 
-        // Cek duplikat bulan
         $exists = MonthlyReport::where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
             ->where('month', $request->month)
@@ -384,7 +367,7 @@ class EmployeeMonthlyReportController extends Controller
         ], 201);
     }
 
-    // POST /employee/monthly-reports/{id} — Edit (hanya draft/rejected)
+    // POST /employee/monthly-reports/{id}
     public function update(Request $request, $id)
     {
         $report = MonthlyReport::where('company_id', Auth::user()->company_id)
@@ -422,7 +405,6 @@ class EmployeeMonthlyReportController extends Controller
             $data['attachment'] = $this->uploadAttachment($request->file('attachment'));
         }
 
-        // Jika rejected → kembali ke draft saat diedit
         if ($report->status === 'rejected') {
             $data['status']      = 'draft';
             $data['approved_by'] = null;
@@ -480,5 +462,70 @@ class EmployeeMonthlyReportController extends Controller
         $report->delete();
 
         return response()->json(['status' => true, 'message' => 'Laporan berhasil dihapus']);
+    }
+
+    // ─── EXPORT PDF ────────────────────────────────────────────────────────────
+    // GET /api/company/employee/monthly-reports/export
+    // Query: year, month, status (semua opsional)
+    // composer require barryvdh/laravel-dompdf
+    // ───────────────────────────────────────────────────────────────────────────
+    public function export(Request $request)
+    {
+        $query = MonthlyReport::with('approver:id,name')
+            ->where('company_id', Auth::user()->company_id)
+            ->where('user_id', Auth::id())
+            ->orderByDesc('year')
+            ->orderByDesc('month');
+
+        if ($request->filled('year'))   $query->where('year',   $request->year);
+        if ($request->filled('month'))  $query->where('month',  $request->month);
+        if ($request->filled('status')) $query->where('status', $request->status);
+
+        $reports = $query->get();
+
+        $stats = [
+            'total'     => $reports->count(),
+            'approved'  => $reports->where('status', 'approved')->count(),
+            'submitted' => $reports->where('status', 'submitted')->count(),
+            'rejected'  => $reports->where('status', 'rejected')->count(),
+            'draft'     => $reports->where('status', 'draft')->count(),
+            'avg_score' => round($reports->where('status', 'approved')->avg('score') ?? 0, 2),
+        ];
+
+        $bulanLabel = [
+            1 => 'Januari',
+            2 => 'Februari',
+            3 => 'Maret',
+            4 => 'April',
+            5 => 'Mei',
+            6 => 'Juni',
+            7 => 'Juli',
+            8 => 'Agustus',
+            9 => 'September',
+            10 => 'Oktober',
+            11 => 'November',
+            12 => 'Desember',
+        ];
+
+        $year        = $request->year  ?? now()->year;
+        $month       = $request->month ?? null;
+        $periodLabel = $month
+            ? ($bulanLabel[$month] ?? $month) . ' ' . $year
+            : 'Tahun ' . $year;
+
+        $fileName = 'monthly-report-' . now()->format('Y-m-d') . '.pdf';
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.employee_monthly_report', [
+            'user'        => Auth::user(),
+            'reports'     => $reports,
+            'stats'       => $stats,
+            'bulanLabel'  => $bulanLabel,
+            'periodLabel' => $periodLabel,
+            'generatedAt' => now()->format('d/m/Y H:i'),
+        ])
+            ->setPaper('a4', 'portrait')
+            ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
+
+        return $pdf->download($fileName);
     }
 }

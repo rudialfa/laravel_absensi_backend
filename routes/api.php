@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\ChatMessage\ChatController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
 use App\Http\Controllers\Api\Employee\EmployeeDailyReportController;
 use App\Http\Controllers\Api\Employee\EmployeeLeaveController;
@@ -159,6 +160,23 @@ Route::prefix('auth')->group(function () {
     });
 });
 
+// =======================
+// 💬 CHAT (Universal - semua context)
+// =======================
+Route::prefix('chat')
+    ->middleware('auth:sanctum')
+    ->group(function () {
+        Route::get('/users',                        [ChatController::class, 'listUsers']);
+        Route::get('/conversations',                [ChatController::class, 'conversations']);
+        Route::post('/conversations',               [ChatController::class, 'openConversation']);
+        Route::get('/conversations/{id}/messages',  [ChatController::class, 'messages'])->whereNumber('id');
+        Route::post('/conversations/{id}/messages', [ChatController::class, 'sendMessage'])->whereNumber('id');
+        Route::post('/conversations/{id}/read',     [ChatController::class, 'markAsRead'])->whereNumber('id');
+        Route::put('/messages/{id}',                [ChatController::class, 'editMessage'])->whereNumber('id');
+        Route::delete('/messages/{id}',             [ChatController::class, 'deleteMessage'])->whereNumber('id');
+    });
+
+
 
 Route::prefix('company')
     ->middleware(['auth:sanctum', 'context:company'])
@@ -204,6 +222,7 @@ Route::prefix('company')
             Route::prefix('employee/daily-reports')->group(function () {
                 Route::get('/today',  [EmployeeDailyReportController::class, 'today']);   // harus sebelum /{id}
                 Route::get('/summary', [EmployeeDailyReportController::class, 'summary']); // harus sebelum /{id}
+                Route::get('/export',  [EmployeeDailyReportController::class, 'export']);
                 Route::get('/',       [EmployeeDailyReportController::class, 'index']);
                 Route::post('/',      [EmployeeDailyReportController::class, 'store']);    // submit target pagi
                 Route::get('/{id}',   [EmployeeDailyReportController::class, 'show'])->whereNumber('id');
@@ -213,6 +232,7 @@ Route::prefix('company')
             // ─── MONTHLY REPORTS (CRUD — buat draft, edit, submit) ───────────────────
             Route::prefix('employee/monthly-reports')->group(function () {
                 Route::get('/summary', [EmployeeMonthlyReportController::class, 'summary']); // harus sebelum /{id}
+                Route::get('/export',  [EmployeeMonthlyReportController::class, 'export']);
                 Route::get('/',        [EmployeeMonthlyReportController::class, 'index']);
                 Route::post('/',       [EmployeeMonthlyReportController::class, 'store']);
                 Route::get('/{id}',    [EmployeeMonthlyReportController::class, 'show'])->whereNumber('id');
