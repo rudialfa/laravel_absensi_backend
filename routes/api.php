@@ -603,108 +603,408 @@ Route::prefix('company')
     });
 
 
+// Route::prefix('pesantren')
+//     ->middleware(['auth:sanctum', 'context:pesantren'])
+//     ->group(function () {
+
+//         // =========================
+//         // 🧑‍🏫 USTADZ
+//         // =========================
+//         Route::middleware('context:pesantren,ustadz')->group(function () {
+
+//             Route::get('/dashboard', [PesantrenDashboardController::class, 'ustadz']);
+
+//             Route::prefix('attendances')->group(function () {
+
+//                 Route::post('/check-in', [PesantrenUstadzAttendanceController::class, 'checkIn']);
+//                 Route::post('/check-out', [PesantrenUstadzAttendanceController::class, 'checkOut']);
+//                 Route::get('/is-checkin', [PesantrenUstadzAttendanceController::class, 'isCheckedIn']);
+
+//                 Route::get('/santri', [PesantrenUstadzAttendanceController::class, 'santriToday']);
+//                 Route::post('/santri/mark', [PesantrenUstadzAttendanceController::class, 'markSantriAttendance']);
+//                 Route::get('/santri/{id}/history', [PesantrenUstadzAttendanceController::class, 'santriHistory'])->whereNumber('id');
+//             });
+
+//             // ✅ FIX utama konflik: {id} hanya angka
+//             Route::prefix('santri')->group(function () {
+
+//                 Route::get('/', [PesantrenSantriController::class, 'index']);
+//                 Route::post('/', [PesantrenSantriController::class, 'store']);
+
+//                 Route::get('/{id}', [PesantrenSantriController::class, 'show'])->whereNumber('id');
+//                 Route::put('/{id}', [PesantrenSantriController::class, 'update'])->whereNumber('id');
+//                 Route::delete('/{id}', [PesantrenSantriController::class, 'destroy'])->whereNumber('id');
+
+//                 Route::get('/{id}/attendance', [PesantrenSantriController::class, 'attendance'])->whereNumber('id');
+//                 Route::get('/{id}/permissions', [PesantrenSantriController::class, 'permissions'])->whereNumber('id');
+//             });
+
+//             Route::prefix('schedules')->group(function () {
+//                 Route::get('/', [PesantrenSchedulesController::class, 'index']);
+//                 Route::get('/today', [PesantrenSchedulesController::class, 'today']);
+//                 Route::post('/', [PesantrenSchedulesController::class, 'store']);
+
+//                 Route::get('/{id}', [PesantrenSchedulesController::class, 'show'])->whereNumber('id');
+//                 Route::put('/{id}', [PesantrenSchedulesController::class, 'update'])->whereNumber('id');
+//                 Route::delete('/{id}', [PesantrenSchedulesController::class, 'destroy'])->whereNumber('id');
+
+//                 Route::post('/{id}/status', [PesantrenSchedulesController::class, 'updateStatus'])->whereNumber('id');
+//             });
+
+//             Route::prefix('prayers')->group(function () {
+//                 Route::get('/today', [PesantrenPrayerController::class, 'today']);
+//                 Route::get('/{date}', [PesantrenPrayerController::class, 'byDate'])
+//                     ->where('date', '^\d{4}-\d{2}-\d{2}$');
+//             });
+
+//             Route::prefix('permissions/santri')->group(function () {
+//                 Route::get('/', [PesantrenUstadzSantriPermissionController::class, 'index']);
+//                 Route::get('/{id}', [PesantrenUstadzSantriPermissionController::class, 'show'])->whereNumber('id');
+//                 Route::post('/{id}/approve', [PesantrenUstadzSantriPermissionController::class, 'approve'])->whereNumber('id');
+//                 Route::post('/{id}/reject', [PesantrenUstadzSantriPermissionController::class, 'reject'])->whereNumber('id');
+//             });
+//         });
+
+//         // =========================
+//         // 👦 SANTRI
+//         // =========================
+//         Route::middleware('context:pesantren,santri')->group(function () {
+
+//             Route::prefix('santri/attendances')->group(function () {
+//                 Route::post('/check-in', [SantriAttendanceController::class, 'checkIn']);
+//                 Route::post('/check-out', [SantriAttendanceController::class, 'checkOut']);
+//                 Route::get('/is-checkin', [SantriAttendanceController::class, 'isCheckedIn']);
+//                 Route::get('/history', [SantriAttendanceController::class, 'history']);
+//                 Route::post('/register-face', [SantriAttendanceController::class, 'registerFace']);
+//             });
+
+//             Route::prefix('santri/permissions')->group(function () {
+//                 Route::get('/', [SantriPermissionController::class, 'index']);
+//                 Route::post('/', [SantriPermissionController::class, 'store']);
+//                 Route::get('/{id}', [SantriPermissionController::class, 'show'])->whereNumber('id');
+//                 Route::post('/{id}/cancel', [SantriPermissionController::class, 'cancel'])->whereNumber('id');
+//             });
+
+//             Route::prefix('santri/notes')->group(function () {
+//                 Route::get('/', [SantriNotesController::class, 'index']);
+//                 Route::post('/', [SantriNotesController::class, 'store']);
+//                 Route::get('/{id}', [SantriNotesController::class, 'show'])->whereNumber('id');
+//                 Route::put('/{id}', [SantriNotesController::class, 'update'])->whereNumber('id');
+//                 Route::delete('/{id}', [SantriNotesController::class, 'destroy'])->whereNumber('id');
+//             });
+
+//             Route::prefix('santri/schedules')->group(function () {
+//                 Route::get('/', [SantriSchedulesController::class, 'index']);
+//                 Route::get('/today', [SantriSchedulesController::class, 'today']);
+//                 Route::get('/{id}', [SantriSchedulesController::class, 'show'])->whereNumber('id');
+//             });
+
+//             Route::prefix('prayers')->group(function () {
+//                 Route::get('/today', [SantriPrayerController::class, 'today']);
+//                 Route::get('/{date}', [SantriPrayerController::class, 'byDate'])
+//                     ->where('date', '^\d{4}-\d{2}-\d{2}$');
+//             });
+//         });
+//     });
+
+// kode 2
+
 Route::prefix('pesantren')
     ->middleware(['auth:sanctum', 'context:pesantren'])
     ->group(function () {
 
-        // =========================
-        // 🧑‍🏫 USTADZ
-        // =========================
+        // =====================================================
+        // 🧑‍🏫 USTADZ (Pengajar)
+        // Sejajar dengan: HR (context:company,hr)
+        // =====================================================
         Route::middleware('context:pesantren,ustadz')->group(function () {
 
+            // GET /api/pesantren/dashboard
             Route::get('/dashboard', [PesantrenDashboardController::class, 'ustadz']);
 
+            // -------------------------------------------------
+            // ABSENSI — diri sendiri + kelola absensi santri
+            // Sejajar: HrCompanyAttendanceController
+            // -------------------------------------------------
             Route::prefix('attendances')->group(function () {
+                Route::post('/check-in',    [PesantrenUstadzAttendanceController::class, 'checkIn']);
+                Route::post('/check-out',   [PesantrenUstadzAttendanceController::class, 'checkOut']);
+                Route::get('/is-checkin',   [PesantrenUstadzAttendanceController::class, 'isCheckedIn']);
+                Route::get('/history',      [PesantrenUstadzAttendanceController::class, 'history']);
+                Route::get('/summary',      [PesantrenUstadzAttendanceController::class, 'summary']);
+                Route::get('/export',       [PesantrenUstadzAttendanceController::class, 'exportAllPdf']);
 
-                Route::post('/check-in', [PesantrenUstadzAttendanceController::class, 'checkIn']);
-                Route::post('/check-out', [PesantrenUstadzAttendanceController::class, 'checkOut']);
-                Route::get('/is-checkin', [PesantrenUstadzAttendanceController::class, 'isCheckedIn']);
-
-                Route::get('/santri', [PesantrenUstadzAttendanceController::class, 'santriToday']);
-                Route::post('/santri/mark', [PesantrenUstadzAttendanceController::class, 'markSantriAttendance']);
-                Route::get('/santri/{id}/history', [PesantrenUstadzAttendanceController::class, 'santriHistory'])->whereNumber('id');
+                // Kelola absensi santri (setara: mark employee)
+                Route::get('/santri',                      [PesantrenUstadzAttendanceController::class, 'santriToday']);
+                Route::post('/santri/mark',                [PesantrenUstadzAttendanceController::class, 'markSantriAttendance']);
+                Route::get('/santri/{id}/history',         [PesantrenUstadzAttendanceController::class, 'santriHistory'])->whereNumber('id');
+                Route::get('/santri/{id}/history/export',  [PesantrenUstadzAttendanceController::class, 'exportSantriPdf'])->whereNumber('id');
             });
 
-            // ✅ FIX utama konflik: {id} hanya angka
+            // -------------------------------------------------
+            // ANALYTICS PESANTREN
+            // Sejajar: HrCompanyAnalyticsController
+            // -------------------------------------------------
+            // Route::prefix('analytics')->group(function () {
+            //     Route::get('/monthly',           [PesantrenAnalyticsController::class, 'monthly']);
+            //     Route::get('/santri/{santriId}', [PesantrenAnalyticsController::class, 'santriDetail'])->whereNumber('santriId');
+            //     Route::get('/attendance-recap',  [PesantrenAnalyticsController::class, 'attendanceRecap']);
+            // });
+
+            // -------------------------------------------------
+            // PENGATURAN PESANTREN
+            // Sejajar: HrCompanySettingController
+            // -------------------------------------------------
+            // Route::prefix('settings')->group(function () {
+            //     Route::get('/pesantren',        [PesantrenSettingController::class, 'show']);
+            //     Route::put('/pesantren',        [PesantrenSettingController::class, 'update']);
+            //     Route::post('/pesantren/logo',  [PesantrenSettingController::class, 'uploadLogo']);
+            //     Route::get('/pesantren/santri', [PesantrenSettingController::class, 'santriList']);
+            //     Route::get('/pesantren/kamar',  [PesantrenSettingController::class, 'kamarList']);
+            // });
+
+            // -------------------------------------------------
+            // KELOLA DATA SANTRI
+            // Sejajar: HrCompanyEmployeeController
+            // -------------------------------------------------
             Route::prefix('santri')->group(function () {
-
-                Route::get('/', [PesantrenSantriController::class, 'index']);
-                Route::post('/', [PesantrenSantriController::class, 'store']);
-
-                Route::get('/{id}', [PesantrenSantriController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [PesantrenSantriController::class, 'update'])->whereNumber('id');
+                Route::get('/export',  [PesantrenSantriController::class, 'export']);
+                Route::get('/',        [PesantrenSantriController::class, 'index']);
+                Route::post('/',       [PesantrenSantriController::class, 'store']);
+                Route::get('/{id}',    [PesantrenSantriController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}',    [PesantrenSantriController::class, 'update'])->whereNumber('id');
                 Route::delete('/{id}', [PesantrenSantriController::class, 'destroy'])->whereNumber('id');
 
-                Route::get('/{id}/attendance', [PesantrenSantriController::class, 'attendance'])->whereNumber('id');
+                // sub-resource santri
+                Route::get('/{id}/attendance',  [PesantrenSantriController::class, 'attendance'])->whereNumber('id');
                 Route::get('/{id}/permissions', [PesantrenSantriController::class, 'permissions'])->whereNumber('id');
             });
 
-            Route::prefix('schedules')->group(function () {
-                Route::get('/', [PesantrenSchedulesController::class, 'index']);
-                Route::get('/today', [PesantrenSchedulesController::class, 'today']);
-                Route::post('/', [PesantrenSchedulesController::class, 'store']);
-
-                Route::get('/{id}', [PesantrenSchedulesController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [PesantrenSchedulesController::class, 'update'])->whereNumber('id');
-                Route::delete('/{id}', [PesantrenSchedulesController::class, 'destroy'])->whereNumber('id');
-
-                Route::post('/{id}/status', [PesantrenSchedulesController::class, 'updateStatus'])->whereNumber('id');
+            // -------------------------------------------------
+            // IZIN SANTRI — approve / reject
+            // Sejajar: HrCompanyPermissionController
+            // -------------------------------------------------
+            Route::prefix('permissions/santri')->group(function () {
+                Route::get('/export',        [PesantrenUstadzSantriPermissionController::class, 'export']);
+                Route::get('/',              [PesantrenUstadzSantriPermissionController::class, 'index']);
+                Route::get('/{id}',          [PesantrenUstadzSantriPermissionController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/approve', [PesantrenUstadzSantriPermissionController::class, 'approve'])->whereNumber('id');
+                Route::post('/{id}/reject',  [PesantrenUstadzSantriPermissionController::class, 'reject'])->whereNumber('id');
             });
 
+            // -------------------------------------------------
+            // JADWAL — buat & kelola
+            // Sejajar: HrCompanyScheduleController
+            // -------------------------------------------------
+            Route::prefix('schedules')->group(function () {
+                Route::get('/export',  [PesantrenSchedulesController::class, 'export']);
+                Route::get('/today',   [PesantrenSchedulesController::class, 'today']); // sebelum /{id}
+                Route::get('/',        [PesantrenSchedulesController::class, 'index']);
+                Route::post('/',       [PesantrenSchedulesController::class, 'store']);
+                Route::get('/{id}',    [PesantrenSchedulesController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}',    [PesantrenSchedulesController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}', [PesantrenSchedulesController::class, 'destroy'])->whereNumber('id');
+                Route::post('/{id}/status', [PesantrenSchedulesController::class, 'updateStatus'])->whereNumber('id');
+
+                // Peserta jadwal
+                Route::get('/{id}/participants',                 [PesantrenSchedulesController::class, 'getParticipants'])->whereNumber('id');
+                Route::post('/{id}/participants',                [PesantrenSchedulesController::class, 'addParticipants'])->whereNumber('id');
+                Route::delete('/{id}/participants/{santriId}',   [PesantrenSchedulesController::class, 'removeParticipant'])->whereNumber('id')->whereNumber('santriId');
+            });
+
+            // -------------------------------------------------
+            // CATATAN SANTRI — ditulis ustadz
+            // Sejajar: HrCompanyNotesController
+            // -------------------------------------------------
+            // Route::prefix('notes/santri')->group(function () {
+            //     Route::get('/summary', [PesantrenNotesController::class, 'summary']); // sebelum /{id}
+            //     Route::get('/export',  [PesantrenNotesController::class, 'export']);
+            //     Route::get('/',        [PesantrenNotesController::class, 'index']);
+            //     Route::post('/',       [PesantrenNotesController::class, 'store']);
+            //     Route::get('/{id}',    [PesantrenNotesController::class, 'show'])->whereNumber('id');
+            //     Route::post('/{id}',   [PesantrenNotesController::class, 'update'])->whereNumber('id');
+            //     Route::delete('/{id}', [PesantrenNotesController::class, 'destroy'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // LAPORAN HARIAN USTADZ + REVIEW LAPORAN SANTRI
+            // Sejajar: HrCompanyDailyReportController
+            // -------------------------------------------------
+            // Route::prefix('daily-reports')->group(function () {
+            //     Route::get('/summary', [PesantrenDailyReportController::class, 'summary']); // sebelum /{id}
+            //     Route::get('/today',   [PesantrenDailyReportController::class, 'today']);   // sebelum /{id}
+            //     Route::get('/export',  [PesantrenDailyReportController::class, 'export']);
+            //     Route::get('/santri',  [PesantrenDailyReportController::class, 'santriReports']); // list laporan santri
+            //     Route::get('/',        [PesantrenDailyReportController::class, 'index']);
+            //     Route::get('/{id}',    [PesantrenDailyReportController::class, 'show'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // LAPORAN BULANAN USTADZ + APPROVE LAPORAN SANTRI
+            // Sejajar: HrCompanyMonthlyReportController
+            // -------------------------------------------------
+            // Route::prefix('monthly-reports')->group(function () {
+            //     Route::get('/summary',        [PesantrenMonthlyReportController::class, 'summary']); // sebelum /{id}
+            //     Route::get('/export',         [PesantrenMonthlyReportController::class, 'export']);
+            //     Route::get('/santri',         [PesantrenMonthlyReportController::class, 'santriReports']); // list laporan santri
+            //     Route::get('/',               [PesantrenMonthlyReportController::class, 'index']);
+            //     Route::get('/{id}',           [PesantrenMonthlyReportController::class, 'show'])->whereNumber('id');
+            //     Route::patch('/{id}/approve', [PesantrenMonthlyReportController::class, 'approve'])->whereNumber('id');
+            //     Route::patch('/{id}/reject',  [PesantrenMonthlyReportController::class, 'reject'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // NILAI / PERFORMA SANTRI
+            // Sejajar: HrCompanyPerformanceScoreController
+            // -------------------------------------------------
+            // Route::prefix('performance')->group(function () {
+            //     Route::get('/leaderboard', [PesantrenPerformanceController::class, 'leaderboard']); // sebelum /{id}
+            //     Route::get('/export',      [PesantrenPerformanceController::class, 'export']);
+            //     Route::get('/',            [PesantrenPerformanceController::class, 'index']);
+            //     Route::post('/generate',   [PesantrenPerformanceController::class, 'generate']);
+            //     Route::get('/{id}',        [PesantrenPerformanceController::class, 'show'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // HARI LIBUR PESANTREN — kelola
+            // Sejajar: HrCompanyHolidayController
+            // -------------------------------------------------
+            // Route::prefix('holidays')->group(function () {
+            //     Route::get('/export',  [PesantrenHolidayController::class, 'export']);
+            //     Route::get('/',        [PesantrenHolidayController::class, 'index']);
+            //     Route::post('/',       [PesantrenHolidayController::class, 'store']);
+            //     Route::get('/{id}',    [PesantrenHolidayController::class, 'show'])->whereNumber('id');
+            //     Route::put('/{id}',    [PesantrenHolidayController::class, 'update'])->whereNumber('id');
+            //     Route::delete('/{id}', [PesantrenHolidayController::class, 'destroy'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // JADWAL SHOLAT
+            // Sejajar: (khusus pesantren)
+            // -------------------------------------------------
             Route::prefix('prayers')->group(function () {
-                Route::get('/today', [PesantrenPrayerController::class, 'today']);
+                Route::get('/today',  [PesantrenPrayerController::class, 'today']);
                 Route::get('/{date}', [PesantrenPrayerController::class, 'byDate'])
                     ->where('date', '^\d{4}-\d{2}-\d{2}$');
             });
+        }); // end context:pesantren,ustadz
 
-            Route::prefix('permissions/santri')->group(function () {
-                Route::get('/', [PesantrenUstadzSantriPermissionController::class, 'index']);
-                Route::get('/{id}', [PesantrenUstadzSantriPermissionController::class, 'show'])->whereNumber('id');
-                Route::post('/{id}/approve', [PesantrenUstadzSantriPermissionController::class, 'approve'])->whereNumber('id');
-                Route::post('/{id}/reject', [PesantrenUstadzSantriPermissionController::class, 'reject'])->whereNumber('id');
-            });
-        });
 
-        // =========================
+        // =====================================================
         // 👦 SANTRI
-        // =========================
+        // Sejajar dengan: Employee (context:company,employee)
+        // =====================================================
         Route::middleware('context:pesantren,santri')->group(function () {
 
+            // GET /api/pesantren/santri/dashboard
+            // Route::get('/santri/dashboard', [SantriDashboardController::class, 'index']);
+
+            // -------------------------------------------------
+            // ABSENSI SANTRI — diri sendiri
+            // Sejajar: EmployeeAttendanceController
+            // -------------------------------------------------
             Route::prefix('santri/attendances')->group(function () {
-                Route::post('/check-in', [SantriAttendanceController::class, 'checkIn']);
-                Route::post('/check-out', [SantriAttendanceController::class, 'checkOut']);
-                Route::get('/is-checkin', [SantriAttendanceController::class, 'isCheckedIn']);
-                Route::get('/history', [SantriAttendanceController::class, 'history']);
+                Route::post('/check-in',      [SantriAttendanceController::class, 'checkIn']);
+                Route::post('/check-out',     [SantriAttendanceController::class, 'checkOut']);
+                Route::get('/is-checkin',     [SantriAttendanceController::class, 'isCheckedIn']);
+                Route::get('/history',        [SantriAttendanceController::class, 'history']);
+                Route::get('/summary',        [SantriAttendanceController::class, 'summary']);
                 Route::post('/register-face', [SantriAttendanceController::class, 'registerFace']);
             });
 
+            // -------------------------------------------------
+            // PERIZINAN SANTRI — ajukan sendiri
+            // Sejajar: EmployeePermissionController
+            // -------------------------------------------------
             Route::prefix('santri/permissions')->group(function () {
-                Route::get('/', [SantriPermissionController::class, 'index']);
-                Route::post('/', [SantriPermissionController::class, 'store']);
-                Route::get('/{id}', [SantriPermissionController::class, 'show'])->whereNumber('id');
+                Route::get('/',             [SantriPermissionController::class, 'index']);
+                Route::post('/',            [SantriPermissionController::class, 'store']);
+                Route::get('/{id}',         [SantriPermissionController::class, 'show'])->whereNumber('id');
                 Route::post('/{id}/cancel', [SantriPermissionController::class, 'cancel'])->whereNumber('id');
             });
 
+            // -------------------------------------------------
+            // CATATAN — lihat catatan dari ustadz (read-only)
+            // Sejajar: EmployeeNotesController
+            // -------------------------------------------------
             Route::prefix('santri/notes')->group(function () {
-                Route::get('/', [SantriNotesController::class, 'index']);
-                Route::post('/', [SantriNotesController::class, 'store']);
-                Route::get('/{id}', [SantriNotesController::class, 'show'])->whereNumber('id');
-                Route::put('/{id}', [SantriNotesController::class, 'update'])->whereNumber('id');
-                Route::delete('/{id}', [SantriNotesController::class, 'destroy'])->whereNumber('id');
+                Route::get('/summary',     [SantriNotesController::class, 'summary']); // sebelum /{id}
+                Route::get('/',            [SantriNotesController::class, 'index']);
+                Route::get('/{id}',        [SantriNotesController::class, 'show'])->whereNumber('id');
+                Route::patch('/{id}/read', [SantriNotesController::class, 'markRead'])->whereNumber('id');
             });
 
+            // -------------------------------------------------
+            // LAPORAN HARIAN SANTRI
+            // Sejajar: EmployeeDailyReportController
+            // -------------------------------------------------
+            // Route::prefix('santri/daily-reports')->group(function () {
+            //     Route::get('/today',   [SantriDailyReportController::class, 'today']);   // sebelum /{id}
+            //     Route::get('/summary', [SantriDailyReportController::class, 'summary']); // sebelum /{id}
+            //     Route::get('/export',  [SantriDailyReportController::class, 'export']);
+            //     Route::get('/',        [SantriDailyReportController::class, 'index']);
+            //     Route::post('/',       [SantriDailyReportController::class, 'store']);   // submit target pagi
+            //     Route::get('/{id}',    [SantriDailyReportController::class, 'show'])->whereNumber('id');
+            //     Route::post('/{id}',   [SantriDailyReportController::class, 'update'])->whereNumber('id'); // update pencapaian sore
+            // });
+
+            // -------------------------------------------------
+            // LAPORAN BULANAN SANTRI
+            // Sejajar: EmployeeMonthlyReportController
+            // -------------------------------------------------
+            // Route::prefix('santri/monthly-reports')->group(function () {
+            //     Route::get('/summary',       [SantriMonthlyReportController::class, 'summary']); // sebelum /{id}
+            //     Route::get('/export',        [SantriMonthlyReportController::class, 'export']);
+            //     Route::get('/',              [SantriMonthlyReportController::class, 'index']);
+            //     Route::post('/',             [SantriMonthlyReportController::class, 'store']);
+            //     Route::get('/{id}',          [SantriMonthlyReportController::class, 'show'])->whereNumber('id');
+            //     Route::post('/{id}',         [SantriMonthlyReportController::class, 'update'])->whereNumber('id');
+            //     Route::patch('/{id}/submit', [SantriMonthlyReportController::class, 'submit'])->whereNumber('id');
+            //     Route::delete('/{id}',       [SantriMonthlyReportController::class, 'destroy'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // NILAI / PERFORMA SANTRI — lihat sendiri
+            // Sejajar: EmployeePerformanceScoreController
+            // -------------------------------------------------
+            // Route::prefix('santri/performance')->group(function () {
+            //     Route::get('/leaderboard', [SantriPerformanceController::class, 'leaderboard']); // sebelum /{id}
+            //     Route::get('/',            [SantriPerformanceController::class, 'index']);
+            //     Route::get('/{id}',        [SantriPerformanceController::class, 'show'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // JADWAL — lihat jadwal dari ustadz
+            // Sejajar: EmployeeSchedulesController
+            // -------------------------------------------------
             Route::prefix('santri/schedules')->group(function () {
-                Route::get('/', [SantriSchedulesController::class, 'index']);
-                Route::get('/today', [SantriSchedulesController::class, 'today']);
-                Route::get('/{id}', [SantriSchedulesController::class, 'show'])->whereNumber('id');
+                Route::get('/today',         [SantriSchedulesController::class, 'today']);        // sebelum /{id}
+                Route::get('/invitations',   [SantriSchedulesController::class, 'invitations']);  // sebelum /{id}
+                Route::get('/',              [SantriSchedulesController::class, 'index']);
+                Route::get('/{id}',          [SantriSchedulesController::class, 'show'])->whereNumber('id');
+                Route::post('/{id}/respond', [SantriSchedulesController::class, 'respond'])->whereNumber('id');
             });
 
+            // -------------------------------------------------
+            // HARI LIBUR — lihat saja (read-only)
+            // Sejajar: EmployeeHolidayController
+            // // -------------------------------------------------
+            // Route::prefix('santri/holidays')->group(function () {
+            //     Route::get('/',     [SantriHolidayController::class, 'index']);
+            //     Route::get('/{id}', [SantriHolidayController::class, 'show'])->whereNumber('id');
+            // });
+
+            // -------------------------------------------------
+            // JADWAL SHOLAT
+            // Sejajar: (khusus pesantren)
+            // -------------------------------------------------
             Route::prefix('prayers')->group(function () {
-                Route::get('/today', [SantriPrayerController::class, 'today']);
+                Route::get('/today',  [SantriPrayerController::class, 'today']);
                 Route::get('/{date}', [SantriPrayerController::class, 'byDate'])
                     ->where('date', '^\d{4}-\d{2}-\d{2}$');
             });
-        });
+        }); // end context:pesantren,santri
+
     });
 
 
