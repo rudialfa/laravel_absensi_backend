@@ -3,131 +3,142 @@
 namespace App\Http\Controllers\Api\Santri;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use App\Models\Note;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 
 class SantriNotesController extends Controller
 {
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+
     private function ensureSantri(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'santri') {
             abort(response()->json([
-                'status' => false,
-                'message' => 'Akses ditolak (khusus santri)',
+                'status'  => false,
+                'message' => 'Akses ditolak (khusus Santri)',
             ], 403));
         }
     }
 
-    private function companyId(): int
+    // ============================================================
+    // INDEX — GET /api/pesantren/santri/notes
+    // Sejajar: EmployeeNotesController::index()
+    // Query: type, is_read, start, end, month, year, search, per_page
+    // ============================================================
+    public function index(Request $request): JsonResponse
     {
-        $companyId = auth()->user()->company_id ?? null;
+        $this->ensureSantri();
 
-        if (!$companyId) {
-            abort(response()->json([
-                'status' => false,
-                'message' => 'Company ID tidak ditemukan',
-            ], 422));
+        $query = Note::with('creator:id,name')
+            ->where('company_id', Auth::user()->company_id)
+            ->where('user_id', Auth::id());
+
+        if ($request->filled('type')) {
+            $query->where('type', $request->type);
+        }
+        if ($request->filled('is_read')) {
+            $query->where('is_read', filter_var($request->is_read, FILTER_VALIDATE_BOOLEAN));
+        }
+        if ($request->filled('start') && $request->filled('end')) {
+            $query->whereBetween('created_at', [$request->start, $request->end]);
+        }
+        if ($request->filled('month') && $request->filled('year')) {
+            $query->whereMonth('created_at', $request->month)
+                ->whereYear('created_at',  $request->year);
+        }
+        if ($request->filled('search')) {
+            $keyword = $request->search;
+            $query->where(function ($q) use ($keyword) {
+                $q->where('title', 'like', "%{$keyword}%")
+                    ->orWhere('note',  'like', "%{$keyword}%");
+            });
         }
 
-        return $companyId;
+        return response()->json([
+            'status'  => true,
+            'message' => 'Berhasil mengambil data catatan',
+            'data'    => $query->orderByDesc('created_at')
+                ->paginate((int) $request->get('per_page', 15)),
+        ]);
     }
 
-    public function index()
+    // ============================================================
+    // SUMMARY — GET /api/pesantren/santri/notes/summary
+    // Sejajar: EmployeeNotesController::summary()
+    // ============================================================
+    public function summary(Request $request): JsonResponse
     {
         $this->ensureSantri();
 
-        $data = Note::query()
-            ->where('company_id', $this->companyId())
-            ->where('user_id', auth()->id())
-            ->orderByDesc('id')
-            ->paginate(20);
+        $query = Note::where('company_id', Auth::user()->company_id)
+            ->where('user_id', Auth::id());
+
+        if ($request->filled('month') && $request->filled('year')) {
+            $query->whereMonth('created_at', $request->month)
+                ->whereYear('created_at',  $request->year);
+        }
+
+        $summary = $query->selectRaw('
+            COUNT(*)                                                   as total_notes,
+            SUM(CASE WHEN type = "warning"     THEN 1 ELSE 0 END)     as total_warning,
+            SUM(CASE WHEN type = "praise"      THEN 1 ELSE 0 END)     as total_praise,
+            SUM(CASE WHEN type = "performance" THEN 1 ELSE 0 END)     as total_performance,
+            SUM(CASE WHEN type = "absence"     THEN 1 ELSE 0 END)     as total_absence,
+            SUM(CASE WHEN is_read = 0          THEN 1 ELSE 0 END)     as total_unread
+        ')->first();
 
         return response()->json([
             'status' => true,
-            'message' => 'List notes santri',
-            'data' => $data,
+            'data'   => $summary,
         ]);
     }
 
-    public function store(Request $request)
+    // ============================================================
+    // SHOW — GET /api/pesantren/santri/notes/{id}
+    // Sejajar: EmployeeNotesController::show()
+    // Auto mark as read saat dibuka
+    // ============================================================
+    public function show(int $id): JsonResponse
     {
         $this->ensureSantri();
 
-        $validated = $request->validate([
-            'title' => 'required|string|max:120',
-            'note'  => 'required|string',
-        ]);
-
-        $note = Note::create([
-            'company_id' => $this->companyId(),
-            'user_id'    => auth()->id(),
-            'title'      => $validated['title'],
-            'note'       => $validated['note'],
-        ]);
-
-        return response()->json([
-            'status' => true,
-            'message' => 'Note dibuat',
-            'data' => $note,
-        ], 201);
-    }
-
-    public function show($id)
-    {
-        $this->ensureSantri();
-
-        $note = Note::query()
-            ->where('company_id', $this->companyId())
-            ->where('user_id', auth()->id())
+        $note = Note::with('creator:id,name')
+            ->where('company_id', Auth::user()->company_id)
+            ->where('user_id', Auth::id())
             ->findOrFail($id);
 
+        // Auto mark as read
+        if (!$note->is_read) {
+            $note->update(['is_read' => true]);
+        }
+
         return response()->json([
             'status' => true,
-            'message' => 'Detail note',
-            'data' => $note,
+            'data'   => $note,
         ]);
     }
 
-    public function update(Request $request, $id)
+    // ============================================================
+    // MARK READ — PATCH /api/pesantren/santri/notes/{id}/read
+    // Sejajar: EmployeeNotesController::markRead()
+    // ============================================================
+    public function markRead(int $id): JsonResponse
     {
         $this->ensureSantri();
 
-        $note = Note::query()
-            ->where('company_id', $this->companyId())
-            ->where('user_id', auth()->id())
+        $note = Note::where('company_id', Auth::user()->company_id)
+            ->where('user_id', Auth::id())
             ->findOrFail($id);
 
-        $validated = $request->validate([
-            'title' => 'sometimes|required|string|max:120',
-            'note'  => 'sometimes|required|string',
-        ]);
-
-        if (array_key_exists('title', $validated)) $note->title = $validated['title'];
-        if (array_key_exists('note', $validated))  $note->note  = $validated['note'];
-
-        $note->save();
+        $note->update(['is_read' => true]);
 
         return response()->json([
-            'status' => true,
-            'message' => 'Note diupdate',
-            'data' => $note,
-        ]);
-    }
-
-    public function destroy($id)
-    {
-        $this->ensureSantri();
-
-        $note = Note::query()
-            ->where('company_id', $this->companyId())
-            ->where('user_id', auth()->id())
-            ->findOrFail($id);
-
-        $note->delete();
-
-        return response()->json([
-            'status' => true,
-            'message' => 'Note dihapus',
+            'status'  => true,
+            'message' => 'Catatan ditandai sudah dibaca',
         ]);
     }
 }

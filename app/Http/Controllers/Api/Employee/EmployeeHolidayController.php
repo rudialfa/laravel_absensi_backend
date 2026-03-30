@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\HrCompany;
+namespace App\Http\Controllers\Api\Employee;
 
 use App\Http\Controllers\Controller;
 use App\Models\CompanyHoliday;

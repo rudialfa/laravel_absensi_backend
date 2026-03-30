@@ -3,140 +3,144 @@
 namespace App\Http\Controllers\Api\Santri;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use App\Models\Permission;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 
 class SantriPermissionController extends Controller
 {
-    private function ensureSantri()
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+
+    private function ensureSantri(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'santri') {
             abort(response()->json([
-                'status' => false,
-                'message' => 'Akses ditolak (khusus santri)'
+                'status'  => false,
+                'message' => 'Akses ditolak (khusus Santri)',
             ], 403));
         }
     }
 
-    private function companyId()
+    private function companyId(): int
     {
         $companyId = auth()->user()->company_id ?? null;
-
         if (!$companyId) {
             abort(response()->json([
-                'status' => false,
-                'message' => 'Company ID tidak ditemukan'
+                'status'  => false,
+                'message' => 'Company ID tidak ditemukan',
             ], 422));
         }
-
-        return $companyId;
+        return (int) $companyId;
     }
 
-    // =========================
-    // LIST
-    // =========================
-    public function index()
+    // ============================================================
+    // INDEX — GET /api/pesantren/santri/permissions
+    // Sejajar: EmployeePermissionController::index()
+    // ============================================================
+    public function index(): JsonResponse
     {
         $this->ensureSantri();
 
-        $data = Permission::where('company_id', $this->companyId())
+        $data = Permission::query()
+            ->where('company_id', $this->companyId())
             ->where('user_id', auth()->id())
             ->orderByDesc('id')
             ->paginate(20);
 
         return response()->json([
-            'status' => true,
-            'message' => 'List permission santri',
-            'data' => $data
+            'status'  => true,
+            'message' => 'List izin santri',
+            'data'    => $data,
         ]);
     }
 
-    // =========================
-    // STORE (UPLOAD IMAGE)
-    // =========================
-    public function store(Request $request)
+    // ============================================================
+    // STORE — POST /api/pesantren/santri/permissions
+    // Sejajar: EmployeePermissionController::store()
+    // ============================================================
+    public function store(Request $request): JsonResponse
     {
         $this->ensureSantri();
 
         $validated = $request->validate([
             'date_permission' => 'required|date',
-            'reason' => 'required|string|max:500',
-            'image' => 'nullable|image|mimes:jpg,jpeg,png|max:2048'
+            'reason'          => 'required|string|max:500',
+            'image'           => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
         ]);
 
         $imagePath = null;
 
         if ($request->hasFile('image')) {
-
-            // folder public/image/permission
             $destinationPath = public_path('image/permission');
-
             if (!File::exists($destinationPath)) {
                 File::makeDirectory($destinationPath, 0755, true);
             }
-
-            $file = $request->file('image');
-            $fileName = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
-
+            $file      = $request->file('image');
+            $fileName  = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
             $file->move($destinationPath, $fileName);
-
             $imagePath = 'image/permission/' . $fileName;
         }
 
         $perm = Permission::create([
-            'company_id' => $this->companyId(),
-            'user_id' => auth()->id(),
+            'company_id'      => $this->companyId(),
+            'user_id'         => auth()->id(),
             'date_permission' => $validated['date_permission'],
-            'reason' => $validated['reason'],
-            'image' => $imagePath,
-            'is_approved' => null, // ✅ pending
+            'reason'          => $validated['reason'],
+            'image'           => $imagePath,
+            'is_approved'     => null, // pending
         ]);
 
         return response()->json([
-            'status' => true,
-            'message' => 'Permission berhasil dibuat',
-            'data' => $perm
+            'status'  => true,
+            'message' => 'Izin berhasil diajukan',
+            'data'    => $perm,
         ], 201);
     }
 
-    // =========================
-    // DETAIL
-    // =========================
-    public function show($id)
+    // ============================================================
+    // SHOW — GET /api/pesantren/santri/permissions/{id}
+    // Sejajar: EmployeePermissionController::show()
+    // ============================================================
+    public function show(int $id): JsonResponse
     {
         $this->ensureSantri();
 
-        $perm = Permission::where('company_id', $this->companyId())
+        $perm = Permission::query()
+            ->where('company_id', $this->companyId())
             ->where('user_id', auth()->id())
             ->findOrFail($id);
 
         return response()->json([
-            'status' => true,
-            'message' => 'Detail permission',
-            'data' => $perm
+            'status'  => true,
+            'message' => 'Detail izin',
+            'data'    => $perm,
         ]);
     }
 
-    // =========================
-    // CANCEL
-    // =========================
-    public function cancel($id)
+    // ============================================================
+    // CANCEL — POST /api/pesantren/santri/permissions/{id}/cancel
+    // Sejajar: EmployeePermissionController::cancel()
+    // ============================================================
+    public function cancel(int $id): JsonResponse
     {
         $this->ensureSantri();
 
-        $perm = Permission::where('company_id', $this->companyId())
+        $perm = Permission::query()
+            ->where('company_id', $this->companyId())
             ->where('user_id', auth()->id())
             ->findOrFail($id);
 
         if ($perm->is_approved === true) {
             return response()->json([
-                'status' => false,
-                'message' => 'Tidak bisa cancel, permission sudah disetujui'
+                'status'  => false,
+                'message' => 'Tidak bisa cancel, izin sudah disetujui',
             ], 422);
         }
 
-        // hapus file image jika ada
+        // Hapus file image jika ada
         if ($perm->image && File::exists(public_path($perm->image))) {
             File::delete(public_path($perm->image));
         }
@@ -144,8 +148,8 @@ class SantriPermissionController extends Controller
         $perm->delete();
 
         return response()->json([
-            'status' => true,
-            'message' => 'Permission dibatalkan'
+            'status'  => true,
+            'message' => 'Izin berhasil dibatalkan',
         ]);
     }
 }

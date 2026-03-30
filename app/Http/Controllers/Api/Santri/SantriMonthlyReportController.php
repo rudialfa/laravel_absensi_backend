@@ -1,16 +1,30 @@
 <?php
 
-namespace App\Http\Controllers\Api\Employee;
+namespace App\Http\Controllers\Api\Santri;
 
 use App\Http\Controllers\Controller;
 use App\Models\MonthlyReport;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Validator;
 
-class EmployeeMonthlyReportController extends Controller
+class SantriMonthlyReportController extends Controller
 {
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+
+    private function ensureSantri(): void
+    {
+        if (!auth()->check() || auth()->user()->role !== 'santri') {
+            abort(response()->json([
+                'status'  => false,
+                'message' => 'Akses ditolak (khusus Santri)',
+            ], 403));
+        }
+    }
 
     private function uploadAttachment($file): string
     {
@@ -30,31 +44,57 @@ class EmployeeMonthlyReportController extends Controller
         }
     }
 
-    // GET /employee/monthly-reports
-    public function index(Request $request)
+    private function bulanLabel(int $month): string
     {
+        return [
+            1  => 'Januari',
+            2  => 'Februari',
+            3  => 'Maret',
+            4  => 'April',
+            5  => 'Mei',
+            6  => 'Juni',
+            7  => 'Juli',
+            8  => 'Agustus',
+            9  => 'September',
+            10 => 'Oktober',
+            11 => 'November',
+            12 => 'Desember',
+        ][$month] ?? (string) $month;
+    }
+
+    // ============================================================
+    // INDEX — GET /api/pesantren/santri/monthly-reports
+    // Sejajar: EmployeeMonthlyReportController::index()
+    // ============================================================
+    public function index(Request $request): JsonResponse
+    {
+        $this->ensureSantri();
+
         $query = MonthlyReport::with('approver:id,name')
             ->where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id());
 
-        if ($request->filled('month'))  $query->where('month', $request->month);
-        if ($request->filled('year'))   $query->where('year', $request->year);
+        if ($request->filled('month'))  $query->where('month',  $request->month);
+        if ($request->filled('year'))   $query->where('year',   $request->year);
         if ($request->filled('status')) $query->where('status', $request->status);
-
-        $reports = $query->orderByDesc('year')
-            ->orderByDesc('month')
-            ->paginate($request->get('per_page', 15));
 
         return response()->json([
             'status'  => true,
             'message' => 'Berhasil mengambil data laporan bulanan',
-            'data'    => $reports,
+            'data'    => $query->orderByDesc('year')
+                ->orderByDesc('month')
+                ->paginate((int) $request->get('per_page', 15)),
         ]);
     }
 
-    // GET /employee/monthly-reports/summary
-    public function summary(Request $request)
+    // ============================================================
+    // SUMMARY — GET /api/pesantren/santri/monthly-reports/summary
+    // Sejajar: EmployeeMonthlyReportController::summary()
+    // ============================================================
+    public function summary(Request $request): JsonResponse
     {
+        $this->ensureSantri();
+
         $reports = MonthlyReport::where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
             ->when($request->filled('year'), fn($q) => $q->where('year', $request->year))
@@ -73,9 +113,14 @@ class EmployeeMonthlyReportController extends Controller
         ]);
     }
 
-    // GET /employee/monthly-reports/{id}
-    public function show($id)
+    // ============================================================
+    // SHOW — GET /api/pesantren/santri/monthly-reports/{id}
+    // Sejajar: EmployeeMonthlyReportController::show()
+    // ============================================================
+    public function show(int $id): JsonResponse
     {
+        $this->ensureSantri();
+
         $report = MonthlyReport::with('approver:id,name')
             ->where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
@@ -84,9 +129,15 @@ class EmployeeMonthlyReportController extends Controller
         return response()->json(['status' => true, 'data' => $report]);
     }
 
-    // POST /employee/monthly-reports
-    public function store(Request $request)
+    // ============================================================
+    // STORE — POST /api/pesantren/santri/monthly-reports
+    // Buat draft laporan bulanan
+    // Sejajar: EmployeeMonthlyReportController::store()
+    // ============================================================
+    public function store(Request $request): JsonResponse
     {
+        $this->ensureSantri();
+
         $validator = Validator::make($request->all(), [
             'month'       => 'required|integer|between:1,12',
             'year'        => 'required|integer',
@@ -96,7 +147,6 @@ class EmployeeMonthlyReportController extends Controller
             'solution'    => 'required|string',
             'attachment'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
         ]);
-
         if ($validator->fails()) {
             return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
         }
@@ -104,7 +154,7 @@ class EmployeeMonthlyReportController extends Controller
         $exists = MonthlyReport::where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
             ->where('month', $request->month)
-            ->where('year', $request->year)
+            ->where('year',  $request->year)
             ->exists();
 
         if ($exists) {
@@ -139,9 +189,15 @@ class EmployeeMonthlyReportController extends Controller
         ], 201);
     }
 
-    // POST /employee/monthly-reports/{id}
-    public function update(Request $request, $id)
+    // ============================================================
+    // UPDATE — POST /api/pesantren/santri/monthly-reports/{id}
+    // Edit draft / laporan yang ditolak
+    // Sejajar: EmployeeMonthlyReportController::update()
+    // ============================================================
+    public function update(Request $request, int $id): JsonResponse
     {
+        $this->ensureSantri();
+
         $report = MonthlyReport::where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
             ->findOrFail($id);
@@ -160,7 +216,6 @@ class EmployeeMonthlyReportController extends Controller
             'solution'    => 'sometimes|string',
             'attachment'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
         ]);
-
         if ($validator->fails()) {
             return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
         }
@@ -177,6 +232,7 @@ class EmployeeMonthlyReportController extends Controller
             $data['attachment'] = $this->uploadAttachment($request->file('attachment'));
         }
 
+        // Jika sebelumnya rejected, reset ke draft
         if ($report->status === 'rejected') {
             $data['status']      = 'draft';
             $data['approved_by'] = null;
@@ -193,9 +249,15 @@ class EmployeeMonthlyReportController extends Controller
         ]);
     }
 
-    // PATCH /employee/monthly-reports/{id}/submit
-    public function submit($id)
+    // ============================================================
+    // SUBMIT — PATCH /api/pesantren/santri/monthly-reports/{id}/submit
+    // Submit draft ke ustadz
+    // Sejajar: EmployeeMonthlyReportController::submit()
+    // ============================================================
+    public function submit(int $id): JsonResponse
     {
+        $this->ensureSantri();
+
         $report = MonthlyReport::where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
             ->findOrFail($id);
@@ -211,14 +273,19 @@ class EmployeeMonthlyReportController extends Controller
 
         return response()->json([
             'status'  => true,
-            'message' => 'Laporan berhasil disubmit ke HR',
+            'message' => 'Laporan berhasil disubmit ke ustadz',
             'data'    => $report->fresh(),
         ]);
     }
 
-    // DELETE /employee/monthly-reports/{id}
-    public function destroy($id)
+    // ============================================================
+    // DESTROY — DELETE /api/pesantren/santri/monthly-reports/{id}
+    // Sejajar: EmployeeMonthlyReportController::destroy()
+    // ============================================================
+    public function destroy(int $id): JsonResponse
     {
+        $this->ensureSantri();
+
         $report = MonthlyReport::where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
             ->findOrFail($id);
@@ -236,13 +303,14 @@ class EmployeeMonthlyReportController extends Controller
         return response()->json(['status' => true, 'message' => 'Laporan berhasil dihapus']);
     }
 
-    // ─── EXPORT PDF ────────────────────────────────────────────────────────────
-    // GET /api/company/employee/monthly-reports/export
-    // Query: year, month, status (semua opsional)
-    // composer require barryvdh/laravel-dompdf
-    // ───────────────────────────────────────────────────────────────────────────
+    // ============================================================
+    // EXPORT — GET /api/pesantren/santri/monthly-reports/export
+    // Sejajar: EmployeeMonthlyReportController::export()
+    // ============================================================
     public function export(Request $request)
     {
+        $this->ensureSantri();
+
         $query = MonthlyReport::with('approver:id,name')
             ->where('company_id', Auth::user()->company_id)
             ->where('user_id', Auth::id())
@@ -264,34 +332,18 @@ class EmployeeMonthlyReportController extends Controller
             'avg_score' => round($reports->where('status', 'approved')->avg('score') ?? 0, 2),
         ];
 
-        $bulanLabel = [
-            1 => 'Januari',
-            2 => 'Februari',
-            3 => 'Maret',
-            4 => 'April',
-            5 => 'Mei',
-            6 => 'Juni',
-            7 => 'Juli',
-            8 => 'Agustus',
-            9 => 'September',
-            10 => 'Oktober',
-            11 => 'November',
-            12 => 'Desember',
-        ];
-
         $year        = $request->year  ?? now()->year;
         $month       = $request->month ?? null;
         $periodLabel = $month
-            ? ($bulanLabel[$month] ?? $month) . ' ' . $year
+            ? $this->bulanLabel((int) $month) . ' ' . $year
             : 'Tahun ' . $year;
 
-        $fileName = 'monthly-report-' . now()->format('Y-m-d') . '.pdf';
+        $fileName = 'laporan-bulanan-santri-' . now()->format('Y-m-d') . '.pdf';
 
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.employee_monthly_report', [
-            'user'        => Auth::user(),
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.santri_monthly_report', [
+            'santri'      => Auth::user(),
             'reports'     => $reports,
             'stats'       => $stats,
-            'bulanLabel'  => $bulanLabel,
             'periodLabel' => $periodLabel,
             'generatedAt' => now()->format('d/m/Y H:i'),
         ])
