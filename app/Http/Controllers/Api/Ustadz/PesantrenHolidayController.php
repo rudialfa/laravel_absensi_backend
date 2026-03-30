@@ -1,38 +1,39 @@
 <?php
 
-namespace App\Http\Controllers\Api\HrCompany;
+namespace App\Http\Controllers\Api\Ustadz;
 
 use App\Http\Controllers\Controller;
 use App\Models\CompanyHoliday;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
-
-class HrCompanyHolidayController extends Controller
+class PesantrenHolidayController extends Controller
 {
-
-    // kode 2
-    private function ensureHr(): void
+       // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+ 
+    private function ensureUstadz(): void
     {
-        if (!auth()->check() || auth()->user()->role !== 'hr') {
+        if (!auth()->check() || auth()->user()->role !== 'ustadz') {
             abort(response()->json([
                 'status'  => false,
-                'message' => 'Akses ditolak (khusus HR)',
+                'message' => 'Akses ditolak (khusus Ustadz)',
             ], 403));
         }
     }
-
+ 
     private function companyId(): ?int
     {
         return auth()->user()->company_id ?? null;
     }
-
+ 
     private function transformItem(CompanyHoliday $item): array
     {
         $start = Carbon::parse($item->start_date);
         $end   = Carbon::parse($item->end_date);
         $today = now()->toDateString();
-
+ 
         return [
             'id'              => (int) $item->id,
             'company_id'      => (int) $item->company_id,
@@ -47,23 +48,25 @@ class HrCompanyHolidayController extends Controller
             'updated_at'      => optional($item->updated_at)->toDateTimeString(),
         ];
     }
-
+ 
     // ============================================================
-    // GET /api/company/hr/holidays
+    // INDEX — GET /api/pesantren/holidays
+    // Sejajar: HrCompanyHolidayController::index()
+    // Query: type, q, from, to, per_page
     // ============================================================
     public function index(Request $request)
     {
-        $this->ensureHr();
-
+        $this->ensureUstadz();
+ 
         $q = CompanyHoliday::query()
             ->where('company_id', $this->companyId())
             ->orderByDesc('start_date')
             ->orderByDesc('end_date');
-
+ 
         if ($request->filled('type')) {
             $q->where('type', $request->type);
         }
-
+ 
         if ($request->filled('q')) {
             $search = trim($request->q);
             $q->where(function ($sub) use ($search) {
@@ -71,37 +74,32 @@ class HrCompanyHolidayController extends Controller
                     ->orWhere('note', 'like', "%{$search}%");
             });
         }
-
+ 
         if ($request->filled('from') && $request->filled('to')) {
-            $from = $request->from;
-            $to   = $request->to;
-            $q->where(function ($sub) use ($from, $to) {
-                $sub->whereDate('start_date', '<=', $to)
-                    ->whereDate('end_date', '>=', $from);
+            $q->where(function ($sub) use ($request) {
+                $sub->whereDate('start_date', '<=', $request->to)
+                    ->whereDate('end_date',   '>=', $request->from);
             });
         } else {
-            if ($request->filled('from')) {
-                $q->whereDate('end_date', '>=', $request->from);
-            }
-            if ($request->filled('to')) {
-                $q->whereDate('start_date', '<=', $request->to);
-            }
+            if ($request->filled('from')) $q->whereDate('end_date',   '>=', $request->from);
+            if ($request->filled('to'))   $q->whereDate('start_date', '<=', $request->to);
         }
-
+ 
         return response()->json([
             'status'  => true,
-            'message' => 'List holidays',
-            'data'    => $q->paginate((int) ($request->get('per_page', 10))),
+            'message' => 'List hari libur pesantren',
+            'data'    => $q->paginate((int) $request->get('per_page', 10)),
         ]);
     }
-
+ 
     // ============================================================
-    // POST /api/company/hr/holidays
+    // STORE — POST /api/pesantren/holidays
+    // Sejajar: HrCompanyHolidayController::store()
     // ============================================================
     public function store(Request $request)
     {
-        $this->ensureHr();
-
+        $this->ensureUstadz();
+ 
         $validated = $request->validate([
             'start_date' => ['required', 'date'],
             'end_date'   => ['required', 'date', 'after_or_equal:start_date'],
@@ -109,7 +107,7 @@ class HrCompanyHolidayController extends Controller
             'type'       => ['required', 'in:company,national'],
             'note'       => ['nullable', 'string'],
         ]);
-
+ 
         $data = CompanyHoliday::create([
             'company_id' => $this->companyId(),
             'start_date' => $validated['start_date'],
@@ -118,39 +116,41 @@ class HrCompanyHolidayController extends Controller
             'type'       => $validated['type'],
             'note'       => $validated['note'] ?? null,
         ]);
-
+ 
         return response()->json([
             'status'  => true,
-            'message' => 'Holiday berhasil ditambahkan',
+            'message' => 'Hari libur berhasil ditambahkan',
             'data'    => $this->transformItem($data),
         ], 201);
     }
-
+ 
     // ============================================================
-    // GET /api/company/hr/holidays/{id}
+    // SHOW — GET /api/pesantren/holidays/{id}
+    // Sejajar: HrCompanyHolidayController::show()
     // ============================================================
-    public function show($id)
+    public function show(int $id)
     {
-        $this->ensureHr();
-
+        $this->ensureUstadz();
+ 
         $data = CompanyHoliday::query()
             ->where('company_id', $this->companyId())
             ->findOrFail($id);
-
+ 
         return response()->json([
             'status'  => true,
-            'message' => 'Detail holiday',
+            'message' => 'Detail hari libur',
             'data'    => $this->transformItem($data),
         ]);
     }
-
+ 
     // ============================================================
-    // PUT /api/company/hr/holidays/{id}
+    // UPDATE — PUT /api/pesantren/holidays/{id}
+    // Sejajar: HrCompanyHolidayController::update()
     // ============================================================
-    public function update(Request $request, $id)
+    public function update(Request $request, int $id)
     {
-        $this->ensureHr();
-
+        $this->ensureUstadz();
+ 
         $validated = $request->validate([
             'start_date' => ['required', 'date'],
             'end_date'   => ['required', 'date', 'after_or_equal:start_date'],
@@ -158,11 +158,11 @@ class HrCompanyHolidayController extends Controller
             'type'       => ['required', 'in:company,national'],
             'note'       => ['nullable', 'string'],
         ]);
-
+ 
         $data = CompanyHoliday::query()
             ->where('company_id', $this->companyId())
             ->findOrFail($id);
-
+ 
         $data->update([
             'start_date' => $validated['start_date'],
             'end_date'   => $validated['end_date'],
@@ -170,57 +170,50 @@ class HrCompanyHolidayController extends Controller
             'type'       => $validated['type'],
             'note'       => $validated['note'] ?? null,
         ]);
-
+ 
         return response()->json([
             'status'  => true,
-            'message' => 'Holiday berhasil diperbarui',
+            'message' => 'Hari libur berhasil diperbarui',
             'data'    => $this->transformItem($data->fresh()),
         ]);
     }
-
+ 
     // ============================================================
-    // DELETE /api/company/hr/holidays/{id}
+    // DESTROY — DELETE /api/pesantren/holidays/{id}
+    // Sejajar: HrCompanyHolidayController::destroy()
     // ============================================================
-    public function destroy($id)
+    public function destroy(int $id)
     {
-        $this->ensureHr();
-
+        $this->ensureUstadz();
+ 
         $data = CompanyHoliday::query()
             ->where('company_id', $this->companyId())
             ->findOrFail($id);
-
+ 
         $data->delete();
-
+ 
         return response()->json([
             'status'  => true,
-            'message' => 'Holiday berhasil dihapus',
+            'message' => 'Hari libur berhasil dihapus',
         ]);
     }
-
+ 
     // ============================================================
-    // EXPORT PDF — rekap semua holiday
-    // GET /api/company/hr/holidays/export
-    //
-    // Query params:
-    //   type (optional) — company|national
-    //   year (optional) — filter tahun dari start_date
-    //
-    // Install: composer require barryvdh/laravel-dompdf
+    // EXPORT — GET /api/pesantren/holidays/export
+    // Sejajar: HrCompanyHolidayController::export()
+    // Query: type (opsional), year (opsional)
     // ============================================================
     public function export(Request $request)
     {
-        $this->ensureHr();
-
-        $companyId = $this->companyId();
-        $user      = auth()->user();
-
+        $this->ensureUstadz();
+ 
         $q = CompanyHoliday::query()
-            ->where('company_id', $companyId)
+            ->where('company_id', $this->companyId())
             ->orderBy('start_date');
-
+ 
         if ($request->filled('type')) $q->where('type', $request->type);
         if ($request->filled('year')) $q->whereYear('start_date', $request->year);
-
+ 
         $holidays = $q->get()->map(fn($item) => [
             'id'              => $item->id,
             'name'            => $item->name,
@@ -229,20 +222,21 @@ class HrCompanyHolidayController extends Controller
             'end_date'        => $item->end_date,
             'total_days'      => Carbon::parse($item->start_date)->diffInDays(Carbon::parse($item->end_date)) + 1,
             'note'            => $item->note,
-            'is_active_today' => now()->toDateString() >= $item->start_date && now()->toDateString() <= $item->end_date,
+            'is_active_today' => now()->toDateString() >= $item->start_date
+                && now()->toDateString() <= $item->end_date,
         ]);
-
+ 
         $totalCompany  = $holidays->where('type', 'company')->count();
         $totalNational = $holidays->where('type', 'national')->count();
         $totalDays     = $holidays->sum('total_days');
-
+ 
         $year        = $request->filled('year') ? $request->year : now()->year;
         $typeLabel   = $request->filled('type') ? ' - ' . ucfirst($request->type) : '';
         $periodLabel = $year . $typeLabel;
-        $fileName    = 'holidays-' . $year . '.pdf';
-
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.hr_holiday', [
-            'company'       => $user->company ?? (object)['name' => ''],
+        $fileName    = 'libur-pesantren-' . $year . '.pdf';
+ 
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.pesantren_holiday', [
+            'company'       => auth()->user()->company ?? (object)['name' => ''],
             'periodLabel'   => $periodLabel,
             'holidays'      => $holidays,
             'totalCompany'  => $totalCompany,
@@ -252,7 +246,7 @@ class HrCompanyHolidayController extends Controller
         ])
             ->setPaper('a4', 'portrait')
             ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
-
+ 
         return $pdf->download($fileName);
     }
 }
