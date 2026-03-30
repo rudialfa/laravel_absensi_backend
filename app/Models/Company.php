@@ -35,4 +35,21 @@ class Company extends Model
     {
         return $this->hasMany(MonthlyReport::class);
     }
+
+        // ═══════════════════════════════════════════════════════════════════
+    // RELASI — PESANTREN (MutabaahYaumiyah)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Semua record ngaji (mutabaah yaumiyah) di pesantren ini.
+     *
+     * Contoh:
+     *   $pesantren->mutabaahYaumiyahs()->hariIni()->get();
+     *   $pesantren->mutabaahYaumiyahs()->bulan(3, 2026)->count();
+     *   $pesantren->mutabaahYaumiyahs()->ofSantri($santriId)->get();
+     */
+    public function mutabaahYaumiyahs()
+    {
+        return $this->hasMany(MutabaahYaumiyah::class);
+    }
 }

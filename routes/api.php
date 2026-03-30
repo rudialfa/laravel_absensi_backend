@@ -38,11 +38,13 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupUserController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyUserShiftOverrideController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
+use App\Http\Controllers\Api\Santri\SantriMutabaahController;
 use App\Http\Controllers\Api\Santri\SantriNotesController;
 use App\Http\Controllers\Api\Santri\SantriPermissionController;
 use App\Http\Controllers\Api\Santri\SantriPrayerController;
 use App\Http\Controllers\Api\Santri\SantriSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenDashboardController;
+use App\Http\Controllers\Api\Ustadz\PesantrenMutabaahController;
 use App\Http\Controllers\Api\Ustadz\PesantrenPrayerController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSantriController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
@@ -607,16 +609,16 @@ Route::prefix('company')
 Route::prefix('pesantren')
     ->middleware(['auth:sanctum', 'context:pesantren'])
     ->group(function () {
- 
+
         // =====================================================
         // 🧑‍🏫 USTADZ (Pengajar)
         // Sejajar dengan: HR (context:company,hr)
         // =====================================================
         Route::middleware('context:pesantren,ustadz')->group(function () {
- 
+
             // GET /api/pesantren/dashboard
             Route::get('/dashboard', [PesantrenDashboardController::class, 'ustadz']);
- 
+
             // -------------------------------------------------
             // ABSENSI — diri sendiri + kelola absensi santri
             // Sejajar: HrCompanyAttendanceController
@@ -628,14 +630,14 @@ Route::prefix('pesantren')
                 Route::get('/history',      [PesantrenUstadzAttendanceController::class, 'history']);
                 Route::get('/summary',      [PesantrenUstadzAttendanceController::class, 'summary']);
                 Route::get('/export',       [PesantrenUstadzAttendanceController::class, 'exportAllPdf']);
- 
+
                 // Kelola absensi santri (setara: mark employee)
                 Route::get('/santri',                      [PesantrenUstadzAttendanceController::class, 'santriToday']);
                 Route::post('/santri/mark',                [PesantrenUstadzAttendanceController::class, 'markSantriAttendance']);
                 Route::get('/santri/{id}/history',         [PesantrenUstadzAttendanceController::class, 'santriHistory'])->whereNumber('id');
                 Route::get('/santri/{id}/history/export',  [PesantrenUstadzAttendanceController::class, 'exportSantriPdf'])->whereNumber('id');
             });
- 
+
             // -------------------------------------------------
             // ANALYTICS PESANTREN
             // Sejajar: HrCompanyAnalyticsController
@@ -645,7 +647,7 @@ Route::prefix('pesantren')
             //     Route::get('/santri/{santriId}', [PesantrenAnalyticsController::class, 'santriDetail'])->whereNumber('santriId');
             //     Route::get('/attendance-recap',  [PesantrenAnalyticsController::class, 'attendanceRecap']);
             // });
- 
+
             // -------------------------------------------------
             // PENGATURAN PESANTREN
             // Sejajar: HrCompanySettingController
@@ -657,7 +659,7 @@ Route::prefix('pesantren')
             //     Route::get('/pesantren/santri', [PesantrenSettingController::class, 'santriList']);
             //     Route::get('/pesantren/kamar',  [PesantrenSettingController::class, 'kamarList']);
             // });
- 
+
             // -------------------------------------------------
             // KELOLA DATA SANTRI
             // Sejajar: HrCompanyEmployeeController
@@ -669,12 +671,12 @@ Route::prefix('pesantren')
                 Route::get('/{id}',    [PesantrenSantriController::class, 'show'])->whereNumber('id');
                 Route::put('/{id}',    [PesantrenSantriController::class, 'update'])->whereNumber('id');
                 Route::delete('/{id}', [PesantrenSantriController::class, 'destroy'])->whereNumber('id');
- 
+
                 // sub-resource santri
                 Route::get('/{id}/attendance',  [PesantrenSantriController::class, 'attendance'])->whereNumber('id');
                 Route::get('/{id}/permissions', [PesantrenSantriController::class, 'permissions'])->whereNumber('id');
             });
- 
+
             // -------------------------------------------------
             // IZIN SANTRI — approve / reject
             // Sejajar: HrCompanyPermissionController
@@ -686,7 +688,7 @@ Route::prefix('pesantren')
                 Route::post('/{id}/approve', [PesantrenUstadzSantriPermissionController::class, 'approve'])->whereNumber('id');
                 Route::post('/{id}/reject',  [PesantrenUstadzSantriPermissionController::class, 'reject'])->whereNumber('id');
             });
- 
+
             // -------------------------------------------------
             // JADWAL — buat & kelola
             // Sejajar: HrCompanyScheduleController
@@ -700,13 +702,13 @@ Route::prefix('pesantren')
                 Route::put('/{id}',    [PesantrenSchedulesController::class, 'update'])->whereNumber('id');
                 Route::delete('/{id}', [PesantrenSchedulesController::class, 'destroy'])->whereNumber('id');
                 Route::post('/{id}/status', [PesantrenSchedulesController::class, 'updateStatus'])->whereNumber('id');
- 
+
                 // Peserta jadwal
                 Route::get('/{id}/participants',                 [PesantrenSchedulesController::class, 'getParticipants'])->whereNumber('id');
                 Route::post('/{id}/participants',                [PesantrenSchedulesController::class, 'addParticipants'])->whereNumber('id');
                 Route::delete('/{id}/participants/{santriId}',   [PesantrenSchedulesController::class, 'removeParticipant'])->whereNumber('id')->whereNumber('santriId');
             });
- 
+
             // -------------------------------------------------
             // CATATAN SANTRI — ditulis ustadz
             // Sejajar: HrCompanyNotesController
@@ -720,7 +722,7 @@ Route::prefix('pesantren')
             //     Route::post('/{id}',   [PesantrenNotesController::class, 'update'])->whereNumber('id');
             //     Route::delete('/{id}', [PesantrenNotesController::class, 'destroy'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // LAPORAN HARIAN USTADZ + REVIEW LAPORAN SANTRI
             // Sejajar: HrCompanyDailyReportController
@@ -733,7 +735,7 @@ Route::prefix('pesantren')
             //     Route::get('/',        [PesantrenDailyReportController::class, 'index']);
             //     Route::get('/{id}',    [PesantrenDailyReportController::class, 'show'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // LAPORAN BULANAN USTADZ + APPROVE LAPORAN SANTRI
             // Sejajar: HrCompanyMonthlyReportController
@@ -747,7 +749,7 @@ Route::prefix('pesantren')
             //     Route::patch('/{id}/approve', [PesantrenMonthlyReportController::class, 'approve'])->whereNumber('id');
             //     Route::patch('/{id}/reject',  [PesantrenMonthlyReportController::class, 'reject'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // NILAI / PERFORMA SANTRI
             // Sejajar: HrCompanyPerformanceScoreController
@@ -759,7 +761,7 @@ Route::prefix('pesantren')
             //     Route::post('/generate',   [PesantrenPerformanceController::class, 'generate']);
             //     Route::get('/{id}',        [PesantrenPerformanceController::class, 'show'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // HARI LIBUR PESANTREN — kelola
             // Sejajar: HrCompanyHolidayController
@@ -772,47 +774,47 @@ Route::prefix('pesantren')
             //     Route::put('/{id}',    [PesantrenHolidayController::class, 'update'])->whereNumber('id');
             //     Route::delete('/{id}', [PesantrenHolidayController::class, 'destroy'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // KARTU PRESTASI IQRO — kelola & catat sesi ngaji santri
             // (ustadz: full CRUD + paraf + rekap per santri)
             // -------------------------------------------------
-            // Route::prefix('mutabaah')->group(function () {
- 
-            //     // GET /api/pesantren/mutabaah/rekap          — rekap semua santri (progress jilid)
-            //     Route::get('/rekap',          [PesantrenMutabaahController::class, 'rekap']);
- 
-            //     // GET /api/pesantren/mutabaah/export         — export PDF kartu prestasi
-            //     Route::get('/export',         [PesantrenMutabaahController::class, 'export']);
- 
-            //     // GET /api/pesantren/mutabaah/today          — sesi ngaji hari ini semua santri
-            //     Route::get('/today',          [PesantrenMutabaahController::class, 'today']);
- 
-            //     // GET /api/pesantren/mutabaah                — list semua record (bisa filter ?santri_id=&jilid=&tanggal=)
-            //     Route::get('/',               [PesantrenMutabaahController::class, 'index']);
- 
-            //     // POST /api/pesantren/mutabaah               — catat sesi ngaji santri
-            //     Route::post('/',              [PesantrenMutabaahController::class, 'store']);
- 
-            //     // GET /api/pesantren/mutabaah/{id}           — detail satu sesi
-            //     Route::get('/{id}',           [PesantrenMutabaahController::class, 'show'])->whereNumber('id');
- 
-            //     // PUT /api/pesantren/mutabaah/{id}           — edit sesi (koreksi nilai/halaman)
-            //     Route::put('/{id}',           [PesantrenMutabaahController::class, 'update'])->whereNumber('id');
- 
-            //     // DELETE /api/pesantren/mutabaah/{id}        — hapus sesi
-            //     Route::delete('/{id}',        [PesantrenMutabaahController::class, 'destroy'])->whereNumber('id');
- 
-            //     // POST /api/pesantren/mutabaah/{id}/sign     — ustadz paraf sesi ini
-            //     Route::post('/{id}/sign',     [PesantrenMutabaahController::class, 'sign'])->whereNumber('id');
- 
-            //     // GET /api/pesantren/mutabaah/santri/{santriId}         — kartu prestasi per santri (semua jilid)
-            //     Route::get('/santri/{santriId}',         [PesantrenMutabaahController::class, 'santriKartu'])->whereNumber('santriId');
- 
-            //     // GET /api/pesantren/mutabaah/santri/{santriId}/progress — posisi terakhir santri (jilid & halaman)
-            //     Route::get('/santri/{santriId}/progress',[PesantrenMutabaahController::class, 'santriProgress'])->whereNumber('santriId');
-            // });
- 
+            Route::prefix('mutabaah')->group(function () {
+
+                // GET /api/pesantren/mutabaah/rekap          — rekap semua santri (progress jilid)
+                Route::get('/rekap',          [PesantrenMutabaahController::class, 'rekap']);
+
+                // GET /api/pesantren/mutabaah/export         — export PDF kartu prestasi
+                Route::get('/export',         [PesantrenMutabaahController::class, 'export']);
+
+                // GET /api/pesantren/mutabaah/today          — sesi ngaji hari ini semua santri
+                Route::get('/today',          [PesantrenMutabaahController::class, 'today']);
+
+                // GET /api/pesantren/mutabaah                — list semua record (bisa filter ?santri_id=&jilid=&tanggal=)
+                Route::get('/',               [PesantrenMutabaahController::class, 'index']);
+
+                // POST /api/pesantren/mutabaah               — catat sesi ngaji santri
+                Route::post('/',              [PesantrenMutabaahController::class, 'store']);
+
+                // GET /api/pesantren/mutabaah/{id}           — detail satu sesi
+                Route::get('/{id}',           [PesantrenMutabaahController::class, 'show'])->whereNumber('id');
+
+                // PUT /api/pesantren/mutabaah/{id}           — edit sesi (koreksi nilai/halaman)
+                Route::put('/{id}',           [PesantrenMutabaahController::class, 'update'])->whereNumber('id');
+
+                // DELETE /api/pesantren/mutabaah/{id}        — hapus sesi
+                Route::delete('/{id}',        [PesantrenMutabaahController::class, 'destroy'])->whereNumber('id');
+
+                // POST /api/pesantren/mutabaah/{id}/sign     — ustadz paraf sesi ini
+                Route::post('/{id}/sign',     [PesantrenMutabaahController::class, 'sign'])->whereNumber('id');
+
+                // GET /api/pesantren/mutabaah/santri/{santriId}         — kartu prestasi per santri (semua jilid)
+                Route::get('/santri/{santriId}',         [PesantrenMutabaahController::class, 'santriKartu'])->whereNumber('santriId');
+
+                // GET /api/pesantren/mutabaah/santri/{santriId}/progress — posisi terakhir santri (jilid & halaman)
+                Route::get('/santri/{santriId}/progress', [PesantrenMutabaahController::class, 'santriProgress'])->whereNumber('santriId');
+            });
+
             // -------------------------------------------------
             // JADWAL SHOLAT
             // Sejajar: (khusus pesantren)
@@ -822,19 +824,18 @@ Route::prefix('pesantren')
                 Route::get('/{date}', [PesantrenPrayerController::class, 'byDate'])
                     ->where('date', '^\d{4}-\d{2}-\d{2}$');
             });
- 
         }); // end context:pesantren,ustadz
- 
- 
+
+
         // =====================================================
         // 👦 SANTRI
         // Sejajar dengan: Employee (context:company,employee)
         // =====================================================
         Route::middleware('context:pesantren,santri')->group(function () {
- 
+
             // GET /api/pesantren/santri/dashboard
             // Route::get('/santri/dashboard', [SantriDashboardController::class, 'index']);
- 
+
             // -------------------------------------------------
             // ABSENSI SANTRI — diri sendiri
             // Sejajar: EmployeeAttendanceController
@@ -847,7 +848,7 @@ Route::prefix('pesantren')
                 Route::get('/summary',        [SantriAttendanceController::class, 'summary']);
                 Route::post('/register-face', [SantriAttendanceController::class, 'registerFace']);
             });
- 
+
             // -------------------------------------------------
             // PERIZINAN SANTRI — ajukan sendiri
             // Sejajar: EmployeePermissionController
@@ -858,7 +859,7 @@ Route::prefix('pesantren')
                 Route::get('/{id}',         [SantriPermissionController::class, 'show'])->whereNumber('id');
                 Route::post('/{id}/cancel', [SantriPermissionController::class, 'cancel'])->whereNumber('id');
             });
- 
+
             // -------------------------------------------------
             // CATATAN — lihat catatan dari ustadz (read-only)
             // Sejajar: EmployeeNotesController
@@ -869,7 +870,7 @@ Route::prefix('pesantren')
                 Route::get('/{id}',        [SantriNotesController::class, 'show'])->whereNumber('id');
                 Route::patch('/{id}/read', [SantriNotesController::class, 'markRead'])->whereNumber('id');
             });
- 
+
             // -------------------------------------------------
             // LAPORAN HARIAN SANTRI
             // Sejajar: EmployeeDailyReportController
@@ -883,7 +884,7 @@ Route::prefix('pesantren')
             //     Route::get('/{id}',    [SantriDailyReportController::class, 'show'])->whereNumber('id');
             //     Route::post('/{id}',   [SantriDailyReportController::class, 'update'])->whereNumber('id'); // update pencapaian sore
             // });
- 
+
             // -------------------------------------------------
             // LAPORAN BULANAN SANTRI
             // Sejajar: EmployeeMonthlyReportController
@@ -898,7 +899,7 @@ Route::prefix('pesantren')
             //     Route::patch('/{id}/submit', [SantriMonthlyReportController::class, 'submit'])->whereNumber('id');
             //     Route::delete('/{id}',       [SantriMonthlyReportController::class, 'destroy'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // NILAI / PERFORMA SANTRI — lihat sendiri
             // Sejajar: EmployeePerformanceScoreController
@@ -908,7 +909,7 @@ Route::prefix('pesantren')
             //     Route::get('/',            [SantriPerformanceController::class, 'index']);
             //     Route::get('/{id}',        [SantriPerformanceController::class, 'show'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // JADWAL — lihat jadwal dari ustadz
             // Sejajar: EmployeeSchedulesController
@@ -920,7 +921,7 @@ Route::prefix('pesantren')
                 Route::get('/{id}',          [SantriSchedulesController::class, 'show'])->whereNumber('id');
                 Route::post('/{id}/respond', [SantriSchedulesController::class, 'respond'])->whereNumber('id');
             });
- 
+
             // -------------------------------------------------
             // HARI LIBUR — lihat saja (read-only)
             // Sejajar: EmployeeHolidayController
@@ -929,26 +930,26 @@ Route::prefix('pesantren')
             //     Route::get('/',     [SantriHolidayController::class, 'index']);
             //     Route::get('/{id}', [SantriHolidayController::class, 'show'])->whereNumber('id');
             // });
- 
+
             // -------------------------------------------------
             // KARTU PRESTASI IQRO — lihat progress sendiri
             // (santri: read-only, lihat kartu & riwayat ngaji)
             // -------------------------------------------------
-            // Route::prefix('santri/mutabaah')->group(function () {
- 
-            //     // GET /api/pesantren/santri/mutabaah/progress — posisi terakhir (jilid & halaman aktif)
-            //     Route::get('/progress', [SantriMutabaahController::class, 'progress']);
- 
-            //     // GET /api/pesantren/santri/mutabaah/export   — export PDF kartu prestasi milik sendiri
-            //     Route::get('/export',   [SantriMutabaahController::class, 'export']);
- 
-            //     // GET /api/pesantren/santri/mutabaah          — semua riwayat ngaji (bisa filter ?jilid=&bulan=)
-            //     Route::get('/',         [SantriMutabaahController::class, 'index']);
- 
-            //     // GET /api/pesantren/santri/mutabaah/{id}     — detail satu sesi
-            //     Route::get('/{id}',     [SantriMutabaahController::class, 'show'])->whereNumber('id');
-            // });
- 
+            Route::prefix('santri/mutabaah')->group(function () {
+
+                // GET /api/pesantren/santri/mutabaah/progress — posisi terakhir (jilid & halaman aktif)
+                Route::get('/progress', [SantriMutabaahController::class, 'progress']);
+
+                // GET /api/pesantren/santri/mutabaah/export   — export PDF kartu prestasi milik sendiri
+                Route::get('/export',   [SantriMutabaahController::class, 'export']);
+
+                // GET /api/pesantren/santri/mutabaah          — semua riwayat ngaji (bisa filter ?jilid=&bulan=)
+                Route::get('/',         [SantriMutabaahController::class, 'index']);
+
+                // GET /api/pesantren/santri/mutabaah/{id}     — detail satu sesi
+                Route::get('/{id}',     [SantriMutabaahController::class, 'show'])->whereNumber('id');
+            });
+
             // -------------------------------------------------
             // JADWAL SHOLAT
             // Sejajar: (khusus pesantren)
@@ -958,11 +959,10 @@ Route::prefix('pesantren')
                 Route::get('/{date}', [SantriPrayerController::class, 'byDate'])
                     ->where('date', '^\d{4}-\d{2}-\d{2}$');
             });
- 
         }); // end context:pesantren,santri
- 
+
     });
- 
+
 
 
 Route::prefix('school')
