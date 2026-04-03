@@ -8,14 +8,14 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Validation\Validator;
+use Illuminate\Support\Facades\Validator;
 
 class PesantrenDailyReportController extends Controller
 {
      // ============================================================
     // PRIVATE HELPERS
     // ============================================================
- 
+
     private function ensureUstadz(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'ustadz') {
@@ -25,7 +25,7 @@ class PesantrenDailyReportController extends Controller
             ], 403));
         }
     }
- 
+
     private function bulanLabel(int $month): string
     {
         return [
@@ -35,7 +35,7 @@ class PesantrenDailyReportController extends Controller
             10 => 'Oktober',   11 => 'November',  12 => 'Desember',
         ][$month] ?? (string) $month;
     }
- 
+
     // ============================================================
     // INDEX — GET /api/pesantren/daily-reports
     // Sejajar: HrCompanyDailyReportController::index()
@@ -45,11 +45,11 @@ class PesantrenDailyReportController extends Controller
     public function index(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $query = DailyReport::with('user:id,name,position,department,image_url')
             ->where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'));
- 
+
         if ($request->filled('user_id'))    $query->where('user_id', $request->user_id);
         if ($request->filled('date'))       $query->where('date', $request->date);
         if ($request->filled('start') && $request->filled('end')) {
@@ -67,7 +67,7 @@ class PesantrenDailyReportController extends Controller
         if ($request->filled('pending_evening') && $request->pending_evening) {
             $query->whereNull('achievement');
         }
- 
+
         return response()->json([
             'status'  => true,
             'message' => 'Berhasil mengambil data laporan harian santri',
@@ -75,7 +75,7 @@ class PesantrenDailyReportController extends Controller
                 ->paginate((int) $request->get('per_page', 15)),
         ]);
     }
- 
+
     // ============================================================
     // SHOW — GET /api/pesantren/daily-reports/{id}
     // Sejajar: HrCompanyDailyReportController::show()
@@ -83,18 +83,18 @@ class PesantrenDailyReportController extends Controller
     public function show(int $id)
     {
         $this->ensureUstadz();
- 
+
         $report = DailyReport::with('user:id,name,position,department,image_url')
             ->where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->findOrFail($id);
- 
+
         return response()->json([
             'status' => true,
             'data'   => $report,
         ]);
     }
- 
+
     // ============================================================
     // SUMMARY — GET /api/pesantren/daily-reports/summary
     // Sejajar: HrCompanyDailyReportController::summary()
@@ -103,7 +103,7 @@ class PesantrenDailyReportController extends Controller
     public function summary(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $validator = Validator::make($request->all(), [
             'month' => 'required|integer|between:1,12',
             'year'  => 'required|integer',
@@ -114,7 +114,7 @@ class PesantrenDailyReportController extends Controller
                 'errors' => $validator->errors(),
             ], 422);
         }
- 
+
         $summary = DailyReport::where('company_id', Auth::user()->company_id)
             ->whereMonth('date', $request->month)
             ->whereYear('date',  $request->year)
@@ -133,13 +133,13 @@ class PesantrenDailyReportController extends Controller
             ->groupBy('user_id')
             ->with('user:id,name,department,position,image_url')
             ->get();
- 
+
         return response()->json([
             'status' => true,
             'data'   => $summary,
         ]);
     }
- 
+
     // ============================================================
     // TODAY — GET /api/pesantren/daily-reports/today
     // Sejajar: HrCompanyDailyReportController::today()
@@ -147,14 +147,14 @@ class PesantrenDailyReportController extends Controller
     public function today()
     {
         $this->ensureUstadz();
- 
+
         $today     = now()->toDateString();
         $submitted = DailyReport::with('user:id,name,department,position,image_url')
             ->where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->where('date', $today)
             ->get();
- 
+
         return response()->json([
             'status' => true,
             'date'   => $today,
@@ -166,7 +166,7 @@ class PesantrenDailyReportController extends Controller
             'data' => $submitted,
         ]);
     }
- 
+
     // ============================================================
     // SANTRI REPORTS — GET /api/pesantren/daily-reports/santri
     // List semua santri + status laporan hari ini
@@ -175,10 +175,10 @@ class PesantrenDailyReportController extends Controller
     public function santriReports(): JsonResponse
     {
         $this->ensureUstadz();
- 
+
         $companyId = Auth::user()->company_id;
         $today     = now()->toDateString();
- 
+
         $santriList = User::where('company_id', $companyId)
             ->where('role', 'santri')
             ->select(['id', 'name', 'position', 'department', 'image_url'])
@@ -201,11 +201,11 @@ class PesantrenDailyReportController extends Controller
                     'is_achieved'       => (bool) ($report?->is_achieved ?? false),
                 ];
             });
- 
+
         $total     = $santriList->count();
         $submitted = $santriList->where('submitted_morning', true)->count();
         $completed = $santriList->where('submitted_evening', true)->count();
- 
+
         return response()->json([
             'status'  => true,
             'message' => 'Status laporan santri hari ini',
@@ -219,7 +219,7 @@ class PesantrenDailyReportController extends Controller
             'data' => $santriList->values(),
         ]);
     }
- 
+
     // ============================================================
     // EXPORT — GET /api/pesantren/daily-reports/export
     // Sejajar: HrCompanyDailyReportController::export()
@@ -228,7 +228,7 @@ class PesantrenDailyReportController extends Controller
     public function export(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $validator = Validator::make($request->all(), [
             'month' => 'required|integer|between:1,12',
             'year'  => 'required|integer|min:2020|max:2099',
@@ -239,11 +239,11 @@ class PesantrenDailyReportController extends Controller
                 'errors' => $validator->errors(),
             ], 422);
         }
- 
+
         $companyId = Auth::user()->company_id;
         $month     = (int) $request->month;
         $year      = (int) $request->year;
- 
+
         $query = DailyReport::where('company_id', $companyId)
             ->whereMonth('date', $month)
             ->whereYear('date',  $year)
@@ -251,13 +251,13 @@ class PesantrenDailyReportController extends Controller
             ->with('user:id,name,position,department')
             ->orderBy('date')
             ->orderBy('user_id');
- 
+
         if ($request->filled('user_id')) {
             $query->where('user_id', (int) $request->user_id);
         }
- 
+
         $reports = $query->get();
- 
+
         $summaryPerSantri = $reports->groupBy('user_id')->map(function ($items) {
             $total       = $items->count();
             $achieved    = $items->where('is_achieved', true)->count();
@@ -266,7 +266,7 @@ class PesantrenDailyReportController extends Controller
             $rate        = $total > 0
                 ? round(($achieved / max($total - $pending, 1)) * 100, 1)
                 : 0;
- 
+
             return [
                 'santri'             => $items->first()->user,
                 'total_days'         => $total,
@@ -277,10 +277,10 @@ class PesantrenDailyReportController extends Controller
                 'reports'            => $items,
             ];
         })->values();
- 
+
         $periodLabel = $this->bulanLabel($month) . ' ' . $year;
         $fileName    = 'laporan-harian-santri-' . $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '.pdf';
- 
+
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.pesantren_daily_report', [
             'company'          => Auth::user()->company,
             'periodLabel'      => $periodLabel,
@@ -292,7 +292,7 @@ class PesantrenDailyReportController extends Controller
         ])
             ->setPaper('a4', 'portrait')
             ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
- 
+
         return $pdf->download($fileName);
     }
 }

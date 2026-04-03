@@ -13,11 +13,6 @@ use Illuminate\Http\Request;
 class PesantrenUstadzAttendanceController extends Controller
 {
 
-    // kode 2
-    // ============================================================
-    // PRIVATE HELPERS
-    // ============================================================
-
     private function ensureUstadz(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'ustadz') {
@@ -126,8 +121,75 @@ class PesantrenUstadzAttendanceController extends Controller
     }
 
     // ============================================================
-    // USTADZ CHECK-IN (absensi diri sendiri)
-    // POST /api/pesantren/attendances/check-in
+    // GET SETTINGS
+    // GET /api/pesantren/attendances/settings
+    // Sejajar: HrCompanyAttendanceController::settings()
+    // ============================================================
+    public function settings(): JsonResponse
+    {
+        $this->ensureUstadz();
+        $company = $this->pesantrenOrFail();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Setting absensi pesantren berhasil diambil',
+            'data'    => [
+                'company_id'   => (int)    $company->id,
+                'company_name' => (string) $company->name,
+                'latitude'     => (string) $company->latitude,
+                'longitude'    => (string) $company->longitude,
+                'radius_km'    => (string) $company->radius_km,
+                'time_in'      => (string) $company->time_in,
+                'time_out'     => (string) $company->time_out,
+            ],
+        ]);
+    }
+
+    // ============================================================
+    // UPDATE SETTINGS  ← BARU (sejajar HR)
+    // POST /api/pesantren/attendances/settings
+    // Sejajar: HrCompanyAttendanceController::updateSettings()
+    // ============================================================
+    public function updateSettings(Request $request): JsonResponse
+    {
+        $this->ensureUstadz();
+        $company = $this->pesantrenOrFail();
+
+        $validated = $request->validate([
+            'latitude'  => 'required|numeric|between:-90,90',
+            'longitude' => 'required|numeric|between:-180,180',
+            'radius_km' => 'required|numeric|min:0.01|max:50',
+            'time_in'   => 'nullable|date_format:H:i',
+            'time_out'  => 'nullable|date_format:H:i',
+        ]);
+
+        $company->update([
+            'latitude'  => (string) $validated['latitude'],
+            'longitude' => (string) $validated['longitude'],
+            'radius_km' => (string) $validated['radius_km'],
+            'time_in'   => $validated['time_in']  ?? $company->time_in,
+            'time_out'  => $validated['time_out'] ?? $company->time_out,
+        ]);
+
+        $company->refresh();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Setting absensi pesantren berhasil diperbarui',
+            'data'    => [
+                'company_id'   => (int)    $company->id,
+                'company_name' => (string) $company->name,
+                'latitude'     => (string) $company->latitude,
+                'longitude'    => (string) $company->longitude,
+                'radius_km'    => (string) $company->radius_km,
+                'time_in'      => (string) $company->time_in,
+                'time_out'     => (string) $company->time_out,
+            ],
+        ]);
+    }
+
+    // ============================================================
+    // CHECK-IN  (tidak berubah)
     // ============================================================
     public function checkIn(Request $request): JsonResponse
     {
@@ -155,10 +217,7 @@ class PesantrenUstadzAttendanceController extends Controller
                     number_format($distanceKm * 1000, 0),
                     number_format((float) $company->radius_km * 1000, 0)
                 ),
-                'data' => [
-                    'distance_km' => round($distanceKm, 3),
-                    'radius_km'   => (float) $company->radius_km,
-                ],
+                'data' => ['distance_km' => round($distanceKm, 3), 'radius_km' => (float) $company->radius_km],
             ], 422);
         }
 
@@ -179,11 +238,7 @@ class PesantrenUstadzAttendanceController extends Controller
             ], 422);
         }
 
-        // Hitung keterlambatan berdasarkan time_in company
-        $scheduledIn  = $company->time_in
-            ? Carbon::parse($today . ' ' . $company->time_in)
-            : null;
-
+        $scheduledIn = $company->time_in ? Carbon::parse($today . ' ' . $company->time_in) : null;
         $lateMinutes = 0;
         if ($scheduledIn && $now->gt($scheduledIn)) {
             $lateMinutes = (int) $now->diffInMinutes($scheduledIn);
@@ -198,8 +253,8 @@ class PesantrenUstadzAttendanceController extends Controller
         $attendance->scheduled_out = $company->time_out;
         $attendance->status        = $lateMinutes > 0 ? 'late' : 'on_time';
         $attendance->late_minutes  = $lateMinutes;
-        $attendance->face_verified = false; // ustadz tidak pakai face scan
-        $attendance->marked_by     = null;  // mandiri
+        $attendance->face_verified = false;
+        $attendance->marked_by     = null;
         $attendance->save();
 
         $msg = 'Check-in berhasil';
@@ -213,8 +268,7 @@ class PesantrenUstadzAttendanceController extends Controller
     }
 
     // ============================================================
-    // USTADZ CHECK-OUT (absensi diri sendiri)
-    // POST /api/pesantren/attendances/check-out
+    // CHECK-OUT  (tidak berubah)
     // ============================================================
     public function checkOut(Request $request): JsonResponse
     {
@@ -242,10 +296,7 @@ class PesantrenUstadzAttendanceController extends Controller
                     number_format($distanceKm * 1000, 0),
                     number_format((float) $company->radius_km * 1000, 0)
                 ),
-                'data' => [
-                    'distance_km' => round($distanceKm, 3),
-                    'radius_km'   => (float) $company->radius_km,
-                ],
+                'data' => ['distance_km' => round($distanceKm, 3), 'radius_km' => (float) $company->radius_km],
             ], 422);
         }
 
@@ -259,10 +310,7 @@ class PesantrenUstadzAttendanceController extends Controller
             ->first();
 
         if (!$attendance || !$attendance->time_in) {
-            return response()->json([
-                'status'  => false,
-                'message' => 'Anda belum check-in hari ini',
-            ], 422);
+            return response()->json(['status' => false, 'message' => 'Anda belum check-in hari ini'], 422);
         }
 
         if ($attendance->time_out) {
@@ -272,11 +320,7 @@ class PesantrenUstadzAttendanceController extends Controller
             ], 422);
         }
 
-        // Hitung pulang lebih awal
-        $scheduledOut = $company->time_out
-            ? Carbon::parse($today . ' ' . $company->time_out)
-            : null;
-
+        $scheduledOut = $company->time_out ? Carbon::parse($today . ' ' . $company->time_out) : null;
         $earlyLeaveMinutes = 0;
         if ($scheduledOut && $now->lt($scheduledOut)) {
             $earlyLeaveMinutes = (int) $scheduledOut->diffInMinutes($now);
@@ -298,8 +342,7 @@ class PesantrenUstadzAttendanceController extends Controller
     }
 
     // ============================================================
-    // IS CHECKED IN (status absensi diri sendiri hari ini)
-    // GET /api/pesantren/attendances/is-checkin
+    // IS CHECKED-IN  (tidak berubah)
     // ============================================================
     public function isCheckedIn(): JsonResponse
     {
@@ -329,17 +372,15 @@ class PesantrenUstadzAttendanceController extends Controller
                     'time_in'             => $attendance->time_in,
                     'time_out'            => $attendance->time_out,
                     'status'              => $attendance->status,
-                    'late_minutes'        => (int)  ($attendance->late_minutes        ?? 0),
-                    'early_leave_minutes' => (int)  ($attendance->early_leave_minutes ?? 0),
+                    'late_minutes'        => (int) ($attendance->late_minutes        ?? 0),
+                    'early_leave_minutes' => (int) ($attendance->early_leave_minutes ?? 0),
                 ] : null,
             ],
         ]);
     }
 
     // ============================================================
-    // HISTORY ABSENSI DIRI SENDIRI
-    // GET /api/pesantren/attendances/history
-    // Query: month, year, per_page
+    // HISTORY  (tidak berubah)
     // ============================================================
     public function history(Request $request): JsonResponse
     {
@@ -387,9 +428,7 @@ class PesantrenUstadzAttendanceController extends Controller
     }
 
     // ============================================================
-    // SUMMARY ABSENSI DIRI SENDIRI
-    // GET /api/pesantren/attendances/summary
-    // Query: month, year
+    // SUMMARY  (tidak berubah)
     // ============================================================
     public function summary(Request $request): JsonResponse
     {
@@ -425,11 +464,9 @@ class PesantrenUstadzAttendanceController extends Controller
     }
 
     // ============================================================
-    // SANTRI TODAY (list absensi santri hari ini)
-    // GET /api/pesantren/attendances/santri
-    // Sejajar: HrCompanyAttendanceController::employeesToday()
+    // SANTRI TODAY  (tidak berubah)
     // ============================================================
-    public function santriToday()
+    public function santriToday(): JsonResponse
     {
         $this->ensureUstadz();
         $company = $this->pesantrenOrFail();
@@ -455,21 +492,21 @@ class PesantrenUstadzAttendanceController extends Controller
                 return [
                     'id'             => (int) $santri->id,
                     'name'           => $santri->name,
-                    'position'       => $santri->position,    // bisa dipakai untuk kelas/kamar
-                    'department'     => $santri->department,  // bisa dipakai untuk angkatan
+                    'position'       => $santri->position,
+                    'department'     => $santri->department,
                     'image_url'      => $santri->image_url,
                     'face_embedding' => $santri->face_embedding,
                     'has_face'       => !empty($santri->face_embedding),
                     'attendance'     => $att ? [
-                        'status'               => $att->status,
-                        'time_in'              => $att->time_in,
-                        'time_out'             => $att->time_out,
-                        'scheduled_in'         => $att->scheduled_in,
-                        'scheduled_out'        => $att->scheduled_out,
-                        'late_minutes'         => (int)  ($att->late_minutes        ?? 0),
-                        'early_leave_minutes'  => (int)  ($att->early_leave_minutes ?? 0),
-                        'face_verified'        => (bool) ($att->face_verified       ?? false),
-                        'marked_by'            => $att->marked_by,
+                        'status'              => $att->status,
+                        'time_in'             => $att->time_in,
+                        'time_out'            => $att->time_out,
+                        'scheduled_in'        => $att->scheduled_in,
+                        'scheduled_out'       => $att->scheduled_out,
+                        'late_minutes'        => (int)  ($att->late_minutes        ?? 0),
+                        'early_leave_minutes' => (int)  ($att->early_leave_minutes ?? 0),
+                        'face_verified'       => (bool) ($att->face_verified       ?? false),
+                        'marked_by'           => $att->marked_by,
                     ] : null,
                     'next_action'   => $nextAction,
                     'can_checkin'   => $nextAction === 'checkin',
@@ -479,14 +516,10 @@ class PesantrenUstadzAttendanceController extends Controller
             })
             ->values();
 
-        // Summary hari ini
-        $totalSantri = User::where('role', 'santri')
-            ->where('company_id', $company->id)
-            ->count();
-
-        $hadir  = $santriList->filter(fn($s) => $s['attendance'] !== null)->count();
-        $absent = max(0, $totalSantri - $hadir);
-        $late = $santriList->filter(fn($s) => ($s['attendance']['status'] ?? null) === 'late')->count();
+        $totalSantri = User::where('role', 'santri')->where('company_id', $company->id)->count();
+        $hadir       = $santriList->filter(fn($s) => $s['attendance'] !== null)->count();
+        $late        = $santriList->filter(fn($s) => ($s['attendance']['status'] ?? null) === 'late')->count();
+        $absent      = max(0, $totalSantri - $hadir);
 
         return response()->json([
             'status'  => true,
@@ -494,21 +527,14 @@ class PesantrenUstadzAttendanceController extends Controller
             'data'    => [
                 'date'      => $today,
                 'pesantren' => $this->pesantrenArray($company),
-                'summary'   => [
-                    'total'  => $totalSantri,
-                    'hadir'  => $hadir,
-                    'late'   => $late,
-                    'absent' => $absent,
-                ],
+                'summary'   => ['total' => $totalSantri, 'hadir' => $hadir, 'late' => $late, 'absent' => $absent],
                 'santri'    => $santriList,
             ],
         ]);
     }
 
     // ============================================================
-    // MARK SANTRI ATTENDANCE (absensi santri manual oleh ustadz)
-    // POST /api/pesantren/attendances/santri/mark
-    // Sejajar: HrCompanyAttendanceController::markEmployeeAttendance()
+    // MARK SANTRI  (tidak berubah)
     // ============================================================
     public function markSantriAttendance(Request $request): JsonResponse
     {
@@ -529,10 +555,7 @@ class PesantrenUstadzAttendanceController extends Controller
             ->first();
 
         if (!$santri) {
-            return response()->json([
-                'status'  => false,
-                'message' => 'User bukan santri atau bukan bagian pesantren ini',
-            ], 422);
+            return response()->json(['status' => false, 'message' => 'User bukan santri atau bukan bagian pesantren ini'], 422);
         }
 
         if (empty($santri->face_embedding)) {
@@ -559,10 +582,7 @@ class PesantrenUstadzAttendanceController extends Controller
                     number_format($distanceKm * 1000, 0),
                     number_format((float) $company->radius_km * 1000, 0)
                 ),
-                'data' => [
-                    'distance_km' => round($distanceKm, 3),
-                    'radius_km'   => (float) $company->radius_km,
-                ],
+                'data' => ['distance_km' => round($distanceKm, 3), 'radius_km' => (float) $company->radius_km],
             ], 422);
         }
 
@@ -570,12 +590,8 @@ class PesantrenUstadzAttendanceController extends Controller
         $now    = Carbon::now();
         $latlon = $validated['latitude'] . ',' . $validated['longitude'];
 
-        $scheduledIn  = $company->time_in
-            ? Carbon::parse($today . ' ' . $company->time_in)
-            : null;
-        $scheduledOut = $company->time_out
-            ? Carbon::parse($today . ' ' . $company->time_out)
-            : null;
+        $scheduledIn  = $company->time_in  ? Carbon::parse($today . ' ' . $company->time_in)  : null;
+        $scheduledOut = $company->time_out ? Carbon::parse($today . ' ' . $company->time_out) : null;
 
         $attendance = Attendance::firstOrNew([
             'company_id' => $company->id,
@@ -586,17 +602,14 @@ class PesantrenUstadzAttendanceController extends Controller
         $attendance->company_id    = $company->id;
         $attendance->user_id       = $santri->id;
         $attendance->date          = $today;
-        $attendance->marked_by     = auth()->id(); // dicatat siapa ustadz yang mark
+        $attendance->marked_by     = auth()->id();
         $attendance->scheduled_in  = $scheduledIn?->format('H:i:s');
         $attendance->scheduled_out = $scheduledOut?->format('H:i:s');
-        $attendance->face_verified = true; // ustadz yang verifikasi secara langsung
+        $attendance->face_verified = true;
 
         if ($validated['action'] === 'checkin') {
             if ($attendance->time_in) {
-                return response()->json([
-                    'status'  => false,
-                    'message' => 'Santri sudah check-in hari ini pada pukul ' . $attendance->time_in,
-                ], 422);
+                return response()->json(['status' => false, 'message' => 'Santri sudah check-in hari ini pada pukul ' . $attendance->time_in], 422);
             }
 
             $lateMinutes = 0;
@@ -613,26 +626,15 @@ class PesantrenUstadzAttendanceController extends Controller
             $msg = 'Check-in santri berhasil';
             if ($lateMinutes > 0) $msg .= " (terlambat {$lateMinutes} menit)";
 
-            return response()->json([
-                'status'  => true,
-                'message' => $msg,
-                'data'    => $this->attendanceArray($attendance, $santri, 'checkin', $company, $distanceKm),
-            ]);
+            return response()->json(['status' => true, 'message' => $msg, 'data' => $this->attendanceArray($attendance, $santri, 'checkin', $company, $distanceKm)]);
         }
 
-        // action === checkout
         if (!$attendance->time_in) {
-            return response()->json([
-                'status'  => false,
-                'message' => 'Santri belum check-in hari ini',
-            ], 422);
+            return response()->json(['status' => false, 'message' => 'Santri belum check-in hari ini'], 422);
         }
 
         if ($attendance->time_out) {
-            return response()->json([
-                'status'  => false,
-                'message' => 'Santri sudah check-out hari ini pada pukul ' . $attendance->time_out,
-            ], 422);
+            return response()->json(['status' => false, 'message' => 'Santri sudah check-out hari ini pada pukul ' . $attendance->time_out], 422);
         }
 
         $earlyLeaveMinutes = 0;
@@ -648,18 +650,11 @@ class PesantrenUstadzAttendanceController extends Controller
         $msg = 'Check-out santri berhasil';
         if ($earlyLeaveMinutes > 0) $msg .= " (pulang {$earlyLeaveMinutes} menit lebih awal)";
 
-        return response()->json([
-            'status'  => true,
-            'message' => $msg,
-            'data'    => $this->attendanceArray($attendance, $santri, 'checkout', $company, $distanceKm),
-        ]);
+        return response()->json(['status' => true, 'message' => $msg, 'data' => $this->attendanceArray($attendance, $santri, 'checkout', $company, $distanceKm)]);
     }
 
     // ============================================================
-    // SANTRI HISTORY (riwayat absensi satu santri)
-    // GET /api/pesantren/attendances/santri/{id}/history
-    // Sejajar: HrCompanyAttendanceController::employeeHistory()
-    // Query: month, year, per_page
+    // SANTRI HISTORY  (tidak berubah)
     // ============================================================
     public function santriHistory(Request $request, int $id): JsonResponse
     {
@@ -700,16 +695,12 @@ class PesantrenUstadzAttendanceController extends Controller
         return response()->json([
             'status'  => true,
             'message' => 'Riwayat absensi santri berhasil diambil',
-            'santri'  => [
-                'id'       => $santri->id,
-                'name'     => $santri->name,
-                'position' => $santri->position,
-            ],
+            'santri'  => ['id' => $santri->id, 'name' => $santri->name, 'position' => $santri->position],
             'data'    => $data,
             'meta'    => [
-                'month'        => $month,
-                'year'         => $tahun,
-                'label'        => $this->bulanLabel($month) . ' ' . $tahun,
+                'month' => $month,
+                'year' => $tahun,
+                'label' => $this->bulanLabel($month) . ' ' . $tahun,
                 'current_page' => $history->currentPage(),
                 'last_page'    => $history->lastPage(),
                 'per_page'     => $history->perPage(),
@@ -719,9 +710,7 @@ class PesantrenUstadzAttendanceController extends Controller
     }
 
     // ============================================================
-    // TODAY SUMMARY (ringkasan semua absensi hari ini)
-    // GET /api/pesantren/attendances/summary (alias endpoint dashboard)
-    // Sejajar: HrCompanyAttendanceController::todaySummary()
+    // TODAY SUMMARY  (tidak berubah)
     // ============================================================
     public function todaySummary(): JsonResponse
     {
@@ -729,20 +718,15 @@ class PesantrenUstadzAttendanceController extends Controller
         $company = $this->pesantrenOrFail();
         $today   = Carbon::today()->toDateString();
 
-        $totalSantri = User::where('role', 'santri')
-            ->where('company_id', $company->id)
-            ->count();
+        $totalSantri = User::where('role', 'santri')->where('company_id', $company->id)->count();
+        $totalUstadz = User::where('role', 'ustadz')->where('company_id', $company->id)->count();
 
-        $totalUstadz = User::where('role', 'ustadz')
-            ->where('company_id', $company->id)
-            ->count();
-
-        $santriAttendances = Attendance::where('company_id', $company->id)
+        $santriAtt = Attendance::where('company_id', $company->id)
             ->whereDate('date', $today)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->get();
 
-        $ustadzAttendances = Attendance::where('company_id', $company->id)
+        $ustadzAtt = Attendance::where('company_id', $company->id)
             ->whereDate('date', $today)
             ->whereHas('user', fn($q) => $q->where('role', 'ustadz'))
             ->get();
@@ -751,30 +735,27 @@ class PesantrenUstadzAttendanceController extends Controller
             'status'  => true,
             'message' => 'Summary absensi hari ini berhasil diambil',
             'data'    => [
-                'date'    => $today,
-                'santri'  => [
+                'date'   => $today,
+                'santri' => [
                     'total'    => $totalSantri,
-                    'checkin'  => $santriAttendances->whereNotNull('time_in')->count(),
-                    'checkout' => $santriAttendances->whereNotNull('time_out')->count(),
-                    'late'     => $santriAttendances->where('status', 'late')->count(),
-                    'absent'   => max(0, $totalSantri - $santriAttendances->whereNotNull('time_in')->count()),
+                    'checkin'  => $santriAtt->whereNotNull('time_in')->count(),
+                    'checkout' => $santriAtt->whereNotNull('time_out')->count(),
+                    'late'     => $santriAtt->where('status', 'late')->count(),
+                    'absent'   => max(0, $totalSantri - $santriAtt->whereNotNull('time_in')->count()),
                 ],
-                'ustadz'  => [
+                'ustadz' => [
                     'total'    => $totalUstadz,
-                    'checkin'  => $ustadzAttendances->whereNotNull('time_in')->count(),
-                    'checkout' => $ustadzAttendances->whereNotNull('time_out')->count(),
-                    'late'     => $ustadzAttendances->where('status', 'late')->count(),
-                    'absent'   => max(0, $totalUstadz - $ustadzAttendances->whereNotNull('time_in')->count()),
+                    'checkin'  => $ustadzAtt->whereNotNull('time_in')->count(),
+                    'checkout' => $ustadzAtt->whereNotNull('time_out')->count(),
+                    'late'     => $ustadzAtt->where('status', 'late')->count(),
+                    'absent'   => max(0, $totalUstadz - $ustadzAtt->whereNotNull('time_in')->count()),
                 ],
             ],
         ]);
     }
 
     // ============================================================
-    // EXPORT PDF — SEMUA SANTRI (rekap bulanan)
-    // GET /api/pesantren/attendances/export
-    // Sejajar: HrCompanyAttendanceController::exportAllPdf()
-    // Query: month (required), year (required)
+    // EXPORT PDF — SEMUA SANTRI  (tidak berubah)
     // ============================================================
     public function exportAllPdf(Request $request)
     {
@@ -801,8 +782,7 @@ class PesantrenUstadzAttendanceController extends Controller
             ->orderBy('date')
             ->get();
 
-        $grouped = $attendances->groupBy('user_id');
-
+        $grouped     = $attendances->groupBy('user_id');
         $summaryData = $santriList->map(function ($santri) use ($grouped) {
             $atts = $grouped->get($santri->id, collect());
             return [
@@ -828,18 +808,13 @@ class PesantrenUstadzAttendanceController extends Controller
             'year'        => $year,
             'summaryData' => $summaryData,
             'generatedAt' => now()->format('d/m/Y H:i'),
-        ])
-            ->setPaper('a4', 'landscape')
-            ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
+        ])->setPaper('a4', 'landscape')->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
 
         return $pdf->download($fileName);
     }
 
     // ============================================================
-    // EXPORT PDF — 1 SANTRI (detail bulanan)
-    // GET /api/pesantren/attendances/santri/{id}/history/export
-    // Sejajar: HrCompanyAttendanceController::exportEmployeePdf()
-    // Query: month (required), year (required)
+    // EXPORT PDF — 1 SANTRI  (tidak berubah)
     // ============================================================
     public function exportSantriPdf(Request $request, int $id)
     {
@@ -883,35 +858,8 @@ class PesantrenUstadzAttendanceController extends Controller
             'totalLate'   => $attendances->sum('late_minutes'),
             'totalEarly'  => $attendances->sum('early_leave_minutes'),
             'generatedAt' => now()->format('d/m/Y H:i'),
-        ])
-            ->setPaper('a4', 'portrait')
-            ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
+        ])->setPaper('a4', 'portrait')->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
 
         return $pdf->download($fileName);
-    }
-
-    // ============================================================
-    // SETTINGS (baca setting absensi pesantren)
-    // GET /api/pesantren/attendances/settings  (opsional, info saja)
-    // Sejajar: HrCompanyAttendanceController::settings()
-    // ============================================================
-    public function settings(): JsonResponse
-    {
-        $this->ensureUstadz();
-        $company = $this->pesantrenOrFail();
-
-        return response()->json([
-            'status'  => true,
-            'message' => 'Setting absensi pesantren berhasil diambil',
-            'data'    => [
-                'company_id'    => (int)    $company->id,
-                'company_name'  => (string) $company->name,
-                'latitude'      => (string) $company->latitude,
-                'longitude'     => (string) $company->longitude,
-                'radius_km'     => (string) $company->radius_km,
-                'time_in'       => (string) $company->time_in,
-                'time_out'      => (string) $company->time_out,
-            ],
-        ]);
     }
 }

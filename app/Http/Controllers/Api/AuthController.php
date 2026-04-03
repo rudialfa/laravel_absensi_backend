@@ -46,20 +46,7 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $token,
-            // 'user' => [
-            //     'id'         => $user->id,
-            //     'name'       => $user->name,
-            //     'email'      => $user->email,
-            //     'role'       => $role,
-            //     'company_id' => $user->company_id
-            // ],
             'user' => $user,
-            // 'company' => [
-            //     'id'   => $user->company->id,
-            //     'name' => $user->company->name,
-            //     'type' => $type
-            // ],
-            // 'company' => $company = $user->company,
             'context' => [
                 'app_type'  => $type,
                 'role'      => $role,
@@ -252,22 +239,6 @@ class AuthController extends Controller
             'message' => 'Password berhasil diganti'
         ]);
     }
-
-
-    /**
-     * SHOW PROFILE
-     */
-    // public function show(Request $request)
-    // {
-
-    //     $user = $request->user()->load('company');
-
-    //     return response()->json([
-    //         'status' => true,
-    //         'message' => 'Success',
-    //         'data' => $user
-    //     ]);
-    // }
 
     public function show()
     {

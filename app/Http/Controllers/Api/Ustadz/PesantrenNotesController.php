@@ -7,14 +7,14 @@ use App\Models\Note;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\File;
-use Illuminate\Validation\Validator;
+use Illuminate\Support\Facades\Validator;
 
 class PesantrenNotesController extends Controller
 {
     // ============================================================
     // PRIVATE HELPERS
     // ============================================================
- 
+
     private function ensureUstadz(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'ustadz') {
@@ -24,7 +24,7 @@ class PesantrenNotesController extends Controller
             ], 403));
         }
     }
- 
+
     private function uploadImage($file): string
     {
         $destinationPath = public_path('image/notes');
@@ -35,24 +35,32 @@ class PesantrenNotesController extends Controller
         $file->move($destinationPath, $fileName);
         return 'image/notes/' . $fileName;
     }
- 
+
     private function deleteImage(?string $imagePath): void
     {
         if ($imagePath && File::exists(public_path($imagePath))) {
             File::delete(public_path($imagePath));
         }
     }
- 
+
     private function bulanLabel(int $month): string
     {
         return [
-            1  => 'Januari',   2  => 'Februari', 3  => 'Maret',
-            4  => 'April',     5  => 'Mei',       6  => 'Juni',
-            7  => 'Juli',      8  => 'Agustus',   9  => 'September',
-            10 => 'Oktober',   11 => 'November',  12 => 'Desember',
+            1  => 'Januari',
+            2  => 'Februari',
+            3  => 'Maret',
+            4  => 'April',
+            5  => 'Mei',
+            6  => 'Juni',
+            7  => 'Juli',
+            8  => 'Agustus',
+            9  => 'September',
+            10 => 'Oktober',
+            11 => 'November',
+            12 => 'Desember',
         ][$month] ?? (string) $month;
     }
- 
+
     // ============================================================
     // INDEX — GET /api/pesantren/notes/santri
     // Sejajar: HrCompanyNotesController::index()
@@ -62,14 +70,14 @@ class PesantrenNotesController extends Controller
     public function index(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $query = Note::with([
             'user:id,name,position,department,image_url',
             'creator:id,name',
         ])
             ->where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'));
- 
+
         if ($request->filled('user_id'))    $query->where('user_id', $request->user_id);
         if ($request->filled('type'))       $query->where('type', $request->type);
         if ($request->filled('is_read')) {
@@ -83,16 +91,16 @@ class PesantrenNotesController extends Controller
         }
         if ($request->filled('month') && $request->filled('year')) {
             $query->whereMonth('created_at', $request->month)
-                  ->whereYear('created_at',  $request->year);
+                ->whereYear('created_at',  $request->year);
         }
         if ($request->filled('search')) {
             $keyword = $request->search;
             $query->where(function ($q) use ($keyword) {
                 $q->where('title', 'like', "%{$keyword}%")
-                  ->orWhere('note',  'like', "%{$keyword}%");
+                    ->orWhere('note',  'like', "%{$keyword}%");
             });
         }
- 
+
         return response()->json([
             'status'  => true,
             'message' => 'Berhasil mengambil data catatan santri',
@@ -100,7 +108,7 @@ class PesantrenNotesController extends Controller
                 ->paginate((int) $request->get('per_page', 15)),
         ]);
     }
- 
+
     // ============================================================
     // SUMMARY — GET /api/pesantren/notes/santri/summary
     // Sejajar: HrCompanyNotesController::summary()
@@ -108,13 +116,13 @@ class PesantrenNotesController extends Controller
     public function summary(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $summary = Note::where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->when(
                 $request->filled('month') && $request->filled('year'),
                 fn($q) => $q->whereMonth('created_at', $request->month)
-                             ->whereYear('created_at',  $request->year)
+                    ->whereYear('created_at',  $request->year)
             )
             ->selectRaw('
                 user_id,
@@ -128,13 +136,13 @@ class PesantrenNotesController extends Controller
             ->groupBy('user_id')
             ->with('user:id,name,department,position,image_url')
             ->get();
- 
+
         return response()->json([
             'status' => true,
             'data'   => $summary,
         ]);
     }
- 
+
     // ============================================================
     // SHOW — GET /api/pesantren/notes/santri/{id}
     // Sejajar: HrCompanyNotesController::show()
@@ -142,7 +150,7 @@ class PesantrenNotesController extends Controller
     public function show(int $id)
     {
         $this->ensureUstadz();
- 
+
         $note = Note::with([
             'user:id,name,position,department,image_url',
             'creator:id,name',
@@ -150,13 +158,13 @@ class PesantrenNotesController extends Controller
             ->where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->findOrFail($id);
- 
+
         return response()->json([
             'status' => true,
             'data'   => $note,
         ]);
     }
- 
+
     // ============================================================
     // STORE — POST /api/pesantren/notes/santri
     // Sejajar: HrCompanyNotesController::store()
@@ -164,7 +172,7 @@ class PesantrenNotesController extends Controller
     public function store(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $validator = Validator::make($request->all(), [
             'user_id'            => 'required|exists:users,id',
             'title'              => 'required|string|max:255',
@@ -174,31 +182,31 @@ class PesantrenNotesController extends Controller
             'target_achievement' => 'nullable|string',
             'reason'             => 'nullable|string',
         ]);
- 
+
         if ($validator->fails()) {
             return response()->json([
                 'status' => false,
                 'errors' => $validator->errors(),
             ], 422);
         }
- 
+
         $data               = $validator->validated();
         $data['company_id'] = Auth::user()->company_id;
         $data['created_by'] = Auth::id();
- 
+
         if ($request->hasFile('image_url')) {
             $data['image_url'] = $this->uploadImage($request->file('image_url'));
         }
- 
+
         $note = Note::create($data);
- 
+
         return response()->json([
             'status'  => true,
             'message' => 'Catatan santri berhasil dibuat',
             'data'    => $note->load(['user:id,name', 'creator:id,name']),
         ], 201);
     }
- 
+
     // ============================================================
     // UPDATE — POST /api/pesantren/notes/santri/{id}
     // Sejajar: HrCompanyNotesController::update()
@@ -206,11 +214,11 @@ class PesantrenNotesController extends Controller
     public function update(Request $request, int $id)
     {
         $this->ensureUstadz();
- 
+
         $note = Note::where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->findOrFail($id);
- 
+
         $validator = Validator::make($request->all(), [
             'title'              => 'sometimes|string|max:255',
             'note'               => 'sometimes|string',
@@ -219,30 +227,30 @@ class PesantrenNotesController extends Controller
             'target_achievement' => 'nullable|string',
             'reason'             => 'nullable|string',
         ]);
- 
+
         if ($validator->fails()) {
             return response()->json([
                 'status' => false,
                 'errors' => $validator->errors(),
             ], 422);
         }
- 
+
         $data = $validator->validated();
- 
+
         if ($request->hasFile('image_url')) {
             $this->deleteImage($note->image_url);
             $data['image_url'] = $this->uploadImage($request->file('image_url'));
         }
- 
+
         $note->update($data);
- 
+
         return response()->json([
             'status'  => true,
             'message' => 'Catatan santri berhasil diupdate',
             'data'    => $note->fresh(['user:id,name', 'creator:id,name']),
         ]);
     }
- 
+
     // ============================================================
     // DESTROY — DELETE /api/pesantren/notes/santri/{id}
     // Sejajar: HrCompanyNotesController::destroy()
@@ -250,20 +258,20 @@ class PesantrenNotesController extends Controller
     public function destroy(int $id)
     {
         $this->ensureUstadz();
- 
+
         $note = Note::where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'))
             ->findOrFail($id);
- 
+
         $this->deleteImage($note->image_url);
         $note->delete();
- 
+
         return response()->json([
             'status'  => true,
             'message' => 'Catatan santri berhasil dihapus',
         ]);
     }
- 
+
     // ============================================================
     // EXPORT — GET /api/pesantren/notes/santri/export
     // Sejajar: HrCompanyNotesController::export()
@@ -272,36 +280,36 @@ class PesantrenNotesController extends Controller
     public function export(Request $request)
     {
         $this->ensureUstadz();
- 
+
         $validator = Validator::make($request->all(), [
             'month' => 'nullable|integer|between:1,12',
             'year'  => 'nullable|integer|min:2020|max:2099',
             'type'  => 'nullable|in:warning,praise,performance,absence,general',
         ]);
- 
+
         if ($validator->fails()) {
             return response()->json([
                 'status' => false,
                 'errors' => $validator->errors(),
             ], 422);
         }
- 
+
         $query = Note::with([
             'user:id,name,position,department',
             'creator:id,name',
         ])
             ->where('company_id', Auth::user()->company_id)
             ->whereHas('user', fn($q) => $q->where('role', 'santri'));
- 
+
         if ($request->filled('type'))    $query->where('type', $request->type);
         if ($request->filled('user_id')) $query->where('user_id', $request->user_id);
         if ($request->filled('month') && $request->filled('year')) {
             $query->whereMonth('created_at', $request->month)
-                  ->whereYear('created_at',  $request->year);
+                ->whereYear('created_at',  $request->year);
         }
- 
+
         $notes = $query->orderByDesc('created_at')->get();
- 
+
         $stats = [
             'total'       => $notes->count(),
             'warning'     => $notes->where('type', 'warning')->count(),
@@ -311,7 +319,7 @@ class PesantrenNotesController extends Controller
             'general'     => $notes->where('type', 'general')->count(),
             'unread'      => $notes->where('is_read', false)->count(),
         ];
- 
+
         $month       = $request->month;
         $year        = $request->year ?? now()->year;
         $periodLabel = $month
@@ -319,7 +327,7 @@ class PesantrenNotesController extends Controller
             : 'Semua Periode';
         $typeLabel   = $request->filled('type') ? ' - ' . ucfirst($request->type) : '';
         $fileName    = 'catatan-santri-' . now()->format('Y-m-d') . '.pdf';
- 
+
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.pesantren_notes', [
             'company'     => Auth::user()->company ?? (object)['name' => ''],
             'periodLabel' => $periodLabel . $typeLabel,
@@ -329,7 +337,7 @@ class PesantrenNotesController extends Controller
         ])
             ->setPaper('a4', 'portrait')
             ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
- 
+
         return $pdf->download($fileName);
     }
 }

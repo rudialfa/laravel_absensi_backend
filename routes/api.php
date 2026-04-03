@@ -638,6 +638,9 @@ Route::prefix('pesantren')
             // Sejajar: HrCompanyAttendanceController
             // -------------------------------------------------
             Route::prefix('attendances')->group(function () {
+                Route::get('/settings',  [PesantrenUstadzAttendanceController::class, 'settings']);       // BARU
+                Route::post('/settings', [PesantrenUstadzAttendanceController::class, 'updateSettings']); // BARU
+
                 Route::post('/check-in',    [PesantrenUstadzAttendanceController::class, 'checkIn']);
                 Route::post('/check-out',   [PesantrenUstadzAttendanceController::class, 'checkOut']);
                 Route::get('/is-checkin',   [PesantrenUstadzAttendanceController::class, 'isCheckedIn']);
@@ -793,40 +796,25 @@ Route::prefix('pesantren')
             // KARTU PRESTASI IQRO — kelola & catat sesi ngaji santri
             // (ustadz: full CRUD + paraf + rekap per santri)
             // -------------------------------------------------
+
             Route::prefix('mutabaah')->group(function () {
 
-                // GET /api/pesantren/mutabaah/rekap          — rekap semua santri (progress jilid)
-                Route::get('/rekap',          [PesantrenMutabaahController::class, 'rekap']);
+                // ── Static routes (harus di atas /{id}) ────────────────
+                Route::get('/rekap',  [PesantrenMutabaahController::class, 'rekap']);
+                Route::get('/export', [PesantrenMutabaahController::class, 'export']);
+                Route::get('/today',  [PesantrenMutabaahController::class, 'today']);
 
-                // GET /api/pesantren/mutabaah/export         — export PDF kartu prestasi
-                Route::get('/export',         [PesantrenMutabaahController::class, 'export']);
-
-                // GET /api/pesantren/mutabaah/today          — sesi ngaji hari ini semua santri
-                Route::get('/today',          [PesantrenMutabaahController::class, 'today']);
-
-                // GET /api/pesantren/mutabaah                — list semua record (bisa filter ?santri_id=&jilid=&tanggal=)
-                Route::get('/',               [PesantrenMutabaahController::class, 'index']);
-
-                // POST /api/pesantren/mutabaah               — catat sesi ngaji santri
-                Route::post('/',              [PesantrenMutabaahController::class, 'store']);
-
-                // GET /api/pesantren/mutabaah/{id}           — detail satu sesi
-                Route::get('/{id}',           [PesantrenMutabaahController::class, 'show'])->whereNumber('id');
-
-                // PUT /api/pesantren/mutabaah/{id}           — edit sesi (koreksi nilai/halaman)
-                Route::put('/{id}',           [PesantrenMutabaahController::class, 'update'])->whereNumber('id');
-
-                // DELETE /api/pesantren/mutabaah/{id}        — hapus sesi
-                Route::delete('/{id}',        [PesantrenMutabaahController::class, 'destroy'])->whereNumber('id');
-
-                // POST /api/pesantren/mutabaah/{id}/sign     — ustadz paraf sesi ini
-                Route::post('/{id}/sign',     [PesantrenMutabaahController::class, 'sign'])->whereNumber('id');
-
-                // GET /api/pesantren/mutabaah/santri/{santriId}         — kartu prestasi per santri (semua jilid)
-                Route::get('/santri/{santriId}',         [PesantrenMutabaahController::class, 'santriKartu'])->whereNumber('santriId');
-
-                // GET /api/pesantren/mutabaah/santri/{santriId}/progress — posisi terakhir santri (jilid & halaman)
+                // ── Santri sub-routes (juga harus di atas /{id}) ───────
+                Route::get('/santri/{santriId}',          [PesantrenMutabaahController::class, 'santriKartu'])->whereNumber('santriId');
                 Route::get('/santri/{santriId}/progress', [PesantrenMutabaahController::class, 'santriProgress'])->whereNumber('santriId');
+
+                // ── Resource routes ─────────────────────────────────────
+                Route::get('/',       [PesantrenMutabaahController::class, 'index']);
+                Route::post('/',      [PesantrenMutabaahController::class, 'store']);
+                Route::get('/{id}',   [PesantrenMutabaahController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}',   [PesantrenMutabaahController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}', [PesantrenMutabaahController::class, 'destroy'])->whereNumber('id');
+                Route::post('/{id}/sign', [PesantrenMutabaahController::class, 'sign'])->whereNumber('id');
             });
 
             // -------------------------------------------------
@@ -835,11 +823,11 @@ Route::prefix('pesantren')
             // -------------------------------------------------
             Route::prefix('prayers')->group(function () {
                 Route::get('/today',  [PesantrenPrayerController::class, 'today']);
-                Route::get('/{date}', [PesantrenPrayerController::class, 'byDate'])
-                    ->where('date', '^\d{4}-\d{2}-\d{2}$');
                 Route::get('/next',    [PesantrenPrayerController::class, 'next']);
                 Route::get('/methods', [PesantrenPrayerController::class, 'methods']);
                 Route::get('/monthly', [PesantrenPrayerController::class, 'monthly']);
+                Route::get('/{date}', [PesantrenPrayerController::class, 'byDate'])
+                    ->where('date', '^\d{4}-\d{2}-\d{2}$');
             });
 
 
@@ -1001,10 +989,10 @@ Route::prefix('pesantren')
             // -------------------------------------------------
             Route::prefix('prayers')->group(function () {
                 Route::get('/today',  [SantriPrayerController::class, 'today']);
-                Route::get('/{date}', [SantriPrayerController::class, 'byDate'])
-                    ->where('date', '^\d{4}-\d{2}-\d{2}$');
                 Route::get('/next',    [SantriPrayerController::class, 'next']);
                 Route::get('/monthly', [SantriPrayerController::class, 'monthly']);
+                Route::get('/{date}', [SantriPrayerController::class, 'byDate'])
+                    ->where('date', '^\d{4}-\d{2}-\d{2}$');
             });
 
             Route::prefix('quran')->group(function () {
