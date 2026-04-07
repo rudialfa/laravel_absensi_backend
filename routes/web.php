@@ -1,8 +1,6 @@
+//################################# versi web #######################
 
-
-    //################################# versi web #######################
-
-    <?php
+<?php
 
 use App\Http\Controllers\Backend\Admin\AdminDashboardController;
 use App\Http\Controllers\Backend\Admin\AttendanceController;
@@ -37,6 +35,7 @@ use Illuminate\Support\Facades\Route;
 | PUBLIC ROUTES - Authentication
 |--------------------------------------------------------------------------
 */
+
 Route::get('/', [LoginController::class, 'showLoginForm'])->name('login.form');
 Route::post('/login', [LoginController::class, 'login'])->name('login.post');
 Route::post('/logout', [LoginController::class, 'logout'])->name('logout');
@@ -85,7 +84,7 @@ Route::middleware(['auth', 'role:admin'])
         // Prayer Management (System-wide)
         Route::resource('prayers', PrayerController::class);
 
-        // Reports (System-wide)
+        // Reports (System-wide)W
         Route::get('/reports', [ReportController::class, 'index'])
             ->name('reports.index');
     });
@@ -247,7 +246,7 @@ Route::middleware(['auth', 'context:company,employee'])
 | Context: pesantren,ustadz
 | Access: Ustadz dapat mengelola santri, absensi, jadwal, dll
 | Sejajar dengan: API /pesantren/ustadz/*
-| 
+|
 | CATATAN: Controllers belum dibuat, ini hanya struktur routing
 */
 Route::middleware(['auth', 'context:pesantren,ustadz'])
@@ -351,7 +350,7 @@ Route::middleware(['auth', 'context:pesantren,ustadz'])
 | Context: pesantren,santri
 | Access: Santri dapat melihat data sendiri, absensi, jadwal, dll
 | Sejajar dengan: API /pesantren/santri/*
-| 
+|
 | CATATAN: Controllers belum dibuat, ini hanya struktur routing
 */
 Route::middleware(['auth', 'context:pesantren,santri'])
@@ -440,7 +439,7 @@ Route::middleware(['auth', 'context:pesantren,santri'])
 | Context: school,teacher
 | Access: Teacher dapat mengelola siswa, jadwal, nilai, dll
 | Sejajar dengan: API /school/teacher/*
-| 
+|
 | CATATAN: Controllers belum dibuat, ini hanya struktur routing
 */
 Route::middleware(['auth', 'context:school,teacher'])
@@ -485,7 +484,7 @@ Route::middleware(['auth', 'context:school,teacher'])
 | Context: school,student
 | Access: Student dapat melihat data sendiri, jadwal, nilai, dll
 | Sejajar dengan: API /school/student/*
-| 
+|
 | CATATAN: Controllers belum dibuat, ini hanya struktur routing
 */
 Route::middleware(['auth', 'context:school,student'])
