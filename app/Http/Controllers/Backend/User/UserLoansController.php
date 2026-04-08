@@ -9,11 +9,26 @@ use Illuminate\Support\Facades\Auth;
 
 class UserLoansController extends Controller
 {
-        public function index()
+    //     public function index()
+    // {
+    //     $loans = Loan::where('user_id', Auth::id())
+    //         ->orderBy('created_at', 'desc')
+    //         ->paginate(10);
+
+    //     return view('pages.user.loans.index', compact('loans'));
+    // }
+
+    ///code index 2
+      public function index(Request $request)
     {
-        $loans = Loan::where('user_id', Auth::id())
-            ->orderBy('created_at', 'desc')
-            ->paginate(10);
+        $query = Loan::where('user_id', $this->userId())
+            ->where('company_id', $this->companyId());
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        $loans = $query->latest()->paginate(10);
 
         return view('pages.user.loans.index', compact('loans'));
     }
@@ -48,7 +63,7 @@ class UserLoansController extends Controller
 
         return view('pages.user.loans.show', compact('loan'));
     }
-    
+
 
     // edit
     public function edit($id)

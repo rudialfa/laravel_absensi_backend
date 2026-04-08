@@ -13,7 +13,7 @@
             <div class="section-header">
                 <h1>Manajement Companies</h1>
                 <div class="section-header-button">
-                    <a href="{{ route('companies.create') }}" class="btn btn-primary">Add New</a>
+                    <a href="{{ route('admin.companies.create') }}" class="btn btn-primary">Add New</a>
                 </div>
                 <div class="section-header-breadcrumb">
                     <div class="breadcrumb-item active"><a href="#">Dashboard</a></div>
@@ -42,7 +42,7 @@
                             <div class="card-body">
 
                                 <div class="float-right">
-                                    <form method="GET" action="{{ route('companies.index') }}">
+                                    <form method="GET" action="{{ route('admin.companies.index') }}">
                                         <div class="input-group">
                                             <input type="text" class="form-control" placeholder="Search" name="name">
                                             <div class="input-group-append">
@@ -86,9 +86,9 @@
                                     <td>{{ $company->time_out }}</td>
                                     <td>{{ $company->timezone }}</td>
                                     <td>
-                                        <span class="badge 
-                                            @if($company->type == 'company') badge-primary 
-                                            @elseif($company->type == 'school') badge-success 
+                                        <span class="badge
+                                            @if($company->type == 'company') badge-primary
+                                            @elseif($company->type == 'school') badge-success
                                             @else badge-info @endif">
                                             {{ ucfirst($company->type) }}
                                         </span>
@@ -96,13 +96,13 @@
                                     <td>{{ number_format($company->radius_km, 2) }}</td>
                                                 <td>
                                                     <div class="d-flex justify-content-center">
-                                                        <a href='{{ route('companies.edit', $company->id) }}'
+                                                        <a href='{{ route('admin.companies.edit', $company->id) }}'
                                                             class="btn btn-sm btn-info btn-icon">
                                                             <i class="fas fa-edit"></i>
                                                             Edit
                                                         </a>
 
-                                                        <form action="{{ route('companies.destroy', $company->id) }}"
+                                                        <form action="{{ route('admin.companies.destroy', $company->id) }}"
                                                             method="POST" class="ml-2">
                                                             <input type="hidden" name="_method" value="DELETE" />
                                                             <input type="hidden" name="_token"

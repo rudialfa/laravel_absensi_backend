@@ -9,7 +9,7 @@ use App\Models\Company;
 
 class ShiftController extends Controller
 {
-     public function index() 
+     public function index()
     {
         $shifts = Shift::with('company')->orderBy('id', 'DESC')->get();
         return view('pages.admin.shifts.index', compact('shifts'));
@@ -41,7 +41,7 @@ class ShiftController extends Controller
             'is_default' => $request->is_default ? 1 : 0,
         ]);
 
-        return redirect()->route('shifts.index')->with('success', 'Shift berhasil ditambahkan.');
+        return redirect()->route('admin.shifts.index')->with('success', 'Shift berhasil ditambahkan.');
     }
 
     public function edit($id)
@@ -73,12 +73,12 @@ class ShiftController extends Controller
             'is_default' => $request->is_default ? 1 : 0,
         ]);
 
-        return redirect()->route('shifts.index')->with('success', 'Shift berhasil diperbarui.');
+        return redirect()->route('admin.shifts.index')->with('success', 'Shift berhasil diperbarui.');
     }
 
     public function destroy($id)
     {
         Shift::findOrFail($id)->delete();
-        return redirect()->route('shifts.index')->with('success', 'Shift berhasil dihapus.');
+        return redirect()->route('admin.shifts.index')->with('success', 'Shift berhasil dihapus.');
     }
 }

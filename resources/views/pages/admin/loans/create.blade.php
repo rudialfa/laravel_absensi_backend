@@ -31,7 +31,7 @@
 
 
              <div class="card">
-                <form action="{{ route('loans.store') }}" method="POST">
+                <form action="{{ route('admin.loans.store') }}" method="POST">
                     @csrf
 
                     <div class="card-header">
@@ -80,7 +80,7 @@
 
                     <div class="card-footer text-right">
                         <button class="btn btn-primary">Submit</button>
-                        <a href="{{ route('loans.index') }}" class="btn btn-secondary">Kembali</a>
+                        <a href="{{ route('admin.loans.index') }}" class="btn btn-secondary">Kembali</a>
                     </div>
 
                 </form>

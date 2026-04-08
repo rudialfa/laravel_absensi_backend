@@ -32,7 +32,7 @@
 
             <div class="card">
                 <div class="card-body">
-                    <form action="{{ route('payrools.store') }}" method="POST">
+                    <form action="{{ route('admin.payrools.store') }}" method="POST">
                         @csrf
 
                         <div class="form-group">

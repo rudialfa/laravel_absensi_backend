@@ -32,7 +32,7 @@
 
                <div class="card">
         <div class="card-body">
-            <form action="{{ route('payrools.update', $payroll->id) }}" method="POST">
+            <form action="{{ route('admin.payrools.update', $payroll->id) }}" method="POST">
                 @csrf
                 @method('PUT')
 
@@ -90,7 +90,7 @@
                 </div>
 
                 <button class="btn btn-primary">Update</button>
-                <a href="{{ route('payrools.index') }}" class="btn btn-secondary">Kembali</a>
+                <a href="{{ route('admin.payrools.index') }}" class="btn btn-secondary">Kembali</a>
             </form>
         </div>
     </div>

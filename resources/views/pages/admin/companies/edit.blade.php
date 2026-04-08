@@ -30,7 +30,7 @@
 
 
                 <div class="card">
-                    <form action="{{ route('companies.update', $company) }}" method="POST">
+                    <form action="{{ route('admin.companies.update', $company) }}" method="POST">
                         @csrf
                         @method('PUT')
                         <div class="card-header">

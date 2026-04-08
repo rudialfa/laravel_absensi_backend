@@ -9,11 +9,26 @@ use Illuminate\Support\Facades\Auth;
 
 class UserNotesController extends Controller
 {
-    
-     public function index()
-    { $notes = Note::where('user_id', Auth::id())
-            ->orderBy('created_at', 'desc')
-            ->paginate(10);
+
+    //  public function index()
+    // { $notes = Note::where('user_id', Auth::id())
+    //         ->orderBy('created_at', 'desc')
+    //         ->paginate(10);
+
+    //     return view('pages.user.notes.index', compact('notes'));
+    // }
+
+    //code 2 index
+    public function index(Request $request)
+    {
+        $query = Note::where('user_id', $this->userId())
+            ->where('company_id', $this->companyId());
+
+        if ($request->filled('search')) {
+            $query->where('title', 'like', '%' . $request->search . '%');
+        }
+
+        $notes = $query->latest()->paginate(10);
 
         return view('pages.user.notes.index', compact('notes'));
     }

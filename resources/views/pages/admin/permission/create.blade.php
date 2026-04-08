@@ -29,7 +29,7 @@
 
  <div class="card">
         <div class="card-body">
-            <form action="{{ route('permissions.store') }}" method="POST" enctype="multipart/form-data">
+            <form action="{{ route('admin.permissions.store') }}" method="POST" enctype="multipart/form-data">
                 @csrf
 
                 <div class="form-group">

@@ -15,7 +15,7 @@
             <h1>Edit Attendance</h1>
             <div class="section-header-breadcrumb">
                 <div class="breadcrumb-item active"><a href="#">Dashboard</a></div>
-                <div class="breadcrumb-item"><a href="{{ route('attendances.index') }}">Attendances</a></div>
+                <div class="breadcrumb-item"><a href="{{ route('admin.attendances.index') }}">Attendances</a></div>
                 <div class="breadcrumb-item">Edit</div>
             </div>
         </div>
@@ -147,7 +147,7 @@
 
                     <div class="card-footer text-right">
                         <button class="btn btn-primary">Update</button>
-                        <a href="{{ route('attendances.index') }}" class="btn btn-secondary">Kembali</a>
+                        <a href="{{ route('admin.attendances.index') }}" class="btn btn-secondary">Kembali</a>
                     </div>
                 </form>
             </div>

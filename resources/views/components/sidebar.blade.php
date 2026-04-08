@@ -40,55 +40,55 @@
                 <li class="menu-header">Superadmin Management</li>
 
                 <li class="{{ request()->is('admin/users*') ? 'active' : '' }}">
-                    <a href="{{ route('users.index') }}" class="nav-link">
+                    <a href="{{ route('admin.users.index') }}" class="nav-link">
                         <i class="fas fa-users"></i><span>Users</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/companies*') ? 'active' : '' }}">
-                    <a href="{{ route('companies.index') }}" class="nav-link">
+                    <a href="{{ route('admin.companies.index') }}" class="nav-link">
                         <i class="fas fa-building"></i><span>Companies</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/attendances*') ? 'active' : '' }}">
-                    <a href="{{ route('attendances.index') }}" class="nav-link">
+                    <a href="{{ route('admin.attendances.index') }}" class="nav-link">
                         <i class="fas fa-clock"></i><span>Attendances</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/permissions*') ? 'active' : '' }}">
-                    <a href="{{ route('permissions.index') }}" class="nav-link">
+                    <a href="{{ route('admin.permissions.index') }}" class="nav-link">
                         <i class="fas fa-user-check"></i><span>Permissions</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/payrools*') ? 'active' : '' }}">
-                    <a href="{{ route('payrools.index') }}" class="nav-link">
+                    <a href="{{ route('admin.payrools.index') }}" class="nav-link">
                         <i class="fas fa-file-invoice-dollar"></i><span>Payrolls</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/loans*') ? 'active' : '' }}">
-                    <a href="{{ route('loans.index') }}" class="nav-link">
+                    <a href="{{ route('admin.loans.index') }}" class="nav-link">
                         <i class="fas fa-hand-holding-usd"></i><span>Loans (Kasbon)</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/shifts*') ? 'active' : '' }}">
-                    <a href="{{ route('shifts.index') }}" class="nav-link">
+                    <a href="{{ route('admin.shifts.index') }}" class="nav-link">
                         <i class="fas fa-calendar-alt"></i><span>Shift Management</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/schedules*') ? 'active' : '' }}">
-                    <a href="{{ route('schedules.index') }}" class="nav-link">
+                    <a href="{{ route('admin.schedules.index') }}" class="nav-link">
                         <i class="fas fa-tasks"></i><span>Schedules</span>
                     </a>
                 </li>
 
                 <li class="{{ request()->is('admin/prayers*') ? 'active' : '' }}">
-                    <a href="{{ route('prayers.index') }}" class="nav-link">
+                    <a href="{{ route('admin.prayers.index') }}" class="nav-link">
                         <i class="fas fa-mosque"></i><span>Prayers (Adzan)</span>
                     </a>
                 </li>

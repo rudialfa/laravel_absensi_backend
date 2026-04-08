@@ -31,7 +31,7 @@
 
 
             <div class="card">
-                <form method="POST" action="{{ route('shifts.store') }}">
+                <form method="POST" action="{{ route('admin.shifts.store') }}">
                     @csrf
 
                     <div class="card-header">
@@ -82,7 +82,7 @@
 
                     <div class="card-footer text-right">
                         <button class="btn btn-primary">Submit</button>
-                        <a href="{{ route('shifts.index') }}" class="btn btn-secondary">Kembali</a>
+                        <a href="{{ route('admin.shifts.index') }}" class="btn btn-secondary">Kembali</a>
                     </div>
 
                 </form>

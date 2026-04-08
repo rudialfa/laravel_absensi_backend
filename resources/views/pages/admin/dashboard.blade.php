@@ -186,16 +186,16 @@
         <div class="card">
           <div class="card-header"><h4>Aksi Cepat</h4></div>
           <div class="card-body">
-            <a href="{{ route('users.create') }}" class="btn btn-primary mb-2">
+            <a href="{{ route('admin.users.create') }}" class="btn btn-primary mb-2">
               <i class="fas fa-user-plus"></i> Tambah User
             </a>
-            <a href="{{ route('shifts.index') }}" class="btn btn-info mb-2">
+            <a href="{{ route('admin.shifts.index') }}" class="btn btn-info mb-2">
               <i class="fas fa-calendar-plus"></i> Kelola Shift
             </a>
             <a href="{{ route('admin.reports.index') }}" class="btn btn-success mb-2">
               <i class="fas fa-file-export"></i> Export Laporan
             </a>
-            <a href="{{ route('attendances.index') }}" class="btn btn-warning mb-2">
+            <a href="{{ route('admin.attendances.index') }}" class="btn btn-warning mb-2">
               <i class="fas fa-map-marker-alt"></i> Cek Lokasi Absen
             </a>
           </div>

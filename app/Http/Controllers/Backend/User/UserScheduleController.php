@@ -9,8 +9,17 @@ use Illuminate\Support\Facades\Auth;
 
 class UserScheduleController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
+        //code tambahan
+         $query = Schedule::where('user_id', $this->userId())
+            ->where('company_id', $this->companyId());
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+        ///end code tambahan
+
         $schedules = Schedule::where('user_id', Auth::id())
             ->orderBy('start_datetime', 'asc')
             ->paginate(10);

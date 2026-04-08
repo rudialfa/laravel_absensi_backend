@@ -31,7 +31,7 @@
 
 
           <div class="card">
-                <form action="{{ route('loans.update', $loan->id) }}" method="POST">
+                <form action="{{ route('admin.loans.update', $loan->id) }}" method="POST">
                     @csrf
                     @method('PUT')
 
@@ -46,7 +46,7 @@
                             <label>Pilih User</label>
                             <select name="user_id" class="form-control" required>
                                 @foreach($users as $u)
-                                    <option value="{{ $u->id }}" 
+                                    <option value="{{ $u->id }}"
                                         {{ $loan->user_id == $u->id ? 'selected' : '' }}>
                                         {{ $u->name }}
                                     </option>
@@ -90,7 +90,7 @@
 
                     <div class="card-footer text-right">
                         <button class="btn btn-primary">Update</button>
-                        <a href="{{ route('loans.index') }}" class="btn btn-secondary">Kembali</a>
+                        <a href="{{ route('admin.loans.index') }}" class="btn btn-secondary">Kembali</a>
                     </div>
 
                 </form>

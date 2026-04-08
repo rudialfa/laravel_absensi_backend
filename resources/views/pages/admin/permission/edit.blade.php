@@ -15,7 +15,7 @@
             <h1>Edit Attendance</h1>
             <div class="section-header-breadcrumb">
                 <div class="breadcrumb-item active"><a href="#">Dashboard</a></div>
-                <div class="breadcrumb-item"><a href="{{ route('permissions.index') }}">Permissions</a></div>
+                <div class="breadcrumb-item"><a href="{{ route('admin.permissions.index') }}">Permissions</a></div>
                 <div class="breadcrumb-item">Edit</div>
             </div>
         </div>
@@ -25,7 +25,7 @@
 
                <div class="card">
         <div class="card-body">
-            <form action="{{ route('permissions.update', $permission->id) }}" method="POST" enctype="multipart/form-data">
+            <form action="{{ route('admin.permissions.update', $permission->id) }}" method="POST" enctype="multipart/form-data">
                 @csrf
                 @method('PUT')
 
@@ -68,7 +68,7 @@
                 </div>
 
                 <button class="btn btn-primary">Update</button>
-                <a href="{{ route('permissions.index') }}" class="btn btn-secondary">Kembali</a>
+                <a href="{{ route('admin.permissions.index') }}" class="btn btn-secondary">Kembali</a>
             </form>
         </div>
     </div>
