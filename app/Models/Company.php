@@ -52,4 +52,40 @@ class Company extends Model
     {
         return $this->hasMany(MutabaahYaumiyah::class);
     }
+
+    public function subscriptions()
+    {
+        return $this->hasMany(CompanySubscription::class, 'company_id');
+    }
+
+    public function activeSubscription()
+    {
+        return $this->hasOne(CompanySubscription::class, 'company_id')
+            ->whereIn('status', ['trial', 'active'])
+            ->latest('expires_at');
+    }
+
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'company_id');
+    }
+
+    public function vaPayments()
+    {
+        return $this->hasMany(VaPayment::class, 'company_id');
+    }
+
+    // Cek cepat apakah fitur boleh diakses
+    public function isSubscriptionActive(): bool
+    {
+        return $this->activeSubscription?->isActive() ?? false;
+    }
+
+    // Cek apakah company pernah trial
+    public function hasUsedTrial(): bool
+    {
+        return $this->subscriptions()
+            ->where('has_used_trial', true)
+            ->exists();
+    }
 }
