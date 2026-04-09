@@ -37,6 +37,8 @@ use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupAssignmentController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyShiftGroupUserController;
 use App\Http\Controllers\Api\HrCompany\HrCompanyUserShiftOverrideController;
+use App\Http\Controllers\Api\Payment\BcaWebhookController;
+use App\Http\Controllers\Api\Payment\SubscriptionController;
 use App\Http\Controllers\Api\Santri\SantriAttendanceController;
 use App\Http\Controllers\Api\Santri\SantriDailyReportController;
 use App\Http\Controllers\Api\Santri\Santridashboardcontroller;
@@ -67,6 +69,20 @@ use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+
+
+// BCA SANDBOX
+// Sandbox   : https://xxxx.ngrok.io/api/webhook/bca/inquiry
+// Production: https://yourdomain.com/api/webhook/bca/inquiry
+// ============================================================
+Route::prefix('webhook/bca')->group(function () {
+    Route::post('inquiry', [BcaWebhookController::class, 'inquiry'])
+        ->name('webhook.bca.inquiry');
+    Route::post('payment', [BcaWebhookController::class, 'payment'])
+        ->name('webhook.bca.payment');
+});
+ 
+// ##########################################################
 
 // ROUTE NEWS 2 #################################################################################
 
@@ -175,6 +191,42 @@ Route::prefix('auth')->group(function () {
         Route::post('/upload-face', [AuthController::class, 'uploadFaceEmbedding']);
     });
 });
+
+// ============================================================
+// SUBSCRIPTION — butuh auth:sanctum
+// ============================================================
+// Letakkan setelah auth supaya user sudah terdaftar dulu
+// sebelum bisa akses subscription.
+// ============================================================
+Route::middleware('auth:sanctum')
+    ->prefix('v1/subscriptions')
+    ->group(function () {
+ 
+        // Lihat semua paket (bisa juga tanpa auth jika mau publik)
+        Route::get('plans',     [SubscriptionController::class, 'plans'])
+            ->name('subscriptions.plans');
+ 
+        // Status langganan aktif milik company user yang login
+        Route::get('status',    [SubscriptionController::class, 'status'])
+            ->name('subscriptions.status');
+ 
+        // Mulai trial gratis — dipanggil sekali saat company baru register
+        Route::post('trial',    [SubscriptionController::class, 'startTrial'])
+            ->name('subscriptions.trial');
+ 
+        // Pilih paket → buat invoice → buat VA → return nomor VA ke Flutter
+        Route::post('select',   [SubscriptionController::class, 'selectPlan'])
+            ->name('subscriptions.select');
+ 
+        // Cek status VA manual (jika payment flag dari BCA belum masuk)
+        Route::post('check-va', [SubscriptionController::class, 'checkVa'])
+            ->name('subscriptions.check-va');
+ 
+        // Histori semua invoice milik company
+        Route::get('invoices',  [SubscriptionController::class, 'invoices'])
+            ->name('subscriptions.invoices');
+    });
+ 
 
 // =======================
 // 💬 CHAT (Universal - semua context)
