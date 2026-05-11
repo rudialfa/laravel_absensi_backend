@@ -27,11 +27,37 @@ use App\Http\Controllers\Backend\User\UserNotesController;
 use App\Http\Controllers\Backend\User\UserPayrollController;
 use App\Http\Controllers\Backend\User\UserPermissionController;
 use App\Http\Controllers\Backend\User\UserScheduleController;
+use App\Http\Controllers\Web\Employee\EmployeeAttendanceWebController;
+use App\Http\Controllers\Web\Employee\EmployeeDailyReportWebController;
+use App\Http\Controllers\Web\Employee\EmployeeDashboardWebController;
+use App\Http\Controllers\Web\Employee\EmployeeHolidayWebController;
+use App\Http\Controllers\Web\Employee\EmployeeLeaveWebController;
+use App\Http\Controllers\Web\Employee\EmployeeLoanWebController;
+use App\Http\Controllers\Web\Employee\EmployeeMonthlyReportWebController;
+use App\Http\Controllers\Web\Employee\EmployeeNotesWebController;
+use App\Http\Controllers\Web\Employee\EmployeeOvertimeWebController;
+use App\Http\Controllers\Web\Employee\EmployeePayrollWebController;
+use App\Http\Controllers\Web\Employee\EmployeePerformanceWebController;
+use App\Http\Controllers\Web\Employee\EmployeePermissionWebController;
+use App\Http\Controllers\Web\Employee\EmployeeScheduleWebController;
+use App\Http\Controllers\Web\Santri\SantriAttendanceWebController;
+use App\Http\Controllers\Web\Santri\SantriDailyReportWebController;
+use App\Http\Controllers\Web\Santri\SantriDashboardWebController;
+use App\Http\Controllers\Web\Santri\SantriHolidayWebController;
+use App\Http\Controllers\Web\Santri\SantriMonthlyReportWebController;
+use App\Http\Controllers\Web\Santri\SantriMutabaahWebController;
+use App\Http\Controllers\Web\Santri\SantriNotesWebController;
+use App\Http\Controllers\Web\Santri\SantriPerformanceWebController;
+use App\Http\Controllers\Web\Santri\SantriPermissionWebController;
+use App\Http\Controllers\Web\Santri\SantriPrayerWebController;
+use App\Http\Controllers\Web\Santri\SantriQuranWebController;
+use App\Http\Controllers\Web\Santri\SantriScheduleWebController;
 use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES - Authentication
+
 |--------------------------------------------------------------------------
 */
 
@@ -190,10 +216,127 @@ Route::middleware(['auth', 'context:company,hr'])
 | Access: Employee dapat melihat data sendiri, absensi, izin, payroll, dll
 | Sejajar dengan: API /company/employee/*
 */
-Route::middleware(['auth', 'context:company,employee'])
+
+
+
+
+
+    /////versi salma////
+    
+        Route::middleware(['auth', 'context:company,employee'])
     ->prefix('employee')
     ->name('employee.')
     ->group(function () {
+
+        // ── Dashboard ────────────────────────────────────────────────────────
+        Route::get('/', [EmployeeDashboardWebController::class, 'index'])
+            ->name('dashboard');
+
+        // ── Absensi ──────────────────────────────────────────────────────────
+        Route::prefix('attendance')->name('attendance.')->group(function () {
+            Route::get('/',           [EmployeeAttendanceWebController::class, 'index'])    ->name('index');
+            Route::post('/check-in',  [EmployeeAttendanceWebController::class, 'checkIn']) ->name('checkin');
+            Route::post('/check-out', [EmployeeAttendanceWebController::class, 'checkOut'])->name('checkout');
+        });
+
+        // ── Jadwal ───────────────────────────────────────────────────────────
+        Route::prefix('schedules')->name('schedule.')->group(function () {
+            Route::get('/',              [EmployeeScheduleWebController::class, 'index'])       ->name('index');
+            Route::get('/invitations',   [EmployeeScheduleWebController::class, 'invitations']) ->name('invitations');
+            Route::get('/{id}',          [EmployeeScheduleWebController::class, 'show'])        ->name('show');
+            Route::post('/{id}/respond', [EmployeeScheduleWebController::class, 'respond'])     ->name('respond');
+        });
+
+        // ── Izin ─────────────────────────────────────────────────────────────
+        Route::prefix('permissions')->name('permission.')->group(function () {
+            Route::get('/',             [EmployeePermissionWebController::class, 'index'])  ->name('index');
+            Route::get('/create',       [EmployeePermissionWebController::class, 'create']) ->name('create');
+            Route::post('/',            [EmployeePermissionWebController::class, 'store'])  ->name('store');
+            Route::get('/{id}',         [EmployeePermissionWebController::class, 'show'])   ->name('show');
+            Route::post('/{id}/cancel', [EmployeePermissionWebController::class, 'cancel']) ->name('cancel');
+        });
+
+        // ── Cuti ─────────────────────────────────────────────────────────────
+        Route::prefix('leaves')->name('leave.')->group(function () {
+            Route::get('/',             [EmployeeLeaveWebController::class, 'index'])  ->name('index');
+            Route::get('/create',       [EmployeeLeaveWebController::class, 'create']) ->name('create');
+            Route::post('/',            [EmployeeLeaveWebController::class, 'store'])  ->name('store');
+            Route::get('/{id}',         [EmployeeLeaveWebController::class, 'show'])   ->name('show');
+            Route::post('/{id}/cancel', [EmployeeLeaveWebController::class, 'cancel']) ->name('cancel');
+        });
+
+        // ── Lembur ───────────────────────────────────────────────────────────
+        Route::prefix('overtimes')->name('overtime.')->group(function () {
+            Route::get('/',             [EmployeeOvertimeWebController::class, 'index'])  ->name('index');
+            Route::get('/create',       [EmployeeOvertimeWebController::class, 'create']) ->name('create');
+            Route::post('/',            [EmployeeOvertimeWebController::class, 'store'])  ->name('store');
+            Route::get('/{id}',         [EmployeeOvertimeWebController::class, 'show'])   ->name('show');
+            Route::post('/{id}/cancel', [EmployeeOvertimeWebController::class, 'cancel']) ->name('cancel');
+        });
+
+        // ── Laporan Harian ───────────────────────────────────────────────────
+        Route::prefix('daily-reports')->name('daily-report.')->group(function () {
+            Route::get('/',       [EmployeeDailyReportWebController::class, 'index'])  ->name('index');
+            Route::get('/today',  [EmployeeDailyReportWebController::class, 'today'])  ->name('today');
+            Route::get('/export', [EmployeeDailyReportWebController::class, 'export']) ->name('export');
+            Route::post('/',      [EmployeeDailyReportWebController::class, 'store'])  ->name('store');
+            Route::get('/{id}',   [EmployeeDailyReportWebController::class, 'show'])   ->name('show');
+            Route::post('/{id}',  [EmployeeDailyReportWebController::class, 'update']) ->name('update');
+        });
+
+        // ── Laporan Bulanan ──────────────────────────────────────────────────
+        Route::prefix('monthly-reports')->name('monthly-report.')->group(function () {
+            Route::get('/',             [EmployeeMonthlyReportWebController::class, 'index'])   ->name('index');
+            Route::get('/create',       [EmployeeMonthlyReportWebController::class, 'create'])  ->name('create');
+            Route::post('/',            [EmployeeMonthlyReportWebController::class, 'store'])   ->name('store');
+            Route::get('/{id}',         [EmployeeMonthlyReportWebController::class, 'show'])    ->name('show');
+            Route::get('/{id}/edit',    [EmployeeMonthlyReportWebController::class, 'edit'])    ->name('edit');
+            Route::post('/{id}',        [EmployeeMonthlyReportWebController::class, 'update'])  ->name('update');
+            Route::post('/{id}/submit', [EmployeeMonthlyReportWebController::class, 'submit'])  ->name('submit');
+            Route::post('/{id}/delete', [EmployeeMonthlyReportWebController::class, 'destroy']) ->name('destroy');
+        });
+
+        // ── Payroll ──────────────────────────────────────────────────────────
+        Route::prefix('payrolls')->name('payroll.')->group(function () {
+            Route::get('/',     [EmployeePayrollWebController::class, 'index']) ->name('index');
+            Route::get('/{id}', [EmployeePayrollWebController::class, 'show'])  ->name('show');
+        });
+
+        // ── Pinjaman ─────────────────────────────────────────────────────────
+        Route::prefix('loans')->name('loan.')->group(function () {
+            Route::get('/',             [EmployeeLoanWebController::class, 'index'])         ->name('index');
+            Route::get('/active',       [EmployeeLoanWebController::class, 'active'])        ->name('active');
+            Route::get('/create',       [EmployeeLoanWebController::class, 'create'])        ->name('create');
+            Route::post('/',            [EmployeeLoanWebController::class, 'store'])         ->name('store');
+            Route::get('/{id}',         [EmployeeLoanWebController::class, 'show'])          ->name('show');
+            Route::post('/{id}/cancel', [EmployeeLoanWebController::class, 'cancel'])        ->name('cancel');
+            Route::get('/{id}/payments',[EmployeeLoanWebController::class, 'paymentHistory'])->name('payments');
+        });
+
+        // ── Catatan ──────────────────────────────────────────────────────────
+        Route::prefix('notes')->name('notes.')->group(function () {
+            Route::get('/',           [EmployeeNotesWebController::class, 'index'])    ->name('index');
+            Route::get('/{id}',       [EmployeeNotesWebController::class, 'show'])     ->name('show');
+            Route::post('/{id}/read', [EmployeeNotesWebController::class, 'markRead']) ->name('read');
+        });
+
+        // ── Performa ─────────────────────────────────────────────────────────
+        Route::prefix('performance')->name('performance.')->group(function () {
+            Route::get('/',            [EmployeePerformanceWebController::class, 'index'])       ->name('index');
+            Route::get('/leaderboard', [EmployeePerformanceWebController::class, 'leaderboard']) ->name('leaderboard');
+            Route::get('/{id}',        [EmployeePerformanceWebController::class, 'show'])        ->name('show');
+        });
+
+        // ── Hari Libur ───────────────────────────────────────────────────────
+        Route::prefix('holidays')->name('holiday.')->group(function () {
+            Route::get('/',     [EmployeeHolidayWebController::class, 'index']) ->name('index');
+            Route::get('/{id}', [EmployeeHolidayWebController::class, 'show'])  ->name('show');
+        });
+
+    });
+
+   
+    ////end versi salma////
 
         // Dashboard
         Route::get('/dashboard', [UserDashboardController::class, 'index'])
@@ -236,8 +379,110 @@ Route::middleware(['auth', 'context:company,employee'])
         // NOTES (Self - Read Only)
         // ==========================================
         Route::resource('notes', UserNotesController::class)->only(['index', 'show']);
+
+
+
+    
+Route::middleware(['auth', 'role:santri'])
+    ->prefix('santri')
+    ->name('santri.')
+    ->group(function () {
+ 
+        // ── Dashboard ────────────────────────────────────────────
+        Route::get('/',[SantriDashboardWebController::class, 'index'])->name('dashboard');
+ 
+        // ── Absensi ─────────────────────────────────────────────
+        Route::prefix('attendance')->name('attendance.')->group(function () {
+            Route::get('/',[SantriAttendanceWebController::class, 'index'])   ->name('index');
+            Route::post('/check-in',[SantriAttendanceWebController::class, 'checkIn']) ->name('checkin');
+            Route::post('/check-out',[SantriAttendanceWebController::class, 'checkOut'])->name('checkout');
+        });
+ 
+        // ── Jadwal ──────────────────────────────────────────────
+        Route::prefix('schedules')->name('schedule.')->group(function () {
+            Route::get('/',[SantriScheduleWebController::class, 'index'])      ->name('index');
+            Route::get('/today',[SantriScheduleWebController::class, 'today'])      ->name('today');
+            Route::get('/invitations',[SantriScheduleWebController::class, 'invitations'])->name('invitations');
+            Route::get('/{id}',[SantriScheduleWebController::class, 'show'])       ->name('show');
+            Route::post('/{id}/respond',[SantriScheduleWebController::class, 'respond'])    ->name('respond');
+        });
+ 
+        // ── Izin ────────────────────────────────────────────────
+        Route::prefix('permissions')->name('permission.')->group(function () {
+            Route::get('/',[SantriPermissionWebController::class, 'index'])  ->name('index');
+            Route::get('/create',[SantriPermissionWebController::class, 'create']) ->name('create');
+            Route::post('/',[SantriPermissionWebController::class, 'store'])  ->name('store');
+            Route::get('/{id}',[SantriPermissionWebController::class, 'show'])   ->name('show');
+            Route::post('/{id}/cancel',[SantriPermissionWebController::class, 'cancel']) ->name('cancel');
+        });
+ 
+        // ── Laporan Harian ──────────────────────────────────────
+        Route::prefix('daily-reports')->name('daily-report.')->group(function () {
+            Route::get('/',[SantriDailyReportWebController::class, 'index'])  ->name('index');
+            Route::get('/today',[SantriDailyReportWebController::class, 'today'])  ->name('today');
+            Route::post('/',[SantriDailyReportWebController::class, 'store'])  ->name('store');
+            Route::get('/{id}',[SantriDailyReportWebController::class, 'show'])   ->name('show');
+            Route::post('/{id}',[SantriDailyReportWebController::class, 'update']) ->name('update');
+        });
+ 
+        // ── Laporan Bulanan ─────────────────────────────────────
+        Route::prefix('monthly-reports')->name('monthly-report.')->group(function () {
+            Route::get('/',[SantriMonthlyReportWebController::class, 'index'])   ->name('index');
+            Route::get('/create',[SantriMonthlyReportWebController::class, 'create'])  ->name('create');
+            Route::post('/',[SantriMonthlyReportWebController::class, 'store'])   ->name('store');
+            Route::get('/{id}',[SantriMonthlyReportWebController::class, 'show'])    ->name('show');
+            Route::get('/{id}/edit',[SantriMonthlyReportWebController::class, 'edit'])    ->name('edit');
+            Route::post('/{id}',[SantriMonthlyReportWebController::class, 'update'])  ->name('update');
+            Route::post('/{id}/submit',[SantriMonthlyReportWebController::class, 'submit'])  ->name('submit');
+            Route::post('/{id}/delete',[SantriMonthlyReportWebController::class, 'destroy']) ->name('destroy');
+        });
+ 
+        // ── Mutabaah (Kartu Ngaji) ──────────────────────────────
+        Route::prefix('mutabaah')->name('mutabaah.')->group(function () {
+            Route::get('/',[SantriMutabaahWebController::class, 'index'])    ->name('index');
+            Route::get('/progress',[SantriMutabaahWebController::class, 'progress']) ->name('progress');
+            Route::get('/{id}',[SantriMutabaahWebController::class, 'show'])     ->name('show');
+        });
+ 
+        // ── Al-Quran Digital ────────────────────────────────────
+        Route::prefix('quran')->name('quran.')->group(function () {
+            Route::get('/',[SantriQuranWebController::class, 'index'])      ->name('index');
+            Route::get('/progress',[SantriQuranWebController::class, 'progress'])   ->name('progress');
+            Route::get('/surah/{number}',[SantriQuranWebController::class, 'surah'])      ->name('surah');
+            Route::get('/halaman/{page}',[SantriQuranWebController::class, 'halaman'])    ->name('halaman');
+            Route::get('/sesi/{id}',[SantriQuranWebController::class, 'sesiDetail']) ->name('sesi');
+        });
+ 
+        // ── Jadwal Sholat ───────────────────────────────────────
+        Route::prefix('prayers')->name('prayer.')->group(function () {
+            Route::get('/',[SantriPrayerWebController::class, 'today'])   ->name('today');
+            Route::get('/monthly',[SantriPrayerWebController::class, 'monthly']) ->name('monthly');
+            Route::get('/{date}',[SantriPrayerWebController::class, 'byDate'])  ->name('date');
+        });
+ 
+        // ── Catatan ─────────────────────────────────────────────
+        Route::prefix('notes')->name('notes.')->group(function () {
+            Route::get('/',[SantriNotesWebController::class, 'index'])    ->name('index');
+            Route::get('/{id}',[SantriNotesWebController::class, 'show'])     ->name('show');
+            Route::post('/{id}/read',[SantriNotesWebController::class, 'markRead']) ->name('read');
+        });
+ 
+        // ── Performa ─────────────────────────────────────────────
+        Route::prefix('performance')->name('performance.')->group(function () {
+            Route::get('/',[SantriPerformanceWebController::class, 'index'])       ->name('index');
+            Route::get('/leaderboard',[SantriPerformanceWebController::class, 'leaderboard']) ->name('leaderboard');
+            Route::get('/{id}',[SantriPerformanceWebController::class, 'show'])        ->name('show');
+        });
+ 
+        // ── Hari Libur ──────────────────────────────────────────
+        Route::prefix('holidays')->name('holiday.')->group(function () {
+            Route::get('/',[SantriHolidayWebController::class, 'index'])->name('index');
+            Route::get('/{id}',[SantriHolidayWebController::class, 'show']) ->name('show');
+        });
     });
 
+
+    
 /*
 |--------------------------------------------------------------------------
 | PESANTREN ROUTES - Ustadz

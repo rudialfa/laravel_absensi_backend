@@ -32,4 +32,11 @@ class UserDashboardController extends Controller
             'upcomingSchedules'
         ));
     }
+
+
+    ///tambahan agar tidak error
+            private function userId()
+        {
+            return auth()->id();
+        }
 }

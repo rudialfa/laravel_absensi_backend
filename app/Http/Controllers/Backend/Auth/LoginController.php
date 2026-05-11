@@ -23,6 +23,22 @@ class LoginController extends Controller {
             $request->session()->regenerate();
             $user = Auth::user();
 
+
+
+         // TAMBAHAN (amanin role dulu)
+            $role = strtolower(trim($user->role));
+
+            if ($role === 'employee') {
+                return redirect()->route('employee.dashboard');
+            }
+
+            if ($role === 'santri') {
+             return redirect()->route('santri.dashboard');
+            }
+
+            if ($role === 'ustadz') {
+                return redirect()->route('ustadz.dashboard');
+            }
             // Redirect berdasarkan role
             switch ($user->role) {
                 case 'admin':

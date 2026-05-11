@@ -24,6 +24,39 @@
                         <i class="fas fa-building"></i><span>Dashboard Company</span>
                     </a>
                 </li>
+
+
+                <!--tambahan untuk web --->
+            @elseif(Auth::user()->role == 'employee')
+                <li class="{{ request()->is('employee/dashboard') ? 'active' : '' }}">
+                    <a href="{{ route('employee.dashboard') }}" class="nav-link">
+                        <i class="fas fa-user"></i><span>Dashboard Employee</span>
+                    </a>
+                </li>
+
+            @elseif(Auth::user()->role == 'santri')
+                <li class="{{ request()->is('santri/dashboard') ? 'active' : '' }}">
+                    <a href="{{ route('santri.dashboard') }}" class="nav-link">
+                        <i class="fas fa-user"></i><span>Dashboard Santri</span>
+                    </a>
+                </li>
+                
+            @elseif(Auth::user()->role == 'ustadz')
+                <li class="{{ request()->is('ustadz/dashboard') ? 'active' : '' }}">
+                    <a href="{{ route('ustadz.dashboard') }}" class="nav-link">
+                        <i class="fas fa-user"></i><span>Dashboard Ustadz</span>
+                    </a>
+                </li>
+
+            @elseif(Auth::user()->role == 'hr')
+                <li class="{{ request()->is('hr/dashboard') ? 'active' : '' }}">
+                    <a href="{{ route('hr.dashboard') }}" class="nav-link">
+                        <i class="fas fa-user"></i><span>Dashboard HR</span>
+                    </a>
+                </li>
+
+
+                <!--end tambahan untuk web --->
             @else
                 <li class="{{ request()->is('user/dashboard') ? 'active' : '' }}">
                     <a href="{{ route('user.dashboard') }}" class="nav-link">
