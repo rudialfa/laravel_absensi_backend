@@ -81,7 +81,7 @@ Route::prefix('webhook/bca')->group(function () {
     Route::post('payment', [BcaWebhookController::class, 'payment'])
         ->name('webhook.bca.payment');
 });
- 
+
 // ##########################################################
 
 // ROUTE NEWS 2 #################################################################################
@@ -201,32 +201,32 @@ Route::prefix('auth')->group(function () {
 Route::middleware('auth:sanctum')
     ->prefix('v1/subscriptions')
     ->group(function () {
- 
+
         // Lihat semua paket (bisa juga tanpa auth jika mau publik)
         Route::get('plans',     [SubscriptionController::class, 'plans'])
             ->name('subscriptions.plans');
- 
+
         // Status langganan aktif milik company user yang login
         Route::get('status',    [SubscriptionController::class, 'status'])
             ->name('subscriptions.status');
- 
+
         // Mulai trial gratis — dipanggil sekali saat company baru register
         Route::post('trial',    [SubscriptionController::class, 'startTrial'])
             ->name('subscriptions.trial');
- 
+
         // Pilih paket → buat invoice → buat VA → return nomor VA ke Flutter
         Route::post('select',   [SubscriptionController::class, 'selectPlan'])
             ->name('subscriptions.select');
- 
+
         // Cek status VA manual (jika payment flag dari BCA belum masuk)
         Route::post('check-va', [SubscriptionController::class, 'checkVa'])
             ->name('subscriptions.check-va');
- 
+
         // Histori semua invoice milik company
         Route::get('invoices',  [SubscriptionController::class, 'invoices'])
             ->name('subscriptions.invoices');
     });
- 
+
 
 // =======================
 // 💬 CHAT (Universal - semua context)

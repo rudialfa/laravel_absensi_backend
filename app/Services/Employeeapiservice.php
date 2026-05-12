@@ -22,11 +22,20 @@ class EmployeeApiService
     protected string $baseUrl;
     protected string $token;
 
+    // public function __construct()
+    // {
+    //     $this->baseUrl = rtrim(config('app.url'), '/') . '/api';
+    //     // Ambil token Sanctum dari session (disimpan saat login)
+    //     $this->token = session('api_token', '');
+    // }
+
+    //versi salma
+    // EmployeeApiService.php
     public function __construct()
     {
-        $this->baseUrl = rtrim(config('app.url'), '/') . '/api';
-        // Ambil token Sanctum dari session (disimpan saat login)
-        $this->token = session('api_token', '');
+        $baseApp = rtrim(config('app.internal_url', config('app.url')), '/');
+        $this->baseUrl = $baseApp . '/api'; // ← sama
+        $this->token   = session('api_token', '');
     }
 
     // ── Core HTTP methods ──────────────────────────────────────────────────

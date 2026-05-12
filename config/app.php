@@ -58,6 +58,7 @@ return [
     'url' => env('APP_URL', 'http://localhost'),
 
     'asset_url' => env('ASSET_URL'),
+    'internal_url' => env('INTERNAL_API_URL', env('APP_URL')),
 
     /*
     |--------------------------------------------------------------------------
@@ -126,6 +127,7 @@ return [
 
     'cipher' => 'AES-256-CBC',
 
+
     /*
     |--------------------------------------------------------------------------
     | Maintenance Mode Driver
@@ -168,6 +170,8 @@ return [
         App\Providers\BroadcastServiceProvider::class,
         App\Providers\EventServiceProvider::class,
         App\Providers\RouteServiceProvider::class,
+        App\Providers\AppServiceProvider::class,
+        App\Providers\FortifyServiceProvider::class,
     ])->toArray(),
 
     /*

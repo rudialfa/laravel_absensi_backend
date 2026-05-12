@@ -3,13 +3,14 @@
 namespace App\Http\Controllers\Backend\Admin;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use App\Models\Schedule;
 use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class ScheduleController extends Controller
 {
-      public function index()
+    public function index()
     {
         $schedules = Schedule::with('user')->latest()->paginate(20);
         return view('pages.admin.schedules.index', compact('schedules'));
@@ -21,51 +22,70 @@ class ScheduleController extends Controller
         return view('pages.admin.schedules.create', compact('users'));
     }
 
-public function store(Request $request)
-{
-    $request->validate([
-        'user_id'         => 'required|exists:users,id',
-        'title'           => 'required|string',
-        'description'     => 'nullable|string',
-        'start_datetime'  => 'required|date',
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'user_id'         => 'required|exists:users,id',
+            'title'           => 'required|string',
+            'description'     => 'nullable|string',
+            'start_datetime'  => 'required|date_format:Y-m-d\TH:i',
+            'reminder_offsets' => 'nullable|string',
+            'location'        => 'nullable|string',
+            'is_task_duty'    => 'nullable|in:on,1,0',
+            'status'          => 'required|in:upcoming,done,canceled',
+        ]);
 
-        // string lalu diolah manual
-        'reminder_offsets'=> 'nullable|string',  
+        // reminder offsets
+        $reminderOffsets = null;
+        if (!empty($request->reminder_offsets)) {
+            $reminderOffsets = array_map(
+                'intval',
+                array_filter(explode(',', $request->reminder_offsets), 'is_numeric')
+            );
+        }
 
-        // string JSON lalu di-decode
-        'location'        => 'nullable|string',
+        // location JSON
+        // $location = null;
+        // if (!empty($request->location)) {
+        //     $location = json_decode($request->location, true);
 
-        'is_task_duty'    => 'nullable|boolean',
-        'status'          => 'required|in:upcoming,done,canceled',
-    ]);
+        //     if (json_last_error() !== JSON_ERROR_NONE) {
+        //         return back()->withErrors(['location' => 'Format JSON tidak valid']);
+        //     }
+        // }
 
-    // Convert reminder_offsets string "5,15,60" -> array [5,15,60]
-    $reminderOffsets = null;
-    if (!empty($request->reminder_offsets)) {
-        $reminderOffsets = array_map('intval', explode(',', $request->reminder_offsets));
+
+        ///code 2
+        $location = null;
+
+        if (!empty($request->location)) {
+            $jsonString = trim($request->location); // 🔥 FIX penting
+
+            $location = json_decode($jsonString, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                return back()->withErrors([
+                    'location' => 'Format JSON harus seperti: {"lat": -7.12, "lng": 110.22}'
+                ]);
+            }
+        }
+
+        Log::info('STORE SCHEDULE', $request->all());
+
+        Schedule::create([
+            'user_id'         => $request->user_id,
+            'title'           => $request->title,
+            'description'     => $request->description,
+            'start_datetime'  => $request->start_datetime,
+            'reminder_offsets' => $reminderOffsets,
+            'location'        => $location,
+            'is_task_duty'    => $request->has('is_task_duty') ? 1 : 0,
+            'status'          => $request->status,
+        ]);
+
+        return redirect()->route('admin.schedules.index')
+            ->with('success', 'Schedule berhasil ditambahkan');
     }
-
-    // Convert location => JSON decode
-    $location = null;
-    if (!empty($request->location)) {
-        $location = json_decode($request->location, true);
-    }
-
-    Schedule::create([
-        'user_id'         => $request->user_id,
-        'title'           => $request->title,
-        'description'     => $request->description,
-        'start_datetime'  => $request->start_datetime,
-        'reminder_offsets'=> $reminderOffsets,
-        'location'        => $location,
-        'is_task_duty'    => $request->is_task_duty ? 1 : 0,
-        'status'          => $request->status,
-    ]);
-
-    return redirect()->route('schedules.index')
-                     ->with('success', 'Schedule created successfully!');
-}
-
     public function edit($id)
     {
         $schedule = Schedule::findOrFail($id);
@@ -74,51 +94,57 @@ public function store(Request $request)
         return view('pages.admin.schedules.edit', compact('schedule', 'users'));
     }
 
- public function update(Request $request, $id)
-{
-    $schedule = Schedule::findOrFail($id);
+    public function update(Request $request, $id)
+    {
+        $schedule = Schedule::findOrFail($id);
 
-    $request->validate([
-        'user_id'         => 'required|exists:users,id',
-        'title'           => 'required|string',
-        'description'     => 'nullable|string',
-        'start_datetime'  => 'required|date',
-        'reminder_offsets'=> 'nullable|string',   // string, bukan array
-        'location'        => 'nullable|string',   // JSON string
-        'is_task_duty'    => 'nullable|boolean',
-        'status'          => 'required|in:upcoming,done,canceled',
-    ]);
+        $validated = $request->validate([
+            'user_id'         => 'required|exists:users,id',
+            'title'           => 'required|string',
+            'description'     => 'nullable|string',
+            'start_datetime'  => 'required|date_format:Y-m-d\TH:i',
+            'reminder_offsets' => 'nullable|string',
+            'location'        => 'nullable|string',
+            'is_task_duty'    => 'nullable|boolean',
+            'status'          => 'required|in:upcoming,done,canceled',
+        ]);
 
-    // Convert reminder offsets
-    $reminderOffsets = null;
-    if (!empty($request->reminder_offsets)) {
-        $reminderOffsets = array_map('intval', explode(',', $request->reminder_offsets));
+        $reminderOffsets = null;
+        if (!empty($request->reminder_offsets)) {
+            $reminderOffsets = array_map(
+                'intval',
+                array_filter(explode(',', $request->reminder_offsets), 'is_numeric')
+            );
+        }
+
+        $location = null;
+        if (!empty($request->location)) {
+            $location = json_decode($request->location, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                return back()->withErrors(['location' => 'Format JSON tidak valid']);
+            }
+        }
+
+        Log::info('UPDATE SCHEDULE', $request->all());
+
+        $schedule->update([
+            'user_id'         => $request->user_id,
+            'title'           => $request->title,
+            'description'     => $request->description,
+            'start_datetime'  => $request->start_datetime,
+            'reminder_offsets' => $reminderOffsets,
+            'location'        => $location,
+            'is_task_duty'    => $request->has('is_task_duty') ? 1 : 0,
+            'status'          => $request->status,
+        ]);
+
+        return redirect()->route('admin.schedules.index')
+            ->with('success', 'Schedule berhasil diupdate');
     }
-
-    // Convert location JSON
-    $location = null;
-    if (!empty($request->location)) {
-        $location = json_decode($request->location, true);
-    }
-
-    $schedule->update([
-        'user_id'         => $request->user_id,
-        'title'           => $request->title,
-        'description'     => $request->description,
-        'start_datetime'  => $request->start_datetime,
-        'reminder_offsets'=> $reminderOffsets,
-        'location'        => $location,
-        'is_task_duty'    => $request->is_task_duty ? 1 : 0,
-        'status'          => $request->status,
-    ]);
-
-    return redirect()->route('schedules.index')
-                     ->with('success', 'Schedule updated successfully!');
-}
-
     public function destroy($id)
     {
         Schedule::findOrFail($id)->delete();
-        return redirect()->route('schedules.index')->with('success', 'Schedule deleted successfully!');
+        return redirect()->route('admin.schedules.index')->with('success', 'Schedule deleted successfully!');
     }
 }

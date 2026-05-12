@@ -6,6 +6,9 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>@yield('title', 'Dashboard') — Portal Santri</title>
     <style>
+
+        /* tambahan dari salma :) */
+
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Amiri:wght@400;700&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -46,6 +49,130 @@
             --shadow-sm: 0 1px 3px rgba(0,0,0,.07);
             --shadow-md: 0 4px 16px rgba(0,0,0,.1);
         }
+
+
+
+
+        /* ═══════════════════════════════════════
+   SANTRI SHARED STYLES
+   Include via @push('styles') or layout
+   ═══════════════════════════════════════ */
+:root {
+    --p:       #1e6b4f;   /* primary green pesantren */
+    --p-dark:  #155238;
+    --p-light: #e8f5ee;
+    --gold:    #c8922a;
+    --gold-lt: #fdf3e0;
+    --red:     #c0392b;
+    --red-lt:  #fdf0ef;
+    --blue:    #1a6db5;
+    --blue-lt: #e8f1fb;
+    --gray-50: #f8f9fa;
+    --gray-100:#f1f3f5;
+    --gray-200:#e9ecef;
+    --gray-300:#dee2e6;
+    --gray-400:#ced4da;
+    --gray-500:#adb5bd;
+    --gray-600:#6c757d;
+    --gray-700:#495057;
+    --gray-800:#343a40;
+    --gray-900:#212529;
+    --radius:  12px;
+    --shadow:  0 2px 12px rgba(0,0,0,.08);
+    --shadow-md:0 6px 24px rgba(0,0,0,.12);
+}
+
+/* Page wrapper */
+.s-page { padding: 24px 0; }
+
+/* ── Page Header ── */
+.s-header {
+    display: flex; align-items: flex-start;
+    justify-content: space-between; flex-wrap: wrap;
+    gap: 14px; margin-bottom: 24px;
+}
+.s-title  { font-size: 1.4rem; font-weight: 700; color: var(--gray-900); margin: 0 0 3px; }
+.s-sub    { font-size: .85rem; color: var(--gray-600); margin: 0; }
+
+/* ── Card ── */
+.s-card {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: var(--radius); padding: 20px;
+    box-shadow: var(--shadow);
+}
+.s-card-title { font-size: .95rem; font-weight: 700; color: var(--gray-800); margin: 0 0 14px; }
+
+/* ── Badge ── */
+.s-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: .7rem; font-weight: 700; padding: 3px 10px;
+    border-radius: 999px; white-space: nowrap; letter-spacing: .02em;
+}
+.s-badge-green  { background: var(--p-light);  color: var(--p); }
+.s-badge-gold   { background: var(--gold-lt);  color: var(--gold); }
+.s-badge-red    { background: var(--red-lt);   color: var(--red); }
+.s-badge-blue   { background: var(--blue-lt);  color: var(--blue); }
+.s-badge-gray   { background: var(--gray-100); color: var(--gray-600); }
+
+/* ── Buttons ── */
+.s-btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 9px 18px; border-radius: 8px; font-size: .85rem;
+    font-weight: 600; cursor: pointer; border: none;
+    text-decoration: none; transition: filter .15s, background .15s;
+}
+.s-btn:hover { filter: brightness(.92); }
+.s-btn-primary { background: var(--p);       color: #fff; }
+.s-btn-outline { background: #fff; color: var(--gray-700); border: 1.5px solid var(--gray-300); }
+.s-btn-outline:hover { background: var(--gray-50); color: var(--gray-900); filter: none; }
+.s-btn-danger  { background: var(--red);     color: #fff; }
+.s-btn-gold    { background: var(--gold);    color: #fff; }
+.s-btn-sm { padding: 6px 13px; font-size: .78rem; }
+
+/* ── Form controls ── */
+.s-label { font-size: .75rem; font-weight: 700; color: var(--gray-700); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; display: block; }
+.s-control {
+    width: 100%; padding: 9px 12px; border: 1.5px solid var(--gray-300);
+    border-radius: 8px; font-size: .875rem; color: var(--gray-900);
+    background: var(--gray-50); transition: border-color .15s, box-shadow .15s;
+}
+.s-control:focus { outline: none; border-color: var(--p); box-shadow: 0 0 0 3px rgba(30,107,79,.12); }
+
+/* ── Filter bar ── */
+.s-filter { background: #fff; border: 1px solid var(--gray-200); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 20px; box-shadow: var(--shadow); }
+.s-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; align-items: end; }
+
+/* ── Empty state ── */
+.s-empty { text-align: center; padding: 56px 20px; color: var(--gray-500); }
+.s-empty-icon { width: 60px; height: 60px; background: var(--gray-100); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 14px; }
+.s-empty-title { font-size: .95rem; font-weight: 700; color: var(--gray-700); margin: 0 0 5px; }
+.s-empty-desc  { font-size: .85rem; margin: 0; }
+
+/* ── Alert ── */
+.s-alert { padding: 12px 16px; border-radius: 8px; font-size: .875rem; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
+.s-alert-success { background: var(--p-light); color: var(--p); border: 1px solid #b2d8c3; }
+.s-alert-error   { background: var(--red-lt);  color: var(--red); border: 1px solid #f5c6c2; }
+
+/* ── Stats row ── */
+.s-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 14px; margin-bottom: 22px; }
+.s-stat-card { background: #fff; border: 1px solid var(--gray-200); border-radius: var(--radius); padding: 16px 18px; text-align: center; box-shadow: var(--shadow); }
+.s-stat-val   { font-size: 1.6rem; font-weight: 800; color: var(--gray-900); line-height: 1; }
+.s-stat-label { font-size: .75rem; color: var(--gray-500); margin-top: 4px; }
+
+/* ── Table ── */
+.s-table-wrap { overflow-x: auto; }
+.s-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.s-table th { background: var(--gray-50); color: var(--gray-600); font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 10px 14px; text-align: left; border-bottom: 2px solid var(--gray-200); white-space: nowrap; }
+.s-table td { padding: 11px 14px; border-bottom: 1px solid var(--gray-100); color: var(--gray-800); vertical-align: middle; }
+.s-table tr:last-child td { border-bottom: none; }
+.s-table tr:hover td { background: var(--gray-50); }
+
+/* ── Month/Year nav ── */
+.s-period { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.s-period select.s-control { width: auto; min-width: 100px; }
+
+
+
 
         html, body {
             height: 100%;

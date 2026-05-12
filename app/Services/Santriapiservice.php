@@ -16,9 +16,18 @@ class SantriApiService
     protected string $baseUrl;
     protected string $token;
 
+    // public function __construct()
+    // {
+    //     $this->baseUrl = rtrim(config('app.url'), '/') . '/api/pesantren';
+    //     $this->token   = session('api_token', '');
+    // }
+
+    //versi salma
+    // SantriApiService.php
     public function __construct()
     {
-        $this->baseUrl = rtrim(config('app.url'), '/') . '/api/pesantren';
+        $baseApp = rtrim(config('app.internal_url', config('app.url')), '/');
+        $this->baseUrl = $baseApp . '/api/pesantren'; // ← pakai $baseApp, bukan config('app.url')
         $this->token   = session('api_token', '');
     }
 

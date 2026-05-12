@@ -15,6 +15,7 @@ class SubscriptionPlan extends Model
         'price'     => 'decimal:2',
         'is_free'   => 'boolean',
         'is_active' => 'boolean',
+        'is_popular' => 'boolean',
     ];
 
     // ============================================================

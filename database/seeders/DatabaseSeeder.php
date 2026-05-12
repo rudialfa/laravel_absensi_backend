@@ -42,6 +42,8 @@ class DatabaseSeeder extends Seeder
             UserSeeder::class,
             PrayerSeeder::class,
             ScheduleSeeder::class,
+            SubscriptionPlanSeeder::class,
+            SubscriptionDummySeeder::class,
         ]);
     }
 }

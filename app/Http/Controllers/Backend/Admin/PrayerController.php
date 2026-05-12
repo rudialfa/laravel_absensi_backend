@@ -8,7 +8,7 @@ use App\Models\Prayer;
 
 class PrayerController extends Controller
 {
-     public function index()
+    public function index()
     {
         $prayers = Prayer::orderBy('date', 'desc')->paginate(20);
         return view('pages.admin.prayers.index', compact('prayers'));
@@ -34,7 +34,7 @@ class PrayerController extends Controller
 
         Prayer::create($request->all());
 
-        return redirect()->route('prayers.index')->with('success', 'Prayer schedule added!');
+        return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule added!');
     }
 
     public function edit($id)
@@ -46,7 +46,7 @@ class PrayerController extends Controller
     public function update(Request $request, $id)
     {
         $prayer = Prayer::findOrFail($id);
-
+        
         $request->validate([
             'city' => 'required|string',
             'date' => 'required|date',
@@ -60,12 +60,12 @@ class PrayerController extends Controller
 
         $prayer->update($request->all());
 
-        return redirect()->route('prayers.index')->with('success', 'Prayer schedule updated!');
+        return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule updated!');
     }
 
     public function destroy($id)
     {
         Prayer::findOrFail($id)->delete();
-        return redirect()->route('prayers.index')->with('success', 'Prayer schedule deleted!');
+        return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule deleted!');
     }
 }
