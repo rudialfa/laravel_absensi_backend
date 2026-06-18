@@ -10,21 +10,21 @@ class SelectPlanRequest extends FormRequest
     {
         return true; // sudah dijaga middleware auth
     }
- 
+
     public function rules(): array
     {
         return [
             // Slug paket yang dipilih: monthly | biannual | yearly
             'plan_slug'     => ['required', 'string', 'in:monthly,biannual,yearly'],
- 
+
             // Bank untuk VA: bca | mandiri
             'bank'          => ['required', 'string', 'in:bca,mandiri'],
- 
+
             // Kode voucher diskon (opsional)
             'discount_code' => ['nullable', 'string', 'max:50'],
         ];
     }
- 
+
     public function messages(): array
     {
         return [

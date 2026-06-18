@@ -127,9 +127,78 @@ class SubscriptionController extends Controller
     // Pilih paket → buat invoice → buat VA → return nomor VA
     // ============================================================
 
+    // public function selectPlan(SelectPlanRequest $request): JsonResponse
+    // {
+    //     $company = $request->user()->company;
+
+    //     if (! $company) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => 'Akun tidak terhubung ke perusahaan.',
+    //         ], 422);
+    //     }
+
+    //     $plan = SubscriptionPlan::where('slug', $request->plan_slug)
+    //         ->where('is_active', true)
+    //         ->where('is_free', false) // paket gratis tidak bisa dipilih manual
+    //         ->firstOrFail();
+
+    //     try {
+    //         // 1. Buat invoice
+    //         $invoice = $this->invoiceService->create(
+    //             company: $company,
+    //             plan: $plan,
+    //             discountCode: $request->discount_code,
+    //         );
+
+    //         // 2. Buat VA sesuai bank yang dipilih
+    //         $vaPayment = $this->vaPaymentService->createVa($invoice, $request->bank);
+
+    //         return response()->json([
+    //             'success' => true,
+    //             'message' => 'Invoice berhasil dibuat. Silakan lakukan pembayaran.',
+    //             'data'    => [
+    //                 'invoice' => [
+    //                     'invoice_number'  => $invoice->invoice_number,
+    //                     'plan_name'       => $plan->name,
+    //                     'subtotal'        => (float) $invoice->subtotal,
+    //                     'discount_amount' => (float) $invoice->discount_amount,
+    //                     'total_amount'    => (float) $invoice->total_amount,
+    //                     'due_at'          => $invoice->due_at->toIso8601String(),
+    //                 ],
+    //                 'va' => [
+    //                     'bank'       => $vaPayment->bank,
+    //                     'va_number'  => $vaPayment->va_number,
+    //                     'va_name'    => $vaPayment->va_name,
+    //                     'amount'     => (float) $vaPayment->amount,
+    //                     'expired_at' => $vaPayment->expired_at?->toIso8601String(),
+    //                 ],
+    //                 'how_to_pay' => $this->howToPay($vaPayment->bank, $vaPayment->va_number),
+    //             ],
+    //         ]);
+    //     } catch (\Exception $e) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => $e->getMessage(),
+    //         ], 422);
+    //     }
+    // }
+
+    // kode 2
     public function selectPlan(SelectPlanRequest $request): JsonResponse
     {
-        $company = $request->user()->company;
+        $user = $request->user();
+
+        // Hanya admin / HR yang boleh memperpanjang langganan
+        // Sesuaikan nama role jika di database kamu berbeda.
+        if (! in_array($user->role, ['admin', 'hr'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya admin atau HR yang dapat memperpanjang langganan.',
+            ], 403);
+        }
+
+        $company = $user->company;
 
         if (! $company) {
             return response()->json([
@@ -140,7 +209,7 @@ class SubscriptionController extends Controller
 
         $plan = SubscriptionPlan::where('slug', $request->plan_slug)
             ->where('is_active', true)
-            ->where('is_free', false) // paket gratis tidak bisa dipilih manual
+            ->where('is_free', false)
             ->firstOrFail();
 
         try {
@@ -175,7 +244,7 @@ class SubscriptionController extends Controller
                     ],
                     'how_to_pay' => $this->howToPay($vaPayment->bank, $vaPayment->va_number),
                 ],
-            ]);
+            ], 201);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
