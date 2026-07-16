@@ -169,38 +169,28 @@ class HrCompanyDailyReportController extends Controller
     //   composer require barryvdh/laravel-dompdf
     //   php artisan vendor:publish --provider="Barryvdh\DomPDF\ServiceProvider"
     // ─────────────────────────────────────────────────────────────────────────
+    // Query params:
+    //   start_date (required, format Y-m-d)
+    //   end_date   (required, format Y-m-d)
+    //   user_id    (opsional — filter 1 karyawan saja)
+    // ─────────────────────────────────────────────────────────────────────────
     public function export(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'month' => 'required|integer|between:1,12',
-            'year'  => 'required|integer|min:2020|max:2099',
+            'start_date' => 'required|date',
+            'end_date'   => 'required|date|after_or_equal:start_date',
+            'user_id'    => 'nullable|integer',
         ]);
         if ($validator->fails()) {
             return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
         }
 
         $companyId = Auth::user()->company_id;
-        $month     = (int) $request->month;
-        $year      = (int) $request->year;
-
-        $bulanLabel = [
-            1 => 'Januari',
-            2 => 'Februari',
-            3 => 'Maret',
-            4 => 'April',
-            5 => 'Mei',
-            6 => 'Juni',
-            7 => 'Juli',
-            8 => 'Agustus',
-            9 => 'September',
-            10 => 'Oktober',
-            11 => 'November',
-            12 => 'Desember',
-        ];
+        $startDate = $request->start_date;
+        $endDate   = $request->end_date;
 
         $query = DailyReport::where('company_id', $companyId)
-            ->whereMonth('date', $month)
-            ->whereYear('date', $year)
+            ->whereBetween('date', [$startDate, $endDate])
             ->with('user:id,name,position,department')
             ->orderBy('date')
             ->orderBy('user_id');
@@ -233,18 +223,22 @@ class HrCompanyDailyReportController extends Controller
             ];
         })->values();
 
-        $company   = Auth::user()->company;
-        $periodLabel = ($bulanLabel[$month] ?? $month) . ' ' . $year;
-        $fileName  = 'daily-report-' . strtolower(str_replace(' ', '-', $periodLabel)) . '.pdf';
+        $company     = Auth::user()->company;
+        $periodLabel = \Carbon\Carbon::parse($startDate)->translatedFormat('d M Y')
+            . ' - ' . \Carbon\Carbon::parse($endDate)->translatedFormat('d M Y');
+
+        $fileName = 'daily-report-' . $startDate . '_to_' . $endDate
+            . ($request->filled('user_id') ? '-user' . $request->user_id : '')
+            . '.pdf';
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.hr_daily_report', [
-            'company'      => $company,
-            'periodLabel'  => $periodLabel,
-            'month'        => $month,
-            'year'         => $year,
+            'company'        => $company,
+            'periodLabel'    => $periodLabel,
+            'startDate'      => $startDate,
+            'endDate'        => $endDate,
             'summaryPerUser' => $summaryPerUser,
-            'totalReports' => $reports->count(),
-            'generatedAt'  => now()->format('d/m/Y H:i'),
+            'totalReports'   => $reports->count(),
+            'generatedAt'    => now()->format('d/m/Y H:i'),
         ])
             ->setPaper('a4', 'portrait')
             ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);

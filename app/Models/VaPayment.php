@@ -22,28 +22,16 @@ class VaPayment extends Model
     // RELATIONS
     // ============================================================
 
-    /**
-     * VA ini untuk satu invoice.
-     * VaPayment → belongsTo → SubscriptionInvoice
-     */
     public function invoice()
     {
         return $this->belongsTo(SubscriptionInvoice::class, 'invoice_id');
     }
 
-    /**
-     * VA ini milik satu company.
-     * VaPayment → belongsTo → Company
-     */
     public function company()
     {
         return $this->belongsTo(Company::class, 'company_id');
     }
 
-    /**
-     * Semua log webhook yang masuk untuk VA ini.
-     * VaPayment → hasMany → VaPaymentLog
-     */
     public function logs()
     {
         return $this->hasMany(VaPaymentLog::class, 'va_payment_id');
@@ -63,7 +51,6 @@ class VaPayment extends Model
         return $query->where('status', 'paid');
     }
 
-    /** VA yang sudah expired (belum dibayar dan waktu sudah lewat) */
     public function scopeExpired($query)
     {
         return $query->where('status', 'pending')
@@ -75,8 +62,9 @@ class VaPayment extends Model
     // ============================================================
 
     /**
-     * Bangun virtualAccountNo sesuai format BCA SNAP:
-     * partnerServiceId (8 digit, left-pad spasi) + customerNo (maks 20 digit)
+     * Bangun virtualAccountNo sesuai format BCA SNAP — tidak dipakai
+     * di flow Midtrans, dibiarkan untuk kompatibilitas kalau nanti
+     * ada integrasi BCA SNAP langsung juga.
      */
     public function getVirtualAccountNo(): string
     {
@@ -84,14 +72,18 @@ class VaPayment extends Model
     }
 
     /**
-     * Tandai VA lunas setelah payment flag dari BCA masuk.
+     * ── REVISI ───────────────────────────────────────────────────
+     * $paymentRequestId & $referenceNo dijadikan nullable karena Midtrans
+     * tidak selalu punya keduanya (beda dengan flow BCA SNAP yang selalu
+     * mengirim payment_request_id). Untuk Midtrans, isi $referenceNo
+     * dengan transaction_id dari notifikasi.
      */
-    public function markAsPaid(string $paymentRequestId, string $referenceNo): void
+    public function markAsPaid(?string $paymentRequestId = null, ?string $referenceNo = null): void
     {
         $this->update([
             'status'             => 'paid',
-            'payment_request_id' => $paymentRequestId,
-            'bank_reference_no'  => $referenceNo,
+            'payment_request_id' => $paymentRequestId ?? $this->payment_request_id,
+            'bank_reference_no'  => $referenceNo ?? $this->bank_reference_no,
             'paid_at'            => now(),
         ]);
     }
@@ -99,6 +91,11 @@ class VaPayment extends Model
     public function markAsExpired(): void
     {
         $this->update(['status' => 'expired']);
+    }
+
+    public function markAsCancelled(): void
+    {
+        $this->update(['status' => 'cancelled']);
     }
 
     public function isPending(): bool

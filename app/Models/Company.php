@@ -88,4 +88,10 @@ class Company extends Model
             ->where('has_used_trial', true)
             ->exists();
     }
+
+    public function billingRole(): string
+    {
+        return config("subscription.billing_roles.{$this->type}")
+            ?? config('subscription.default_billing_role', 'hr');
+    }
 }

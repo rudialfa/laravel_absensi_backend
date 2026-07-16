@@ -21,9 +21,7 @@ class SubscriptionController extends Controller
 
     // ============================================================
     // GET /api/v1/subscriptions/plans
-    // Tampilkan semua paket yang tersedia (public, tidak perlu login)
     // ============================================================
-
     public function plans(): JsonResponse
     {
         $plans = SubscriptionPlan::active()
@@ -39,25 +37,21 @@ class SubscriptionController extends Controller
                 'price_label'   => $plan->is_free
                     ? 'Gratis'
                     : 'Rp ' . number_format($plan->price, 0, ',', '.'),
-                'is_free'       => $plan->is_free,
-                'is_popular'    => $plan->is_popular,    // ← tambah ini
-                'saving_label'  => $plan->saving_label,  // ← tambah ini
+            'is_free'      => $plan->is_free,
+            'is_popular'   => $plan->is_popular,
+            'saving_label' => $plan->saving_label,
             ]);
 
-        return response()->json([
-            'success' => true,
-            'data'    => $plans,
-        ]);
+        return response()->json(['success' => true, 'data' => $plans]);
     }
 
     // ============================================================
     // POST /api/v1/subscriptions/trial
-    // Mulai trial gratis — dipanggil saat company pertama register
     // ============================================================
-
     public function startTrial(Request $request): JsonResponse
     {
-        $company = $request->user()->company;
+        $user    = $request->user();
+        $company = $user->company;
 
         if (! $company) {
             return response()->json([
@@ -66,30 +60,33 @@ class SubscriptionController extends Controller
             ], 422);
         }
 
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat memulai trial. Silakan hubungi admin perusahaan Anda.',
+            ], 403);
+        }
+
         try {
             $subscription = $this->subscriptionService->startTrial($company);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Trial 7 hari berhasil dimulai.',
-                'data'    => $this->formatSubscription($subscription),
+                'message' => 'Trial berhasil dimulai.',
+                'data'    => $this->_formatSubscription($subscription),
             ]);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 422);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
     }
 
     // ============================================================
     // GET /api/v1/subscriptions/status
-    // Status subscription aktif milik company
     // ============================================================
-
     public function status(Request $request): JsonResponse
     {
-        $company = $request->user()->company;
+        $user    = $request->user();
+        $company = $user->company;
 
         if (! $company) {
             return response()->json([
@@ -100,101 +97,51 @@ class SubscriptionController extends Controller
 
         $status = $this->subscriptionService->getStatus($company);
 
-        // Cek apakah ada invoice pending yang menunggu pembayaran
-        $pendingInvoice = $this->invoiceService->getPendingInvoice($company);
+        // Detail tagihan/VA cuma relevan buat yang bisa bayar (billing manager
+        // company ini — misal hr/ustadz/teacher/doctor sesuai tipe company).
+        // Role lain (employee, santri, student, dst) tidak perlu tahu nomor VA.
+        $pendingInvoiceData = null;
 
-        return response()->json([
-            'success' => true,
-            'data'    => array_merge($status, [
-                'pending_invoice' => $pendingInvoice ? [
+        if ($user->isBillingManager()) {
+            $pendingInvoice = $this->invoiceService->getPendingInvoice($company);
+
+            if ($pendingInvoice) {
+                $pendingInvoiceData = [
                     'invoice_number' => $pendingInvoice->invoice_number,
                     'total_amount'   => (float) $pendingInvoice->total_amount,
                     'due_at'         => $pendingInvoice->due_at->toIso8601String(),
                     'va'             => $pendingInvoice->vaPayment ? [
-                        'bank'      => $pendingInvoice->vaPayment->bank,
-                        'va_number' => $pendingInvoice->vaPayment->va_number,
-                        'va_name'   => $pendingInvoice->vaPayment->va_name,
-                        'amount'    => (float) $pendingInvoice->vaPayment->amount,
+                        'bank'       => $pendingInvoice->vaPayment->bank,
+                        'va_number'  => $pendingInvoice->vaPayment->va_number,
+                        'va_name'    => $pendingInvoice->vaPayment->va_name,
+                        'amount'     => (float) $pendingInvoice->vaPayment->amount,
                         'expired_at' => $pendingInvoice->vaPayment->expired_at?->toIso8601String(),
                     ] : null,
-                ] : null,
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => array_merge($status, [
+                'is_billing_manager' => $user->isBillingManager(),
+                'pending_invoice'    => $pendingInvoiceData,
             ]),
         ]);
     }
 
     // ============================================================
     // POST /api/v1/subscriptions/select
-    // Pilih paket → buat invoice → buat VA → return nomor VA
+    // Pilih paket → buat invoice → buat VA Midtrans → return nomor VA
     // ============================================================
-
-    // public function selectPlan(SelectPlanRequest $request): JsonResponse
-    // {
-    //     $company = $request->user()->company;
-
-    //     if (! $company) {
-    //         return response()->json([
-    //             'success' => false,
-    //             'message' => 'Akun tidak terhubung ke perusahaan.',
-    //         ], 422);
-    //     }
-
-    //     $plan = SubscriptionPlan::where('slug', $request->plan_slug)
-    //         ->where('is_active', true)
-    //         ->where('is_free', false) // paket gratis tidak bisa dipilih manual
-    //         ->firstOrFail();
-
-    //     try {
-    //         // 1. Buat invoice
-    //         $invoice = $this->invoiceService->create(
-    //             company: $company,
-    //             plan: $plan,
-    //             discountCode: $request->discount_code,
-    //         );
-
-    //         // 2. Buat VA sesuai bank yang dipilih
-    //         $vaPayment = $this->vaPaymentService->createVa($invoice, $request->bank);
-
-    //         return response()->json([
-    //             'success' => true,
-    //             'message' => 'Invoice berhasil dibuat. Silakan lakukan pembayaran.',
-    //             'data'    => [
-    //                 'invoice' => [
-    //                     'invoice_number'  => $invoice->invoice_number,
-    //                     'plan_name'       => $plan->name,
-    //                     'subtotal'        => (float) $invoice->subtotal,
-    //                     'discount_amount' => (float) $invoice->discount_amount,
-    //                     'total_amount'    => (float) $invoice->total_amount,
-    //                     'due_at'          => $invoice->due_at->toIso8601String(),
-    //                 ],
-    //                 'va' => [
-    //                     'bank'       => $vaPayment->bank,
-    //                     'va_number'  => $vaPayment->va_number,
-    //                     'va_name'    => $vaPayment->va_name,
-    //                     'amount'     => (float) $vaPayment->amount,
-    //                     'expired_at' => $vaPayment->expired_at?->toIso8601String(),
-    //                 ],
-    //                 'how_to_pay' => $this->howToPay($vaPayment->bank, $vaPayment->va_number),
-    //             ],
-    //         ]);
-    //     } catch (\Exception $e) {
-    //         return response()->json([
-    //             'success' => false,
-    //             'message' => $e->getMessage(),
-    //         ], 422);
-    //     }
-    // }
-
-    // kode 2
     public function selectPlan(SelectPlanRequest $request): JsonResponse
     {
         $user = $request->user();
 
-        // Hanya admin / HR yang boleh memperpanjang langganan
-        // Sesuaikan nama role jika di database kamu berbeda.
-        if (! in_array($user->role, ['admin', 'hr'])) {
+        if (! $user->isBillingManager()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Hanya admin atau HR yang dapat memperpanjang langganan.',
+                'message' => 'Hanya penanggung jawab billing yang dapat memperpanjang langganan. Silakan hubungi admin perusahaan Anda.',
             ], 403);
         }
 
@@ -213,14 +160,7 @@ class SubscriptionController extends Controller
             ->firstOrFail();
 
         try {
-            // 1. Buat invoice
-            $invoice = $this->invoiceService->create(
-                company: $company,
-                plan: $plan,
-                discountCode: $request->discount_code,
-            );
-
-            // 2. Buat VA sesuai bank yang dipilih
+            $invoice   = $this->invoiceService->create($company, $plan, $request->discount_code);
             $vaPayment = $this->vaPaymentService->createVa($invoice, $request->bank);
 
             return response()->json([
@@ -242,26 +182,29 @@ class SubscriptionController extends Controller
                         'amount'     => (float) $vaPayment->amount,
                         'expired_at' => $vaPayment->expired_at?->toIso8601String(),
                     ],
-                    'how_to_pay' => $this->howToPay($vaPayment->bank, $vaPayment->va_number),
+                    'how_to_pay' => $this->_howToPay($vaPayment->bank, $vaPayment->va_number),
                 ],
             ], 201);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 422);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
     }
 
     // ============================================================
     // POST /api/v1/subscriptions/check-va
-    // Cek status VA secara manual (jika payment flag belum masuk)
     // ============================================================
-
     public function checkVa(Request $request): JsonResponse
     {
-        $company = $request->user()->company;
+        $user = $request->user();
 
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat mengecek status pembayaran.',
+            ], 403);
+        }
+
+        $company        = $user->company;
         $pendingInvoice = $this->invoiceService->getPendingInvoice($company);
 
         if (! $pendingInvoice || ! $pendingInvoice->vaPayment) {
@@ -273,7 +216,6 @@ class SubscriptionController extends Controller
 
         $vaPayment = $pendingInvoice->vaPayment;
 
-        // Jika sudah lunas di DB, return langsung
         if ($vaPayment->isPaid()) {
             return response()->json([
                 'success' => true,
@@ -282,32 +224,35 @@ class SubscriptionController extends Controller
         }
 
         try {
-            // Tanya langsung ke BCA
-            $result = $this->vaPaymentService->checkBcaStatus($vaPayment);
+            $result = $this->vaPaymentService->checkStatus($vaPayment);
 
             return response()->json([
                 'success' => true,
                 'data'    => [
-                    'status'      => $vaPayment->fresh()->status,
-                    'bank_result' => $result,
+                    'status'           => $vaPayment->fresh()->status,
+                    'midtrans_result'  => $result,
                 ],
             ]);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 500);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 
     // ============================================================
     // GET /api/v1/subscriptions/invoices
-    // Histori semua invoice milik company
     // ============================================================
-
     public function invoices(Request $request): JsonResponse
     {
-        $company  = $request->user()->company;
+        $user = $request->user();
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat melihat histori invoice.',
+            ], 403);
+        }
+
+        $company  = $user->company;
         $invoices = $this->invoiceService->getHistory($company);
 
         $invoices->getCollection()->transform(fn($inv) => [
@@ -326,17 +271,14 @@ class SubscriptionController extends Controller
             ] : null,
         ]);
 
-        return response()->json([
-            'success' => true,
-            'data'    => $invoices,
-        ]);
+        return response()->json(['success' => true, 'data' => $invoices]);
     }
 
     // ============================================================
     // PRIVATE HELPERS
     // ============================================================
 
-    private function formatSubscription($subscription): array
+    private function _formatSubscription($subscription): array
     {
         return [
             'status'         => $subscription->status,
@@ -352,17 +294,16 @@ class SubscriptionController extends Controller
         ];
     }
 
-    private function howToPay(string $bank, string $vaNumber): array
+    private function _howToPay(string $bank, string $vaNumber): array
     {
         return match ($bank) {
             'bca' => [
-                'ATM BCA'     => "1. Pilih Transaksi Lainnya → Transfer → Ke Rek BCA Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'ATM BCA'      => "1. Pilih Transaksi Lainnya → Transfer → Ke Rek BCA Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
                 'mBanking BCA' => "1. Login myBCA → Transfer → Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
-                'KlikBCA'     => "1. Login KlikBCA → Transfer Dana → Transfer ke BCA Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
             ],
             'mandiri' => [
-                'ATM Mandiri'    => "1. Pilih Bayar/Beli → Lainnya → Multi Payment\n2. Masukkan kode perusahaan lalu nomor VA: {$vaNumber}\n3. Konfirmasi pembayaran",
-                'Livin Mandiri'  => "1. Login Livin → Pembayaran → Multi Payment\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi pembayaran",
+                'ATM Mandiri'   => "1. Pilih Bayar/Beli → Lainnya → Multi Payment\n2. Masukkan kode perusahaan lalu nomor VA/Bill Key: {$vaNumber}\n3. Konfirmasi pembayaran",
+                'Livin Mandiri' => "1. Login Livin → Pembayaran → Multi Payment\n2. Masukkan nomor VA/Bill Key: {$vaNumber}\n3. Konfirmasi pembayaran",
             ],
             default => [],
         };

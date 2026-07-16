@@ -18,41 +18,28 @@ class CompanySubscription extends Model
         'has_used_trial' => 'boolean',
     ];
 
+    // Masa tenggang setelah expires_at sebelum status jadi "expired"
+    public const GRACE_PERIOD_DAYS = 3;
+
     // ============================================================
     // RELATIONS
     // ============================================================
 
-    /**
-     * Subscription ini milik satu company.
-     * CompanySubscription → belongsTo → Company
-     */
     public function company()
     {
         return $this->belongsTo(Company::class, 'company_id');
     }
 
-    /**
-     * Subscription ini menggunakan satu plan.
-     * CompanySubscription → belongsTo → SubscriptionPlan
-     */
     public function plan()
     {
         return $this->belongsTo(SubscriptionPlan::class, 'plan_id');
     }
 
-    /**
-     * Invoice terakhir yang terkait dengan subscription ini.
-     * CompanySubscription → belongsTo → SubscriptionInvoice
-     */
     public function lastInvoice()
     {
         return $this->belongsTo(SubscriptionInvoice::class, 'last_invoice_id');
     }
 
-    /**
-     * Semua invoice yang pernah dibuat untuk subscription ini.
-     * CompanySubscription → hasMany → SubscriptionInvoice
-     */
     public function invoices()
     {
         return $this->hasMany(SubscriptionInvoice::class, 'subscription_id');
@@ -62,19 +49,18 @@ class CompanySubscription extends Model
     // SCOPES
     // ============================================================
 
-    /** Subscription yang masih bisa mengakses fitur */
+    /** Subscription yang masih "penuh aktif" (belum masuk grace) */
     public function scopeActive($query)
     {
         return $query->whereIn('status', ['trial', 'active']);
     }
 
-    /** Subscription yang sudah dikunci */
+    /** Subscription yang sudah benar-benar dikunci (bukan grace) */
     public function scopeLocked($query)
     {
         return $query->whereIn('status', ['expired', 'cancelled']);
     }
 
-    /** Subscription yang hampir expired (dalam X hari ke depan) */
     public function scopeExpiringSoon($query, int $days = 3)
     {
         return $query
@@ -87,29 +73,80 @@ class CompanySubscription extends Model
     // ============================================================
 
     /**
-     * Apakah subscription masih aktif?
-     * INI yang dipakai Middleware untuk unlock/lock fitur.
+     * Apakah subscription masih boleh akses fitur?
+     * trial/active → aktif selama belum lewat expires_at.
+     * grace        → tetap dianggap aktif sampai expires_at + GRACE_PERIOD_DAYS.
+     * INI yang dipakai untuk unlock/lock fitur (bukan scopeActive di atas,
+     * yang cuma buat query/reporting "subscription murni aktif").
      */
     public function isActive(): bool
     {
-        return in_array($this->status, ['trial', 'active'])
-            && Carbon::now()->lessThan($this->expires_at);
+        if ($this->status === 'cancelled') {
+            return false;
+        }
+
+        if (in_array($this->status, ['trial', 'active'])) {
+            return Carbon::now()->lessThan($this->expires_at);
+        }
+
+        if ($this->status === 'grace') {
+            return Carbon::now()->lessThan(
+                $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            );
+        }
+
+        return false; // expired
     }
 
-    /** Kebalikan isActive — dipakai untuk tampilkan halaman "upgrade" */
     public function isLocked(): bool
     {
         return ! $this->isActive();
     }
 
-    /** Sisa hari masa aktif */
+    public function isGrace(): bool
+    {
+        return $this->status === 'grace';
+    }
+
+    /**
+     * Sisa hari. Untuk trial/active → sampai expires_at.
+     * Untuk grace → sampai batas akhir masa tenggang (expires_at + GRACE_PERIOD_DAYS).
+     */
     public function daysRemaining(): int
     {
-        if ($this->isLocked()) {
+        if (in_array($this->status, ['expired', 'cancelled'])) {
             return 0;
         }
 
-        return (int) Carbon::now()->diffInDays($this->expires_at, false);
+        $target = $this->status === 'grace'
+            ? $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            : $this->expires_at;
+
+        return max(0, (int) Carbon::now()->diffInDays($target, false));
+    }
+
+    /**
+     * Sinkronkan status di DB berdasarkan expires_at saat ini:
+     * trial/active yang lewat expires_at → grace → (lewat grace period) → expired.
+     * Dipanggil setiap kali status dibaca (self-healing), jadi tidak
+     * bergantung 100% ke scheduler harian.
+     */
+    public function syncStatus(): self
+    {
+        if (in_array($this->status, ['expired', 'cancelled'])) {
+            return $this;
+        }
+
+        if (Carbon::now()->greaterThanOrEqualTo($this->expires_at)) {
+            $graceUntil = $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS);
+            $newStatus  = Carbon::now()->lessThan($graceUntil) ? 'grace' : 'expired';
+
+            if ($newStatus !== $this->status) {
+                $this->update(['status' => $newStatus]);
+            }
+        }
+
+        return $this;
     }
 
     /** Tandai expired (dipanggil scheduler command) */
@@ -120,11 +157,11 @@ class CompanySubscription extends Model
 
     /**
      * Aktifkan setelah pembayaran berhasil.
-     * Jika masih aktif, perpanjang dari tanggal expires — bukan dari hari ini.
+     * Jika masih aktif (termasuk grace), perpanjang dari expires_at lama —
+     * bukan dari hari ini, supaya tidak rugi sisa hari yang belum kepakai.
      */
     public function activate(SubscriptionPlan $plan, SubscriptionInvoice $invoice): void
     {
-        // Perpanjang dari sisa masa aktif jika belum habis
         $base = $this->isActive()
             ? $this->expires_at->copy()
             : Carbon::now();
@@ -132,7 +169,7 @@ class CompanySubscription extends Model
         $this->update([
             'plan_id'         => $plan->id,
             'status'          => 'active',
-            'started_at'      => $base,
+            'started_at'      => $this->started_at ?? Carbon::now(),
             'expires_at'      => $base->addDays($plan->duration_days),
             'last_invoice_id' => $invoice->id,
         ]);

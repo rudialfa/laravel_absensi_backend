@@ -68,6 +68,16 @@ class User extends Authenticatable
         return $this->company?->type . '.' . $this->role;
     }
 
+    public function isBillingManager(): bool
+    {
+        if (! $this->company) {
+            return false;
+        }
+
+        return $this->role === $this->company->billingRole();
+    }
+
+
     // ═══════════════════════════════════════════════════════════════════
     // RELASI — UMUM
     // ═══════════════════════════════════════════════════════════════════
