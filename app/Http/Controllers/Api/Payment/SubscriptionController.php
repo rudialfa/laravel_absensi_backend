@@ -305,6 +305,18 @@ class SubscriptionController extends Controller
                 'ATM Mandiri'   => "1. Pilih Bayar/Beli → Lainnya → Multi Payment\n2. Masukkan kode perusahaan lalu nomor VA/Bill Key: {$vaNumber}\n3. Konfirmasi pembayaran",
                 'Livin Mandiri' => "1. Login Livin → Pembayaran → Multi Payment\n2. Masukkan nomor VA/Bill Key: {$vaNumber}\n3. Konfirmasi pembayaran",
             ],
+            'bni' => [
+                'ATM BNI'      => "1. Pilih Menu Lain → Transfer → Virtual Account Billing\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'BNI Mobile'   => "1. Login BNI Mobile Banking → Transfer → Virtual Account Billing\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
+            'bri' => [
+                'ATM BRI'   => "1. Pilih Transaksi Lain → Pembayaran → Lainnya → BRIVA\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'BRImo'     => "1. Login BRImo → Pembayaran → BRIVA\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
+            'cimb' => [
+                'OCTO Mobile' => "1. Login OCTO Mobile → Pembayaran → Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'ATM CIMB'    => "1. Pilih Pembayaran → Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
             default => [],
         };
     }

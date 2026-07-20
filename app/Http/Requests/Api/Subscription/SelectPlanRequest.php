@@ -15,7 +15,7 @@ class SelectPlanRequest extends FormRequest
     {
         return [
             'plan_slug'     => 'required|string|exists:subscription_plans,slug',
-            'bank'          => 'required|string|in:bca,mandiri',
+            'bank'          => 'required|string|in:bca,mandiri,bni,bri,cimb',
             'discount_code' => 'nullable|string',
         ];
     }

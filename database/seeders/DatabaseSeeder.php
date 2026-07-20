@@ -44,6 +44,7 @@ class DatabaseSeeder extends Seeder
             ScheduleSeeder::class,
             SubscriptionPlanSeeder::class,
             SubscriptionDummySeeder::class,
+            SuperAdminSeeder::class,
         ]);
     }
 }

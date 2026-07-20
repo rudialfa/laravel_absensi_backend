@@ -3,7 +3,6 @@
 @section('title', 'Login')
 
 @push('style')
-    <!-- CSS Libraries -->
     <link rel="stylesheet" href="{{ asset('library/bootstrap-social/bootstrap-social.css') }}">
 @endpush
 
@@ -25,21 +24,29 @@
                             {{ $message }}
                         </div>
                     @enderror
-
                 </div>
 
                 <div class="form-group">
                     <div class="d-block">
                         <label for="password" class="control-label">Password</label>
-
                     </div>
-                    <input id="password" type="password" class="form-control" name="password" tabindex="2">
-                    <div class="invalid-feedback">
-                        please fill in your password
-                    </div>
+                    <input id="password" type="password"
+                        class="form-control @error('password') is-invalid @enderror"
+                        name="password" tabindex="2">
+                    @error('password')
+                        <div class="invalid-feedback">{{ $message }}</div>
+                    @else
+                        <div class="invalid-feedback">please fill in your password</div>
+                    @enderror
                 </div>
 
-
+                <div class="form-group">
+                    <div class="custom-checkbox custom-control">
+                        <input type="checkbox" name="remember" class="custom-control-input" id="remember"
+                            tabindex="3">
+                        <label class="custom-control-label" for="remember">Remember Me</label>
+                    </div>
+                </div>
 
                 <div class="form-group">
                     <button type="submit" class="btn btn-primary btn-lg btn-block" tabindex="4">
@@ -47,8 +54,6 @@
                     </button>
                 </div>
             </form>
-
-
         </div>
     </div>
     <div class="text-muted mt-5 text-center">
@@ -57,7 +62,4 @@
 @endsection
 
 @push('scripts')
-    <!-- JS Libraies -->
-
-    <!-- Page Specific JS File -->
 @endpush
