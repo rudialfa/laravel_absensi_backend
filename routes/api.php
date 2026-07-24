@@ -248,6 +248,39 @@ Route::prefix('chat')
         Route::delete('/messages/{id}',             [ChatController::class, 'deleteMessage'])->whereNumber('id');
     });
 
+// =======================
+// 🎫 SUPPORT TICKET (Universal - semua context)
+// =======================
+Route::prefix('support-tickets')
+    ->middleware('auth:sanctum')
+    ->group(function () {
+        Route::get('/', [SupportTicketController::class, 'index']);
+        Route::post('/', [SupportTicketController::class, 'store']);
+        Route::get('/{id}', [SupportTicketController::class, 'show'])->whereNumber('id');
+        Route::post('/{id}/reply', [SupportTicketController::class, 'reply'])->whereNumber('id');
+    });
+
+// =======================
+// ❓ HELP ARTICLE / FAQ (Universal - semua context)
+// =======================
+Route::prefix('help-articles')
+    ->middleware('auth:sanctum')
+    ->group(function () {
+        Route::get('/categories', [HelpArticleController::class, 'categories']); // harus sebelum /{id}
+        Route::get('/', [HelpArticleController::class, 'index']);
+        Route::get('/{id}', [HelpArticleController::class, 'show'])->whereNumber('id');
+    });
+
+// =======================
+// 📄 APP POLICY — Privacy Policy, ToS, dll (Universal - butuh login)
+// =======================
+Route::prefix('policies')
+    ->middleware('auth:sanctum')
+    ->group(function () {
+        Route::get('/', [AppPolicyController::class, 'index']);
+        Route::get('/{type}', [AppPolicyController::class, 'show']);
+    });
+
 
 
 Route::prefix('company')
