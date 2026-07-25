@@ -90,9 +90,9 @@ Route::post('/logout', [LoginController::class, 'logout'])->name('logout')->midd
 | butuh 'auth' biasa supaya siapapun yang sedang di-impersonate tetap
 | bisa klik "Kembali ke Superadmin".
 */
-Route::post('/impersonate/stop', [SuperAdminImpersonateController::class, 'stop'])
-    ->middleware('auth')
-    ->name('impersonate.stop');
+// Route::post('/impersonate/stop', [SuperAdminImpersonateController::class, 'stop'])
+//     ->middleware('auth')
+//     ->name('impersonate.stop');
 
 /*
 |--------------------------------------------------------------------------
@@ -188,94 +188,94 @@ Route::middleware(['auth', 'context:system,superadmin'])
     });
     });
 
-/*
-|--------------------------------------------------------------------------
-| COMPANY / HR — context:company,hr
-|--------------------------------------------------------------------------
-*/
-Route::middleware(['auth', 'context:company,hr'])
-    ->prefix('company')
-    ->name('company.')
-    ->group(function () {
+// /*
+// |--------------------------------------------------------------------------
+// | COMPANY / HR — context:company,hr
+// |--------------------------------------------------------------------------
+// */
+// Route::middleware(['auth', 'context:company,hr'])
+//     ->prefix('company')
+//     ->name('company.')
+//     ->group(function () {
 
-    Route::get('/dashboard', [HrDashboardController::class, 'index'])->name('dashboard');
+//     Route::get('/dashboard', [HrDashboardController::class, 'index'])->name('dashboard');
 
-    Route::prefix('attendances')->name('attendances.')->group(function () {
-        Route::get('/', [HrAttendanceController::class, 'index'])->name('index');
-        Route::get('/{id}', [HrAttendanceController::class, 'show'])->name('show');
-        });
+//     Route::prefix('attendances')->name('attendances.')->group(function () {
+//         Route::get('/', [HrAttendanceController::class, 'index'])->name('index');
+//         Route::get('/{id}', [HrAttendanceController::class, 'show'])->name('show');
+//         });
 
-    Route::resource('employees', HrEmployeeController::class);
+//     Route::resource('employees', HrEmployeeController::class);
 
-    Route::prefix('permissions')->name('permissions.')->group(function () {
-        Route::get('/', [HrPermissionController::class, 'index'])->name('index');
-        Route::post('/{id}/approve', [HrPermissionController::class, 'approve'])->name('approve');
-        Route::post('/{id}/reject', [HrPermissionController::class, 'reject'])->name('reject');
-        });
+//     Route::prefix('permissions')->name('permissions.')->group(function () {
+//         Route::get('/', [HrPermissionController::class, 'index'])->name('index');
+//         Route::post('/{id}/approve', [HrPermissionController::class, 'approve'])->name('approve');
+//         Route::post('/{id}/reject', [HrPermissionController::class, 'reject'])->name('reject');
+//         });
 
-    Route::resource('shifts', HrShiftController::class);
-    Route::resource('schedules', HrScheduleController::class);
-    Route::resource('holidays', HrHolidayController::class);
+//     Route::resource('shifts', HrShiftController::class);
+//     Route::resource('schedules', HrScheduleController::class);
+//     Route::resource('holidays', HrHolidayController::class);
 
-    Route::prefix('payrolls')->name('payrolls.')->group(function () {
-        Route::get('/', [HrPayrollController::class, 'index'])->name('index');
-        Route::post('/generate', [HrPayrollController::class, 'generate'])->name('generate');
-        Route::get('/{id}', [HrPayrollController::class, 'show'])->name('show');
-        Route::patch('/{id}/approve', [HrPayrollController::class, 'approve'])->name('approve');
-        Route::patch('/{id}/mark-paid', [HrPayrollController::class, 'markPaid'])->name('mark-paid');
-        Route::get('/{id}/slip', [HrPayrollController::class, 'slip'])->name('slip');
-        });
+//     Route::prefix('payrolls')->name('payrolls.')->group(function () {
+//         Route::get('/', [HrPayrollController::class, 'index'])->name('index');
+//         Route::post('/generate', [HrPayrollController::class, 'generate'])->name('generate');
+//         Route::get('/{id}', [HrPayrollController::class, 'show'])->name('show');
+//         Route::patch('/{id}/approve', [HrPayrollController::class, 'approve'])->name('approve');
+//         Route::patch('/{id}/mark-paid', [HrPayrollController::class, 'markPaid'])->name('mark-paid');
+//         Route::get('/{id}/slip', [HrPayrollController::class, 'slip'])->name('slip');
+//         });
 
-    Route::prefix('loans')->name('loans.')->group(function () {
-        Route::get('/', [HrLoanController::class, 'index'])->name('index');
-        Route::get('/{id}', [HrLoanController::class, 'show'])->name('show');
-        Route::put('/{id}/approve', [HrLoanController::class, 'approve'])->name('approve');
-        Route::put('/{id}/reject', [HrLoanController::class, 'reject'])->name('reject');
-        });
-    });
+//     Route::prefix('loans')->name('loans.')->group(function () {
+//         Route::get('/', [HrLoanController::class, 'index'])->name('index');
+//         Route::get('/{id}', [HrLoanController::class, 'show'])->name('show');
+//         Route::put('/{id}/approve', [HrLoanController::class, 'approve'])->name('approve');
+//         Route::put('/{id}/reject', [HrLoanController::class, 'reject'])->name('reject');
+//         });
+//     });
 
-/*
-|--------------------------------------------------------------------------
-| COMPANY / EMPLOYEE — context:company,employee
-|--------------------------------------------------------------------------
-*/
-Route::middleware(['auth', 'context:company,employee'])
-    ->prefix('employee')
-    ->name('employee.')
-    ->group(function () {
-    // ... (persis seperti "versi salma" yang sudah Anda tulis — dipertahankan apa adanya)
-});
+// /*
+// |--------------------------------------------------------------------------
+// | COMPANY / EMPLOYEE — context:company,employee
+// |--------------------------------------------------------------------------
+// */
+// Route::middleware(['auth', 'context:company,employee'])
+//     ->prefix('employee')
+//     ->name('employee.')
+//     ->group(function () {
+//     // ... (persis seperti "versi salma" yang sudah Anda tulis — dipertahankan apa adanya)
+// });
 
-/*
-|--------------------------------------------------------------------------
-| PESANTREN / USTADZ — context:pesantren,ustadz
-|--------------------------------------------------------------------------
-*/
-Route::middleware(['auth', 'context:pesantren,ustadz'])
-    ->prefix('pesantren')
-    ->name('pesantren.')
-    ->group(function () {
+// /*
+// |--------------------------------------------------------------------------
+// | PESANTREN / USTADZ — context:pesantren,ustadz
+// |--------------------------------------------------------------------------
+// */
+// Route::middleware(['auth', 'context:pesantren,ustadz'])
+//     ->prefix('pesantren')
+//     ->name('pesantren.')
+//     ->group(function () {
 
-    Route::get('/dashboard', [UstadzDashboardController::class, 'index'])->name('dashboard');
+//     Route::get('/dashboard', [UstadzDashboardController::class, 'index'])->name('dashboard');
 
-    Route::prefix('attendances')->name('attendances.')->group(function () {
-        Route::get('/', [UstadzAttendanceController::class, 'index'])->name('index');
-        Route::get('/santri', [UstadzAttendanceController::class, 'santriToday'])->name('santri');
-    });
+//     Route::prefix('attendances')->name('attendances.')->group(function () {
+//         Route::get('/', [UstadzAttendanceController::class, 'index'])->name('index');
+//         Route::get('/santri', [UstadzAttendanceController::class, 'santriToday'])->name('santri');
+//     });
 
-    Route::resource('santri', UstadzSantriController::class);
-    Route::resource('mutabaah', UstadzMutabaahController::class);
-    Route::resource('schedules', UstadzScheduleController::class);
-    });
+//     Route::resource('santri', UstadzSantriController::class);
+//     Route::resource('mutabaah', UstadzMutabaahController::class);
+//     Route::resource('schedules', UstadzScheduleController::class);
+//     });
 
-/*
-|--------------------------------------------------------------------------
-| PESANTREN / SANTRI — context:pesantren,santri
-|--------------------------------------------------------------------------
-*/
-Route::middleware(['auth', 'context:pesantren,santri'])
-    ->prefix('santri')
-    ->name('santri.')
-    ->group(function () {
-    // ... (persis seperti blok santri yang sudah Anda tulis — dipertahankan apa adanya)
-});
+// /*
+// |--------------------------------------------------------------------------
+// | PESANTREN / SANTRI — context:pesantren,santri
+// |--------------------------------------------------------------------------
+// */
+// Route::middleware(['auth', 'context:pesantren,santri'])
+//     ->prefix('santri')
+//     ->name('santri.')
+//     ->group(function () {
+//     // ... (persis seperti blok santri yang sudah Anda tulis — dipertahankan apa adanya)
+// });

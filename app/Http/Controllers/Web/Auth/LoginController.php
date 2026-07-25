@@ -88,7 +88,7 @@ class LoginController extends Controller
     private function redirectPath($user): string
     {
         // Superadmin — tidak punya company
-        if (! $user->company_id && $user->role === 'superadmin') {
+        if ($user->role === 'superadmin') {
             return route('superadmin.dashboard');
         }
 
