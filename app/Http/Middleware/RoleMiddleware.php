@@ -9,22 +9,6 @@ class RoleMiddleware
 {
  public function handle($request, Closure $next, $role)
     {
-        // if (!Auth::check()) {
-        //     return redirect('/'); // belum login
-        // }
-
-        // if (Auth::user()->role !== $role) {
-        //     abort(403, 'Akses ditolak.');
-        // }
-
-        // return $next($request);
-
-
-        // versi web dan api
-
-          // =========================
-        // 1. BELUM LOGIN
-        // =========================
         if (!Auth::check()) {
 
             // API request

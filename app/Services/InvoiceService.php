@@ -72,12 +72,26 @@ class InvoiceService
             ->first();
     }
 
-    public function getHistory(Company $company)
+    // public function getHistory(Company $company)
+    // {
+    //     return SubscriptionInvoice::where('company_id', $company->id)
+    //         ->with(['plan', 'vaPayment'])
+    //         ->latest('issued_at')
+    //         ->paginate(15);
+    // }
+
+    // kode 2
+    public function getHistory(Company $company, ?string $status = null)
     {
-        return SubscriptionInvoice::where('company_id', $company->id)
+        $query = $company->invoices()
             ->with(['plan', 'vaPayment'])
-            ->latest('issued_at')
-            ->paginate(15);
+            ->latest('issued_at');
+
+        if ($status && $status !== 'all') {
+            $query->where('status', $status);
+        }
+
+        return $query->paginate(15);
     }
 
     public function expireOverdueInvoices(): int

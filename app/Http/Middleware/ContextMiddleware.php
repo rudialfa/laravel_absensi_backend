@@ -8,49 +8,6 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ContextMiddleware
 {
-    /**
-     * Handle an incoming request.
-     *
-     * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
-     */
-    // public function handle(Request $request, Closure $next, $type, $role = null): Response
-    // {
-    //     // $user = $request->user();
-
-    //     // // cek company type
-    //     // if ($user->company->type !== $type) {
-    //     //     return response()->json(['message' => 'Wrong app context'], 403);
-    //     // }
-
-    //     // // jika ada role
-    //     // if ($role && $user->role !== $role) {
-    //     //     return response()->json(['message' => 'Wrong role'], 403);
-    //     // }
-
-    //     // return $next($request);
-
-    //     // haddle api saja
-
-    //     // versi web dan api
-    //      $user = $request->user();
-
-    //     // Cek apakah user ada
-    //     if (!$user) {
-    //         return $this->unauthorized($request);
-    //     }
-
-    //     // Cek company type
-    //     if (!$user->company || $user->company->type !== $type) {
-    //         return $this->wrongContext($request);
-    //     }
-
-    //     // Jika ada role requirement
-    //     if ($role && $user->role !== $role) {
-    //         return $this->wrongRole($request);
-    //     }
-
-    //     return $next($request);
-    // }
 
 
     // kode 2
@@ -73,6 +30,13 @@ class ContextMiddleware
         // Cek company type (untuk company/pesantren/school)
         if (!$user->company || $user->company->type !== $type) {
             return $this->wrongContext($request);
+        }
+
+        // Sekolah/organisasi sedang dinonaktifkan — tolak walau token masih valid
+        if (!$user->company->is_active) {
+            return response()->json([
+                'message' => 'Organisasi Anda sedang dinonaktifkan. Hubungi admin pusat.',
+            ], 403);
         }
 
         // Jika ada role requirement

@@ -31,8 +31,18 @@ class AuthController extends Controller
             return response()->json(['message' => 'Login gagal'], 401);
         }
 
+        if (!$user->is_active) {
+            return response()->json(['message' => 'Akun Anda telah dinonaktifkan, hubungi admin sekolah'], 403);
+        }
+
         if (!$user->company) {
             return response()->json(['message' => 'User tidak terhubung ke organisasi'], 403);
+        }
+
+        if (!$user->company->is_active) {
+            return response()->json([
+                'message' => 'Sekolah/organisasi Anda sedang dinonaktifkan. Hubungi admin pusat.',
+            ], 403);
         }
 
         // hapus token lama
@@ -78,7 +88,7 @@ class AuthController extends Controller
             'time_out'   => 'required',
             // 'type'       => 'required|in:company,pesantren,school,hospital',
             // 'type' => 'required|in:company,pesantren,school,hospital,government,factory,retail,restaurant,training,organization,transport,remote,sports',
-            'type' => 'required|in:company,pesantren,',
+            'type' => 'required|in:company,pesantren,school',
 
 
             // admin
@@ -108,7 +118,7 @@ class AuthController extends Controller
             $adminRoleMap = [
                 'company'   => 'hr',
                 'pesantren' => 'ustadz',
-                // 'school'    => 'teacher',
+                'school'    => 'admin',
                 // 'hospital'  => 'hr'
             ];
 

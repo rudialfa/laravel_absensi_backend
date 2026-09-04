@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\System\CompanyController;
+
 use App\Http\Controllers\Api\ChatMessage\ChatController;
 use App\Http\Controllers\Api\Employee\EmployeeAttendanceController;
 use App\Http\Controllers\Api\Employee\EmployeeDailyReportController;
@@ -66,6 +68,21 @@ use App\Http\Controllers\Api\Ustadz\PesantrenSchedulesController;
 use App\Http\Controllers\Api\Ustadz\PesantrenSettingController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzAttendanceController;
 use App\Http\Controllers\Api\Ustadz\PesantrenUstadzSantriPermissionController;
+
+use App\Http\Controllers\Api\School\Admin\ClassRoomController;
+use App\Http\Controllers\Api\School\Admin\StaffController;
+use App\Http\Controllers\Api\School\Admin\StudentController;
+use App\Http\Controllers\Api\School\Admin\TeacherAssignmentController;
+use App\Http\Controllers\Api\School\Admin\AttendanceDeviceController as AdminAttendanceDeviceController;
+use App\Http\Controllers\Api\School\Admin\StudentPermissionController as AdminStudentPermissionController;
+use App\Http\Controllers\Api\School\Guru\GuruClassController;
+use App\Http\Controllers\Api\School\Guru\GuruAttendanceController;
+use App\Http\Controllers\Api\School\Guru\GuruStudentPermissionController;
+use App\Http\Controllers\Api\School\Wali\WaliStudentController;
+use App\Http\Controllers\Api\School\Wali\WaliAttendanceController;
+use App\Http\Controllers\Api\School\Wali\WaliPermissionController;
+use App\Http\Controllers\Api\School\Kiosk\KioskAuthController;
+use App\Http\Controllers\Api\School\Kiosk\KioskAttendanceController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
@@ -219,6 +236,11 @@ Route::middleware('auth:sanctum')
 
     Route::get('invoices', [SubscriptionController::class, 'invoices'])
             ->name('subscriptions.invoices');
+
+    // 🆕 BARU
+    Route::get('invoices/{id}', [SubscriptionController::class, 'invoiceDetail'])
+        ->name('subscriptions.invoice-detail')
+        ->whereNumber('id');
     });
 
 // ============================================================
@@ -281,6 +303,18 @@ Route::prefix('policies')
         Route::get('/{type}', [AppPolicyController::class, 'show']);
     });
 
+
+// ═══════════════════════════════════════════════════════════
+// SUPERADMIN — kelola aktif/nonaktif semua company/sekolah
+// ═══════════════════════════════════════════════════════════
+Route::prefix('system')
+    ->middleware(['auth:sanctum', 'context:system,superadmin']) // sesuaikan role superadmin Anda
+    ->group(function () {
+        Route::get('companies', [CompanyController::class, 'index']);
+        Route::get('companies/{company}', [CompanyController::class, 'show']);
+        Route::patch('companies/{company}/deactivate', [CompanyController::class, 'deactivate']);
+        Route::patch('companies/{company}/reactivate', [CompanyController::class, 'reactivate']);
+    });
 
 
 Route::prefix('company')
@@ -1108,18 +1142,95 @@ Route::prefix('pesantren')
     });
 
 
-
 Route::prefix('school')
     ->middleware(['auth:sanctum', 'context:school'])
     ->group(function () {
 
-        Route::middleware('context:school,teacher')->group(function () {
-            // ...
-        });
 
-        Route::middleware('context:school,student')->group(function () {
-            // ...
+
+    // ═══════════════════════════════════════════════════════════
+    // ADMIN SEKOLAH — kelola master data
+    // ═══════════════════════════════════════════════════════════
+    Route::middleware('context:school,admin')->prefix('admin')->group(function () {
+
+        // Kelola akun guru & wali
+        Route::apiResource('staff', StaffController::class)->except(['destroy']);
+        Route::delete('staff/{staff}', [StaffController::class, 'destroy']); // nonaktifkan, bukan hapus permanen
+        Route::post('staff/{staff}/reset-password', [StaffController::class, 'resetPassword']);
+
+        Route::apiResource('classes', ClassRoomController::class);
+
+        Route::apiResource('students', StudentController::class);
+        Route::post('students/{student}/guardians', [StudentController::class, 'attachGuardian']);
+        Route::delete('students/{student}/guardians/{user}', [StudentController::class, 'detachGuardian']);
+
+        Route::post('classes/{class}/teachers', [TeacherAssignmentController::class, 'attach']);
+        Route::delete('classes/{class}/teachers/{user}', [TeacherAssignmentController::class, 'detach']);
+
+        Route::apiResource('devices', AdminAttendanceDeviceController::class);
+        Route::post('devices/{device}/regenerate-token', [AdminAttendanceDeviceController::class, 'regenerateToken']);
+
+        Route::get('permissions', [AdminStudentPermissionController::class, 'index']);
+        Route::patch('permissions/{permission}/review', [AdminStudentPermissionController::class, 'review']);
+
+        Route::get('attendance-report', [AdminAttendanceDeviceController::class, 'report']);
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // GURU — kelas yang diampu & operasional absen
+    // ═══════════════════════════════════════════════════════════
+    Route::middleware('context:school,guru')->prefix('guru')->group(function () {
+
+        Route::get('my-classes', [GuruClassController::class, 'index']);
+        Route::get('my-classes/{class}/students', [GuruClassController::class, 'students']);
+
+        Route::get('my-classes/{class}/attendance', [GuruAttendanceController::class, 'index']);
+        Route::post('my-classes/{class}/attendance', [GuruAttendanceController::class, 'store']);
+        Route::patch('attendance/{attendance}', [GuruAttendanceController::class, 'update']);
+
+        Route::get('permissions', [GuruStudentPermissionController::class, 'index']);
+        Route::patch('permissions/{permission}/review', [GuruStudentPermissionController::class, 'review']);
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // WALI / ORANG TUA — pantau anak, ajukan izin
+    // ═══════════════════════════════════════════════════════════
+    Route::middleware('context:school,wali')->prefix('wali')->group(function () {
+
+        Route::get('my-children', [WaliStudentController::class, 'index']);
+        Route::get('my-children/{student}', [WaliStudentController::class, 'show']);
+
+        Route::get('my-children/{student}/attendance', [WaliAttendanceController::class, 'index']);
+
+        Route::get('my-children/{student}/permissions', [WaliPermissionController::class, 'index']);
+        Route::post('my-children/{student}/permissions', [WaliPermissionController::class, 'store']);
+        Route::post('permissions/upload-attachment', [WaliPermissionController::class, 'uploadAttachment']);
         });
     });
+
+
+/*
+|--------------------------------------------------------------------------
+| KIOSK — TIDAK pakai auth:sanctum / ContextMiddleware sama sekali.
+| Auth-nya device_token lewat middleware VerifyDeviceToken.
+| Taruh di luar grup 'school' di atas.
+|--------------------------------------------------------------------------
+*/
+Route::prefix('kiosk')
+    ->middleware(['verify.device'])   // alias didaftarkan di bootstrap/app.php atau Kernel.php
+    ->group(function () {
+
+        // Konfirmasi device masih valid + info kelas default-nya (dipanggil saat kiosk dinyalakan)
+        Route::get('ping', [KioskAuthController::class, 'ping']);
+
+        Route::get('classes', [KioskAttendanceController::class, 'classes']);
+
+        // Ambil daftar murid untuk diabsen (per kelas yang dipilih di layar kiosk)
+        Route::get('classes/{class}/students', [KioskAttendanceController::class, 'students']);
+
+        // Kirim hasil absen 1 murid (dipanggil berkali-kali, 1x per murid saat guru klik "lanjut")
+        Route::post('attendance', [KioskAttendanceController::class, 'store']);
+    });
+
 
 // END ROUTE NEWS 2 #################################################################################

@@ -17,7 +17,6 @@ class UserSeeder extends Seeder
     {
         $company = Company::where('type', 'company')->first();
         $pesantren = Company::where('type', 'pesantren')->first();
-        $school = Company::where('type', 'school')->first();
 
         // COMPANY
         User::create([
@@ -55,21 +54,9 @@ class UserSeeder extends Seeder
             'company_id' => $pesantren->id
         ]);
 
-        // SCHOOL
-        User::create([
-            'name' => 'Teacher Siti',
-            'email' => 'teacher@sma1.sch.id',
-            'password' => Hash::make('123456'),
-            'role' => 'teacher',
-            'company_id' => $school->id
-        ]);
-
-        User::create([
-            'name' => 'Student Andi',
-            'email' => 'student@sma1.sch.id',
-            'password' => Hash::make('123456'),
-            'role' => 'student',
-            'company_id' => $school->id
-        ]);
+        // SCHOOL — dihapus dari sini.
+        // Akun admin/guru/wali untuk company type 'school' sekarang
+        // sepenuhnya di-generate oleh SchoolDemoSeeder.php, sesuai
+        // SchoolRole enum (admin, guru, wali).
     }
 }

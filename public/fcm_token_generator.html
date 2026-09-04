@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8">
+    <title>FCM Token Generator - Testing</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 700px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            cursor: pointer;
+            background: #4285F4;
+            color: white;
+            border: none;
+            border-radius: 6px;
+        }
+
+        button:hover {
+            background: #3367D6;
+        }
+
+        #token-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 6px;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 13px;
+            display: none;
+        }
+
+        #status {
+            margin-top: 15px;
+            color: #555;
+        }
+
+        .error {
+            color: #D32F2F;
+        }
+
+        .success {
+            color: #388E3C;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🔥 FCM Token Generator (Testing Only)</h1>
+    <p>Halaman ini CUMA buat testing backend Laravel kamu. Jangan dipakai di production — pakai app Flutter beneran
+        untuk itu.</p>
+
+    <button id="btn-get-token">Minta Izin & Ambil Token</button>
+
+    <div id="status"></div>
+    <div id="token-box"></div>
+
+    <!-- Firebase SDK versi 10 (compat mode, paling gampang dipakai tanpa build tool) -->
+    <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js"></script>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════
+        // GANTI 2 BAGIAN INI dengan punya kamu dari Firebase Console
+        // ═══════════════════════════════════════════════════════════
+        const firebaseConfig = {
+            apiKey: "AIzaSyB_eM_GuB_QmucDQ1xLh-jvdQfzfM2nL3c",
+            authDomain: "absen-pintar-90392.firebaseapp.com",
+            projectId: "absen-pintar-90392",
+            storageBucket: "absen-pintar-90392.firebasestorage.app",
+            messagingSenderId: "705718237989",
+            appId: "1:705718237989:web:32e102df1d6557014f38cc"
+        };
+
+        const VAPID_KEY = "GANTI_DENGAN_VAPID_KEY_KAMU";
+        // ═══════════════════════════════════════════════════════════
+
+        firebase.initializeApp(firebaseConfig);
+        const messaging = firebase.messaging();
+
+        document.getElementById('btn-get-token').addEventListener('click', async () => {
+            const statusEl = document.getElementById('status');
+            const tokenBox = document.getElementById('token-box');
+
+            try {
+                statusEl.textContent = 'Meminta izin notifikasi...';
+                const permission = await Notification.requestPermission();
+
+                if (permission !== 'granted') {
+                    statusEl.innerHTML = '<span class="error">Izin ditolak. Klik ikon gembok di address bar, izinkan notifikasi, lalu refresh halaman ini.</span>';
+                    return;
+                }
+
+                statusEl.textContent = 'Mengambil token...';
+                const token = await messaging.getToken({ vapidKey: VAPID_KEY });
+
+                statusEl.innerHTML = '<span class="success">✅ Berhasil! Copy token di bawah ini:</span>';
+                tokenBox.textContent = token;
+                tokenBox.style.display = 'block';
+
+                console.log('FCM Token:', token);
+            } catch (err) {
+                statusEl.innerHTML = '<span class="error">Error: ' + err.message + '</span>';
+                console.error(err);
+            }
+        });
+
+        // Tampilkan notif kalau diterima SAAT tab ini masih terbuka
+        messaging.onMessage((payload) => {
+            console.log('Notifikasi diterima:', payload);
+            alert('Notif masuk!\n' + payload.notification.title + '\n' + payload.notification.body);
+        });
+    </script>
+</body>
+
+</html>

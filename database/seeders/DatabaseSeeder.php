@@ -45,6 +45,7 @@ class DatabaseSeeder extends Seeder
             SubscriptionPlanSeeder::class,
             SubscriptionDummySeeder::class,
             SuperAdminSeeder::class,
+            SchoolDemoSeeder::class,
         ]);
     }
 }

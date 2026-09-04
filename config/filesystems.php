@@ -56,6 +56,26 @@ return [
             'throw' => false,
         ],
 
+        'attendance_photos' => [
+            // FIX: default sebelumnya salah ketik 'public' (bukan nama driver
+            // yang valid). Driver yang benar untuk simpan file lokal adalah
+            // 'local' — sama seperti disk 'public' bawaan Laravel di atas.
+            'driver'     => env('SCHOOL_PHOTO_DRIVER', 'local'),
+            'root'       => storage_path('app/public/attendance-photos'),
+            'url'        => env('APP_URL') . '/storage/attendance-photos',
+            'visibility' => 'public',
+            'throw'      => false,
+
+            // Kalau nanti pindah ke S3 (disarankan untuk production skala besar,
+            // karena foto absen harian bisa menumpuk banyak), tinggal ganti
+            // SCHOOL_PHOTO_DRIVER=s3 di .env dan isi kredensial S3 seperti biasa
+            // (driver 's3' otomatis baca AWS_* env yang sudah ada di project).
+        ],
+
+        // CATATAN: karena driver-nya 'local', jangan lupa jalankan sekali:
+        //   php artisan storage:link
+        // supaya folder storage/app/public bisa diakses publik lewat /storage/...
+
     ],
 
     /*

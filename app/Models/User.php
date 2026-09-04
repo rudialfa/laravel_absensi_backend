@@ -218,4 +218,45 @@ class User extends Authenticatable
         return $this->hasOne(MutabaahYaumiyah::class, 'santri_id')
             ->latestOfMany();
     }
+
+
+    // Untuk user role = 'wali': semua anak yang terhubung ke akun ini
+    public function guardedStudents()
+    {
+        return $this->belongsToMany(Student::class, 'student_guardians', 'user_id', 'student_id')
+            ->withPivot(['relationship', 'is_primary', 'can_submit_permission'])
+            ->withTimestamps();
+    }
+
+    // Baris pivot mentah wali-murid milik user ini
+    public function studentGuardianRows()
+    {
+        return $this->hasMany(StudentGuardian::class);
+    }
+
+    // Untuk user role = 'guru': semua kelas yang diampu (wali kelas / guru mapel)
+    public function teachingClasses()
+    {
+        return $this->belongsToMany(ClassRoom::class, 'class_teachers', 'user_id', 'class_id')
+            ->withPivot(['role_in_class', 'subject'])
+            ->withTimestamps();
+    }
+
+    // Untuk user role = 'guru': kelas di mana dia jadi wali kelas
+    public function homeroomClasses()
+    {
+        return $this->hasMany(ClassRoom::class, 'homeroom_teacher_id');
+    }
+
+    // Izin/sakit murid yang pernah diajukan oleh user ini (role wali)
+    public function submittedStudentPermissions()
+    {
+        return $this->hasMany(StudentPermission::class, 'submitted_by');
+    }
+
+    // Absen murid yang pernah diinput user ini lewat kiosk (role guru)
+    public function recordedStudentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class, 'recorded_by');
+    }
 }

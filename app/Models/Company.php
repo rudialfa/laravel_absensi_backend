@@ -94,4 +94,24 @@ class Company extends Model
         return config("subscription.billing_roles.{$this->type}")
             ?? config('subscription.default_billing_role', 'hr');
     }
+
+    public function classes()
+    {
+        return $this->hasMany(ClassRoom::class);
+    }
+
+    public function students()
+    {
+        return $this->hasMany(Student::class);
+    }
+
+    public function attendanceDevices()
+    {
+        return $this->hasMany(AttendanceDevice::class);
+    }
+
+    public function studentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class);
+    }
 }

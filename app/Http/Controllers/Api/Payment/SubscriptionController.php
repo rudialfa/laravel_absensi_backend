@@ -241,6 +241,40 @@ class SubscriptionController extends Controller
     // ============================================================
     // GET /api/v1/subscriptions/invoices
     // ============================================================
+    // public function invoices(Request $request): JsonResponse
+    // {
+    //     $user = $request->user();
+
+    //     if (! $user->isBillingManager()) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => 'Hanya penanggung jawab billing yang dapat melihat histori invoice.',
+    //         ], 403);
+    //     }
+
+    //     $company  = $user->company;
+    //     $invoices = $this->invoiceService->getHistory($company);
+
+    //     $invoices->getCollection()->transform(fn($inv) => [
+    //         'invoice_number'  => $inv->invoice_number,
+    //         'plan_name'       => $inv->plan->name,
+    //         'subtotal'        => (float) $inv->subtotal,
+    //         'discount_amount' => (float) $inv->discount_amount,
+    //         'total_amount'    => (float) $inv->total_amount,
+    //         'status'          => $inv->status,
+    //         'issued_at'       => $inv->issued_at->toIso8601String(),
+    //         'paid_at'         => $inv->paid_at?->toIso8601String(),
+    //         'va'              => $inv->vaPayment ? [
+    //             'bank'      => $inv->vaPayment->bank,
+    //             'va_number' => $inv->vaPayment->va_number,
+    //             'status'    => $inv->vaPayment->status,
+    //         ] : null,
+    //     ]);
+
+    //     return response()->json(['success' => true, 'data' => $invoices]);
+    // }
+
+    // kode 2
     public function invoices(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -253,9 +287,11 @@ class SubscriptionController extends Controller
         }
 
         $company  = $user->company;
-        $invoices = $this->invoiceService->getHistory($company);
+        $status   = $request->query('status');
+        $invoices = $this->invoiceService->getHistory($company, $status);
 
         $invoices->getCollection()->transform(fn($inv) => [
+            'id'              => $inv->id,
             'invoice_number'  => $inv->invoice_number,
             'plan_name'       => $inv->plan->name,
             'subtotal'        => (float) $inv->subtotal,
@@ -263,6 +299,7 @@ class SubscriptionController extends Controller
             'total_amount'    => (float) $inv->total_amount,
             'status'          => $inv->status,
             'issued_at'       => $inv->issued_at->toIso8601String(),
+            'due_at'          => $inv->due_at?->toIso8601String(),
             'paid_at'         => $inv->paid_at?->toIso8601String(),
             'va'              => $inv->vaPayment ? [
                 'bank'      => $inv->vaPayment->bank,
@@ -272,6 +309,63 @@ class SubscriptionController extends Controller
         ]);
 
         return response()->json(['success' => true, 'data' => $invoices]);
+    }
+
+    // ============================================================
+    // GET /api/v1/subscriptions/invoices/{id}
+    // ============================================================
+    public function invoiceDetail(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat melihat detail invoice.',
+            ], 403);
+        }
+
+        $company = $user->company;
+
+        $invoice = $company->invoices()
+            ->with(['plan', 'discount', 'vaPayment'])
+            ->find($id);
+
+        if (! $invoice) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invoice tidak ditemukan.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'id'              => $invoice->id,
+                'invoice_number'  => $invoice->invoice_number,
+                'plan_name'       => $invoice->plan->name,
+                'subtotal'        => (float) $invoice->subtotal,
+                'discount_amount' => (float) $invoice->discount_amount,
+                'discount_name'   => $invoice->discount?->name,
+                'total_amount'    => (float) $invoice->total_amount,
+                'status'          => $invoice->status,
+                'issued_at'       => $invoice->issued_at->toIso8601String(),
+                'due_at'          => $invoice->due_at?->toIso8601String(),
+                'paid_at'         => $invoice->paid_at?->toIso8601String(),
+                'notes'           => $invoice->notes,
+                'va'              => $invoice->vaPayment ? [
+                    'bank'       => $invoice->vaPayment->bank,
+                    'va_number'  => $invoice->vaPayment->va_number,
+                    'va_name'    => $invoice->vaPayment->va_name,
+                    'amount'     => (float) $invoice->vaPayment->amount,
+                    'status'     => $invoice->vaPayment->status,
+                    'expired_at' => $invoice->vaPayment->expired_at?->toIso8601String(),
+                ] : null,
+                'how_to_pay' => ($invoice->status === 'pending' && $invoice->vaPayment)
+                    ? $this->_howToPay($invoice->vaPayment->bank, $invoice->vaPayment->va_number)
+                    : null,
+            ],
+        ]);
     }
 
     // ============================================================
