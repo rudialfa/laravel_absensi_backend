@@ -86,10 +86,12 @@ class AuthController extends Controller
             'radius_km'  => 'required',
             'time_in'    => 'required',
             'time_out'   => 'required',
-            // 'type'       => 'required|in:company,pesantren,school,hospital',
-            // 'type' => 'required|in:company,pesantren,school,hospital,government,factory,retail,restaurant,training,organization,transport,remote,sports',
             'type' => 'required|in:company,pesantren,school',
 
+            // BARU — cuma relevan kalau type = school, tapi divalidasi
+            // longgar (nullable) supaya type lain tetap jalan tanpa perlu
+            // kirim field ini sama sekali.
+            'is_boarding' => 'nullable|boolean',
 
             // admin
             'admin_name'  => 'required',
@@ -111,7 +113,10 @@ class AuthController extends Controller
                 'time_in'   => $request->time_in,
                 'time_out'  => $request->time_out,
                 'type'      => $request->type,
-                'timezone'  => 'Asia/Jakarta'
+                'timezone'  => 'Asia/Jakarta',
+                // BARU — default false kalau tidak dikirim (company/pesantren
+                // tidak pernah kirim field ini, jadi otomatis false, aman).
+                'is_boarding' => $request->boolean('is_boarding', false),
             ]);
 
             // 2. Tentukan role admin berdasarkan type organisasi
@@ -170,17 +175,12 @@ class AuthController extends Controller
     public function updateProfile(Request $request)
     {
         $request->validate([
-            //  'image' => 'required|image|mimes:jpeg,png,jpg|max:2048',
             'face_embedding' => 'required',
         ]);
 
         $user = $request->user();
-        //  $image = $request->file('image');
         $face_embedding = $request->face_embedding;
 
-        //  //save image
-        //  $image->storeAs('public/images', $image->hashName());
-        //  $user->image_url = $image->hashName();
         $user->face_embedding = $face_embedding;
         $user->save();
 
@@ -232,7 +232,6 @@ class AuthController extends Controller
             'new_password' => 'required|string|min:6|confirmed',
         ]);
 
-        // cek password lama
         if (!Hash::check($validated['current_password'], $user->password)) {
             return response()->json([
                 'status' => false,
@@ -240,7 +239,6 @@ class AuthController extends Controller
             ], 422);
         }
 
-        // update password
         $user->password = Hash::make($validated['new_password']);
         $user->save();
 
@@ -254,7 +252,6 @@ class AuthController extends Controller
     {
         $user = auth()->user()->load('company');
 
-        // ubah image_url jadi full URL
         if ($user->image_url) {
             $user->image_url = asset($user->image_url);
         }
@@ -284,7 +281,6 @@ class AuthController extends Controller
             'image' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
         ]);
 
-        // update field satu-satu
         if ($request->filled('name')) {
             $user->name = $request->name;
         }
@@ -297,10 +293,8 @@ class AuthController extends Controller
             $user->phone = $request->phone;
         }
 
-        // upload image ke public/image/profile
         if ($request->hasFile('image')) {
 
-            // hapus image lama jika ada
             if ($user->image_url && File::exists(public_path($user->image_url))) {
                 File::delete(public_path($user->image_url));
             }
@@ -333,7 +327,6 @@ class AuthController extends Controller
         $user  = User::where('email', $request->email)->first();
         $token = Str::random(64);
 
-        // Simpan token (ter-hash) ke tabel password_reset_tokens
         DB::table('password_reset_tokens')->updateOrInsert(
             ['email' => $request->email],
             [
@@ -342,9 +335,6 @@ class AuthController extends Controller
                 'created_at' => now()
             ]
         );
-
-        // Link mengarah ke form web buatan kita sendiri
-        // $resetUrl = url('/reset-password-form?token=' . $token . '&email=' . urlencode($request->email));
 
         $resetUrl = config('app.url') . '/api/reset-form?token=' . $token . '&email=' . urlencode($request->email);
 
@@ -362,9 +352,6 @@ class AuthController extends Controller
         ]);
     }
 
-    // -------------------------------------------
-    // RESET PASSWORD — verifikasi token manual
-    // -------------------------------------------
     public function resetPassword(Request $request)
     {
         $request->validate([
@@ -378,7 +365,6 @@ class AuthController extends Controller
             ->where('email', $request->email)
             ->first();
 
-        // Token tidak ditemukan
         if (!$record) {
             return response()->json([
                 'status'  => false,
@@ -386,7 +372,6 @@ class AuthController extends Controller
             ], 422);
         }
 
-        // Token expired (60 menit)
         if (Carbon::parse($record->created_at)->addMinutes(60)->isPast()) {
             DB::table('password_reset_tokens')->where('email', $request->email)->delete();
             return response()->json([
@@ -395,7 +380,6 @@ class AuthController extends Controller
             ], 422);
         }
 
-        // Token tidak cocok
         if (!Hash::check($request->token, $record->token)) {
             return response()->json([
                 'status'  => false,
@@ -403,17 +387,14 @@ class AuthController extends Controller
             ], 422);
         }
 
-        // Update password
         $user = User::where('email', $request->email)->first();
         $user->forceFill([
             'password'       => Hash::make($request->password),
             'remember_token' => Str::random(60),
         ])->save();
 
-        // Hapus semua token sanctum lama
         $user->tokens()->delete();
 
-        // Hapus record reset token
         DB::table('password_reset_tokens')->where('email', $request->email)->delete();
 
         return response()->json([

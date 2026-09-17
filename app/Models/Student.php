@@ -64,4 +64,76 @@ class Student extends Model
             ->withPivot(['relationship', 'is_primary', 'can_submit_permission'])
             ->withTimestamps();
     }
+
+    // Seluruh histori penempatan kamar milik murid ini
+    public function roomAssignments()
+    {
+        return $this->hasMany(RoomAssignment::class);
+    }
+
+    // Penempatan kamar yang aktif sekarang (null kalau tidak sedang di asrama manapun)
+    public function activeRoomAssignment()
+    {
+        return $this->hasOne(RoomAssignment::class)->whereNull('moved_out_at');
+    }
+
+    public function tahfidzSetorans()
+    {
+        return $this->hasMany(TahfidzSetoran::class);
+    }
+
+    public function mutabaahRecords()
+    {
+        return $this->hasMany(MutabaahRecord::class);
+    }
+
+    public function boardingPermissions()
+    {
+        return $this->hasMany(BoardingPermission::class);
+    }
+
+    public function grades()
+    {
+        return $this->hasMany(Grade::class);
+    }
+
+    public function classPromotions()
+    {
+        return $this->hasMany(ClassPromotion::class);
+    }
+
+    public function assignmentSubmissions()
+    {
+        return $this->hasMany(AssignmentSubmission::class);
+    }
+
+    public function bills()
+    {
+        return $this->hasMany(StudentBill::class);
+    }
+
+    public function mutations()
+    {
+        return $this->hasMany(StudentMutation::class);
+    }
+
+    public function healthRecord()
+    {
+        return $this->hasOne(HealthRecord::class);
+    }
+
+    public function uksVisits()
+    {
+        return $this->hasMany(UksVisit::class);
+    }
+
+    public function extracurricularMemberships()
+    {
+        return $this->hasMany(ExtracurricularMember::class);
+    }
+
+    public function achievements()
+    {
+        return $this->hasMany(StudentAchievement::class);
+    }
 }

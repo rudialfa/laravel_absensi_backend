@@ -22,7 +22,7 @@ use App\Http\Controllers\Web\SuperAdmin\SuperAdminCompanySubscriptionController;
 use App\Http\Controllers\Web\SuperAdmin\SuperAdminVaPaymentController;
 use App\Http\Controllers\Web\SuperAdmin\SuperAdminAnalyticsController;
 use App\Http\Controllers\Web\SuperAdmin\SuperAdminGlobalSearchController;
-use App\Http\Controllers\Web\SuperAdmin\SuperAdminImpersonateController;
+// use App\Http\Controllers\Web\SuperAdmin\SuperAdminImpersonateController;
 
 // ── COMPANY / HR ────────────────────────────────────────────────
 use App\Http\Controllers\Web\Company\HrDashboardController;
@@ -157,7 +157,7 @@ Route::middleware(['auth', 'context:system,superadmin'])
     Route::resource('staff', SuperAdminStaffController::class);
 
     // Impersonate start — BARU (masih di dalam context superadmin)
-    Route::post('/impersonate/{user}', [SuperAdminImpersonateController::class, 'start'])->name('impersonate.start');
+    // Route::post('/impersonate/{user}', [SuperAdminImpersonateController::class, 'start'])->name('impersonate.start');
 
     Route::get('/audit-logs', [SuperAdminAuditLogController::class, 'index'])->name('audit-logs');
 
