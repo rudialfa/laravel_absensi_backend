@@ -275,7 +275,10 @@ Route::prefix('public/ppdb')->group(function () {
 
 ////versi baru 
 
-Route::group([], function () {
+// ============================================================
+// AUTH — tersedia di /api/auth/... (lama) dan /api/... (baru)
+// ============================================================
+$authRoutes = function () {
 
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/register-organization', [AuthController::class, 'registerOrganization']);
@@ -296,7 +299,10 @@ Route::group([], function () {
         Route::post('/profile', [AuthController::class, 'update']);
         Route::post('/upload-face', [AuthController::class, 'uploadFaceEmbedding']);
     });
-});
+};
+
+Route::prefix('auth')->group($authRoutes);   // /api/auth/login, /api/auth/me, dst.
+Route::group([], $authRoutes);               // /api/login, /api/me, dst.
 // ============================================================
 // SUBSCRIPTION — butuh auth:sanctum
 // ============================================================
