@@ -245,43 +245,11 @@ Route::prefix('public/ppdb')->group(function () {
     Route::get('schools', [PublicPpdbController::class, 'searchSchools']); // BARU
 });
 
-// versi lama
-
-// Route::prefix('auth')->group(function () {
-
-//     Route::post('/login', [AuthController::class, 'login']);
-//     Route::post('/register-organization', [AuthController::class, 'registerOrganization']);
-
-
-//     // Forgot Password (tidak perlu login)
-//     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
-//     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
-
-//     Route::middleware('auth:sanctum')->group(function () {
-//         Route::post('/logout', [AuthController::class, 'logout']);
-//         Route::get('/me', [AuthController::class, 'me']);
-
-//         Route::post('/update-fcm-token', [AuthController::class, 'updateFcmToken']);
-//         Route::post('/change-password', [AuthController::class, 'changePassword']);
-
-//         // Profile Management (Universal untuk semua role)
-//         Route::get('/profile', [AuthController::class, 'show']);
-//         Route::post('/profile', [AuthController::class, 'update']);
-//         Route::post('/upload-face', [AuthController::class, 'uploadFaceEmbedding']);
-//     });
-// });
-
-
-
-////versi baru 
-
-// ============================================================
-// AUTH — tersedia di /api/auth/... (lama) dan /api/... (baru)
-// ============================================================
-$authRoutes = function () {
+Route::prefix('auth')->group(function () {
 
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/register-organization', [AuthController::class, 'registerOrganization']);
+
 
     // Forgot Password (tidak perlu login)
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
@@ -299,10 +267,8 @@ $authRoutes = function () {
         Route::post('/profile', [AuthController::class, 'update']);
         Route::post('/upload-face', [AuthController::class, 'uploadFaceEmbedding']);
     });
-};
+});
 
-Route::prefix('auth')->group($authRoutes);   // /api/auth/login, /api/auth/me, dst.
-Route::group([], $authRoutes);               // /api/login, /api/me, dst.
 // ============================================================
 // SUBSCRIPTION — butuh auth:sanctum
 // ============================================================
