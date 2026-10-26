@@ -16,6 +16,10 @@ class Kernel extends ConsoleKernel
             ->daily()
             ->at('02:00');
 
+        $schedule->command('holidays:remind')
+            ->dailyAt(config('fcm.holiday_reminder_time', '17:00'))
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping();
         // ... jadwal command lain yang sudah ada tetap di sini
     }
 

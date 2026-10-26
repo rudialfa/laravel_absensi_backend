@@ -3,25 +3,70 @@
 namespace App\Http\Controllers\Api\HrCompany;
 
 use App\Http\Controllers\Controller;
+use App\Models\Attendance;
 use App\Models\DailyReport;
+use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
-use App\Models\User;
 
 class HrCompanyDailyReportController extends Controller
 {
+    private const USER_COLS = 'user:id,name,position,department,image_url';
 
-    // kode 2
-    // ─── GET /hr/daily-reports (tidak berubah) ────────────────────────────────
+    // ----------------------------------------------------------
+    // HELPERS
+    // ----------------------------------------------------------
+
+    private function ensureHr(): void
+    {
+        if (!Auth::check() || Auth::user()->role !== 'hr') {
+            abort(response()->json(['status' => false, 'message' => 'Akses ditolak (khusus HR)'], 403));
+        }
+    }
+
+    private function companyId(): int
+    {
+        return (int) Auth::user()->company_id;
+    }
+
+    private function validationError($validator)
+    {
+        return response()->json([
+            'status'  => false,
+            'message' => $validator->errors()->first(),
+            'errors'  => $validator->errors(),
+        ], 422);
+    }
+
+    private function attendanceBrief(?Attendance $a): ?array
+    {
+        if (!$a) return null;
+
+        return [
+            'id'           => $a->id,
+            'time_in'      => $a->time_in,
+            'time_out'     => $a->time_out,
+            'status'       => $a->status,
+            'late_minutes' => (int) $a->late_minutes,
+        ];
+    }
+
+    // ============================================================
+    // GET /api/company/hr/daily-reports
+    // filter: user_id, date, start, end, month, year, is_achieved,
+    //         department, pending_evening=1, q, per_page
+    // ============================================================
     public function index(Request $request)
     {
-        $query = DailyReport::with('user:id,name,position,department,image_url')
-            ->where('company_id', Auth::user()->company_id);
+        $this->ensureHr();
 
-        if ($request->filled('user_id'))    $query->where('user_id', $request->user_id);
-        if ($request->filled('date'))       $query->where('date', $request->date);
+        $query = DailyReport::with(self::USER_COLS)->where('company_id', $this->companyId());
+
+        if ($request->filled('user_id')) $query->where('user_id', $request->user_id);
+        if ($request->filled('date'))    $query->whereDate('date', $request->date);
         if ($request->filled('start') && $request->filled('end')) {
             $query->whereBetween('date', [$request->start, $request->end]);
         }
@@ -29,71 +74,126 @@ class HrCompanyDailyReportController extends Controller
             $query->whereMonth('date', $request->month)->whereYear('date', $request->year);
         }
         if ($request->filled('is_achieved')) {
-            $query->where('is_achieved', filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN));
+            $query->where('is_achieved', filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN))
+                ->whereNotNull('achievement');
         }
         if ($request->filled('department')) {
             $query->whereHas('user', fn($q) => $q->where('department', $request->department));
         }
-        if ($request->filled('pending_evening') && $request->pending_evening) {
+        if ($request->boolean('pending_evening')) {
             $query->whereNull('achievement');
         }
+        if ($request->filled('q')) {
+            $kw = $request->q;
+            $query->whereHas('user', fn($q) => $q->where('name', 'like', "%{$kw}%"));
+        }
+
+        $reports = $query->orderByDesc('date')->orderBy('user_id')
+            ->paginate((int) $request->get('per_page', 15));
+
+        $reports->getCollection()->transform(fn($r) => $r->toApiArray());
 
         return response()->json([
             'status'  => true,
             'message' => 'Berhasil mengambil data daily report',
-            'data'    => $query->orderByDesc('date')->paginate($request->get('per_page', 15)),
+            'data'    => $reports,
         ]);
     }
 
-    // ─── GET /hr/daily-reports/{id} (tidak berubah) ───────────────────────────
+    // ============================================================
+    // GET /api/company/hr/daily-reports/{id}
+    // Detail + absen karyawan di hari yang sama
+    // ============================================================
     public function show($id)
     {
-        $report = DailyReport::with('user:id,name,position,department,image_url')
-            ->where('company_id', Auth::user()->company_id)
+        $this->ensureHr();
+
+        $report = DailyReport::with(self::USER_COLS)
+            ->where('company_id', $this->companyId())
             ->findOrFail($id);
 
-        return response()->json(['status' => true, 'data' => $report]);
+        $attendance = Attendance::where('company_id', $this->companyId())
+            ->where('user_id', $report->user_id)
+            ->whereDate('date', $report->date)
+            ->first();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail laporan harian',
+            'data'    => array_merge($report->toApiArray(), [
+                'attendance' => $this->attendanceBrief($attendance),
+            ]),
+        ]);
     }
 
-    // ─── GET /hr/daily-reports/summary (tidak berubah) ────────────────────────
+    // ============================================================
+    // GET /api/company/hr/daily-reports/summary?month=&year=
+    // Ringkasan per karyawan
+    // ============================================================
     public function summary(Request $request)
     {
+        $this->ensureHr();
+
         $validator = Validator::make($request->all(), [
             'month' => 'required|integer|between:1,12',
-            'year'  => 'required|integer',
+            'year'  => 'required|integer|min:2020|max:2099',
         ]);
+
         if ($validator->fails()) {
-            return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
+            return $this->validationError($validator);
         }
 
-        $summary = DailyReport::where('company_id', Auth::user()->company_id)
+        $rows = DailyReport::where('company_id', $this->companyId())
             ->whereMonth('date', $request->month)
             ->whereYear('date', $request->year)
             ->selectRaw('
                 user_id,
                 COUNT(*) as total_days,
-                SUM(CASE WHEN is_achieved = 1 THEN 1 ELSE 0 END) as total_achieved,
+                SUM(CASE WHEN is_achieved = 1 AND achievement IS NOT NULL THEN 1 ELSE 0 END) as total_achieved,
                 SUM(CASE WHEN is_achieved = 0 AND achievement IS NOT NULL THEN 1 ELSE 0 END) as total_not_achieved,
-                SUM(CASE WHEN achievement IS NULL THEN 1 ELSE 0 END) as total_pending,
-                ROUND(
-                    SUM(CASE WHEN is_achieved = 1 THEN 1 ELSE 0 END) * 100.0
-                    / NULLIF(SUM(CASE WHEN achievement IS NOT NULL THEN 1 ELSE 0 END), 0)
-                , 2) as achievement_rate
+                SUM(CASE WHEN achievement IS NULL THEN 1 ELSE 0 END) as total_pending
             ')
             ->groupBy('user_id')
-            ->with('user:id,name,department,position,image_url')
-            ->get();
+            ->with(self::USER_COLS)
+            ->get()
+            ->map(function ($r) {
+                $achieved    = (int) $r->total_achieved;
+                $notAchieved = (int) $r->total_not_achieved;
+                $filled      = $achieved + $notAchieved;
 
-        return response()->json(['status' => true, 'data' => $summary]);
+                return [
+                    'user_id'            => (int) $r->user_id,
+                    'user'               => $r->user ? [
+                        'id'         => $r->user->id,
+                        'name'       => $r->user->name,
+                        'position'   => $r->user->position,
+                        'department' => $r->user->department,
+                        'image_url'  => $r->user->image_url ? asset($r->user->image_url) : null,
+                    ] : null,
+                    'total_days'         => (int) $r->total_days,
+                    'total_achieved'     => $achieved,
+                    'total_not_achieved' => $notAchieved,
+                    'total_pending'      => (int) $r->total_pending,
+                    'achievement_rate'   => $filled ? round($achieved / $filled * 100, 2) : 0,
+                ];
+            })
+            ->sortByDesc('achievement_rate')
+            ->values();
+
+        return response()->json(['status' => true, 'data' => $rows]);
     }
 
-    // ─── GET /hr/daily-reports/today (tidak berubah) ─────────────────────────
+    // ============================================================
+    // GET /api/company/hr/daily-reports/today
+    // ============================================================
     public function today()
     {
+        $this->ensureHr();
+
         $today     = now()->toDateString();
-        $submitted = DailyReport::with('user:id,name,department,position,image_url')
-            ->where('company_id', Auth::user()->company_id)
-            ->where('date', $today)
+        $submitted = DailyReport::with(self::USER_COLS)
+            ->where('company_id', $this->companyId())
+            ->whereDate('date', $today)
             ->get();
 
         return response()->json([
@@ -104,37 +204,41 @@ class HrCompanyDailyReportController extends Controller
                 'submitted_evening' => $submitted->whereNotNull('achievement')->count(),
                 'pending_evening'   => $submitted->whereNull('achievement')->count(),
             ],
-            'data' => $submitted,
+            'data' => $submitted->map(fn($r) => $r->toApiArray())->values(),
         ]);
     }
 
-    // ─── GET /hr/daily-reports/employees (BARU) ───────────────────────────────
-    // List semua employee + status laporan hari ini
-    // Berguna untuk HR lihat siapa yang belum submit
-    public function employees(): JsonResponse
+    // ============================================================
+    // GET /api/company/hr/daily-reports/employees?date=
+    // Semua karyawan aktif + status laporan di tanggal tsb (default hari ini)
+    // ============================================================
+    public function employees(Request $request): JsonResponse
     {
-        $companyId = Auth::user()->company_id;
-        $today     = now()->toDateString();
+        $this->ensureHr();
 
-        $employees = User::where('company_id', $companyId)
+        $date = $request->filled('date')
+            ? Carbon::parse($request->date)->toDateString()
+            : now()->toDateString();
+
+        $employees = User::where('company_id', $this->companyId())
             ->where('role', 'employee')
+            ->where('is_active', true)
             ->select(['id', 'name', 'position', 'department', 'image_url'])
-            ->with(['dailyReports' => function ($q) use ($today) {
-                $q->where('date', $today)->latest('id');
-            }])
+            ->with(['dailyReports' => fn($q) => $q->whereDate('date', $date)->latest('id')])
             ->orderBy('name')
             ->get()
             ->map(function ($user) {
                 $report = $user->dailyReports->first();
-                return [
+
+            return [
                     'id'                => (int) $user->id,
                     'name'              => $user->name,
                     'position'          => $user->position,
                     'department'        => $user->department,
-                    'image_url'         => $user->image_url,
-                    'today_report'      => $report,
+                'image_url'         => $user->image_url ? asset($user->image_url) : null,
+                'today_report'      => $report?->toApiArray(),
                     'submitted_morning' => $report !== null,
-                    'submitted_evening' => $report?->achievement !== null,
+                'submitted_evening' => $report !== null && $report->achievement !== null,
                     'is_achieved'       => (bool) ($report?->is_achieved ?? false),
                 ];
             });
@@ -145,51 +249,41 @@ class HrCompanyDailyReportController extends Controller
 
         return response()->json([
             'status'  => true,
-            'message' => 'Status laporan karyawan hari ini',
-            'date'    => $today,
+            'message' => 'Status laporan karyawan',
+            'date'    => $date,
             'summary' => [
-                'total'         => $total,
-                'submitted'     => $submitted,
-                'completed'     => $completed,
-                'not_submitted' => $total - $submitted,
+                'total'           => $total,
+                'submitted'       => $submitted,
+                'completed'       => $completed,
+                'pending_evening' => $submitted - $completed,
+                'not_submitted'   => $total - $submitted,
             ],
             'data' => $employees->values(),
         ]);
     }
 
-    // ─── GET /hr/daily-reports/export (BARU) ─────────────────────────────────
-    // Export PDF laporan harian bulanan seluruh karyawan
-    //
-    // Query params:
-    //   month (required)
-    //   year  (required)
-    //   user_id (opsional — filter 1 karyawan saja)
-    //
-    // Cara install PDF library:
-    //   composer require barryvdh/laravel-dompdf
-    //   php artisan vendor:publish --provider="Barryvdh\DomPDF\ServiceProvider"
-    // ─────────────────────────────────────────────────────────────────────────
-    // Query params:
-    //   start_date (required, format Y-m-d)
-    //   end_date   (required, format Y-m-d)
-    //   user_id    (opsional — filter 1 karyawan saja)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ============================================================
+    // EXPORT PDF
+    // GET /api/company/hr/daily-reports/export?start_date=&end_date=&user_id=
+    // ============================================================
     public function export(Request $request)
     {
+        $this->ensureHr();
+
         $validator = Validator::make($request->all(), [
             'start_date' => 'required|date',
             'end_date'   => 'required|date|after_or_equal:start_date',
             'user_id'    => 'nullable|integer',
         ]);
+
         if ($validator->fails()) {
-            return response()->json(['status' => false, 'errors' => $validator->errors()], 422);
+            return $this->validationError($validator);
         }
 
-        $companyId = Auth::user()->company_id;
-        $startDate = $request->start_date;
-        $endDate   = $request->end_date;
+        $startDate = Carbon::parse($request->start_date)->toDateString();
+        $endDate   = Carbon::parse($request->end_date)->toDateString();
 
-        $query = DailyReport::where('company_id', $companyId)
+        $query = DailyReport::where('company_id', $this->companyId())
             ->whereBetween('date', [$startDate, $endDate])
             ->with('user:id,name,position,department')
             ->orderBy('date')
@@ -201,38 +295,32 @@ class HrCompanyDailyReportController extends Controller
 
         $reports = $query->get();
 
-        // Summary per karyawan
         $summaryPerUser = $reports->groupBy('user_id')->map(function ($items) {
-            $total    = $items->count();
-            $achieved = $items->where('is_achieved', true)->count();
-            $notAchieved = $items->where('is_achieved', false)
-                ->whereNotNull('achievement')->count();
-            $pending  = $items->whereNull('achievement')->count();
-            $rate     = $total > 0
-                ? round(($achieved / max($total - $pending, 1)) * 100, 1)
-                : 0;
+            $achieved    = $items->where('is_achieved', true)->whereNotNull('achievement')->count();
+            $notAchieved = $items->where('is_achieved', false)->whereNotNull('achievement')->count();
+            $pending     = $items->whereNull('achievement')->count();
+            $filled      = $achieved + $notAchieved;
 
             return [
-                'user'             => $items->first()->user,
-                'total_days'       => $total,
-                'total_achieved'   => $achieved,
+                'user'               => $items->first()->user,
+                'total_days'         => $items->count(),
+                'total_achieved'     => $achieved,
                 'total_not_achieved' => $notAchieved,
-                'total_pending'    => $pending,
-                'achievement_rate' => $rate,
-                'reports'          => $items,
+                'total_pending'      => $pending,
+                'achievement_rate'   => $filled ? round($achieved / $filled * 100, 1) : 0,
+                'reports'            => $items,
             ];
         })->values();
 
-        $company     = Auth::user()->company;
-        $periodLabel = \Carbon\Carbon::parse($startDate)->translatedFormat('d M Y')
-            . ' - ' . \Carbon\Carbon::parse($endDate)->translatedFormat('d M Y');
+        $periodLabel = Carbon::parse($startDate)->translatedFormat('d M Y')
+            . ' - ' . Carbon::parse($endDate)->translatedFormat('d M Y');
 
         $fileName = 'daily-report-' . $startDate . '_to_' . $endDate
             . ($request->filled('user_id') ? '-user' . $request->user_id : '')
             . '.pdf';
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.hr_daily_report', [
-            'company'        => $company,
+            'company'        => Auth::user()->company,
             'periodLabel'    => $periodLabel,
             'startDate'      => $startDate,
             'endDate'        => $endDate,

@@ -8,12 +8,40 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class EmployeeDailyReportController extends Controller
 {
+    // ----------------------------------------------------------
+    // HELPERS
+    // ----------------------------------------------------------
 
-    // kode 2
-    // ─── HELPER: Upload attachment ────────────────────────────────────────────
+    private function ensureEmployee(): void
+    {
+        if (!Auth::check() || Auth::user()->role !== 'employee') {
+            abort(response()->json([
+                'status'  => false,
+                'message' => 'Akses ditolak (khusus employee)',
+            ], 403));
+        }
+    }
+
+    private function myQuery()
+    {
+        return DailyReport::query()
+            ->where('company_id', Auth::user()->company_id)
+            ->where('user_id', Auth::id());
+    }
+
+    private function validationError($validator)
+    {
+        return response()->json([
+            'status'  => false,
+            'message' => $validator->errors()->first(),
+            'errors'  => $validator->errors(),
+        ], 422);
+    }
+
     private function uploadAttachment($file): string
     {
         $destinationPath = public_path('image/daily-reports');
@@ -22,6 +50,7 @@ class EmployeeDailyReportController extends Controller
         }
         $fileName = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
         $file->move($destinationPath, $fileName);
+
         return 'image/daily-reports/' . $fileName;
     }
 
@@ -32,15 +61,31 @@ class EmployeeDailyReportController extends Controller
         }
     }
 
-    // ─── GET / ────────────────────────────────────────────────────────────────
+    /**
+     * Aplikasi (multipart) sering mengirim is_achieved = "true" / "false" (string).
+     * Aturan 'boolean' Laravel MENOLAK string "true"/"false" → sore selalu gagal disimpan.
+     * Di sini dinormalisasi dulu jadi true/false.
+     */
+    private function normalizeBoolean(Request $request, string $key): void
+    {
+        if ($request->has($key)) {
+            $val = filter_var($request->input($key), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            $request->merge([$key => $val]);
+        }
+    }
+
+    // ============================================================
+    // GET /api/company/employee/daily-reports
+    // filter: date, start, end, month, year, is_achieved, per_page
+    // ============================================================
     public function index(Request $request)
     {
-        // ✅ M24: tidak ada $this->ensureEmployee() — middleware sudah handle
-        $query = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id());
+        $this->ensureEmployee();
+
+        $query = $this->myQuery();
 
         if ($request->filled('date')) {
-            $query->where('date', $request->date);
+            $query->whereDate('date', $request->date);
         }
         if ($request->filled('start') && $request->filled('end')) {
             $query->whereBetween('date', [$request->start, $request->end]);
@@ -50,14 +95,12 @@ class EmployeeDailyReportController extends Controller
                 ->whereYear('date', $request->year);
         }
         if ($request->filled('is_achieved')) {
-            $query->where(
-                'is_achieved',
-                filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN)
-            );
+            $query->where('is_achieved', filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN))
+                ->whereNotNull('achievement');
         }
 
-        $reports = $query->orderByDesc('date')
-            ->paginate($request->get('per_page', 15));
+        $reports = $query->orderByDesc('date')->paginate((int) $request->get('per_page', 15));
+        $reports->getCollection()->transform(fn($r) => $r->toApiArray());
 
         return response()->json([
             'status'  => true,
@@ -66,104 +109,124 @@ class EmployeeDailyReportController extends Controller
         ]);
     }
 
-    // ─── GET /today ───────────────────────────────────────────────────────────
+    // ============================================================
+    // GET /api/company/employee/daily-reports/today
+    // ============================================================
     public function today()
     {
-        $today = now()->toDateString();
+        $this->ensureEmployee();
 
-        $report = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id())
-            ->where('date', $today)
+        $today  = now()->toDateString();
+        $report = $this->myQuery()->whereDate('date', $today)->first();
+
+        // Laporan kemarin yang belum diisi sore (masih bisa diisi sampai hari ini)
+        $yesterday = $this->myQuery()
+            ->whereDate('date', now()->subDay()->toDateString())
+            ->whereNull('achievement')
             ->first();
 
         return response()->json([
             'status' => true,
             'date'   => $today,
-            'data'   => $report,
+            'data'   => $report?->toApiArray(),
             'info'   => [
-                'submitted_morning' => $report !== null,
-                'submitted_evening' => $report?->achievement !== null,
-                'is_achieved'       => $report?->is_achieved ?? false,
+                'submitted_morning'        => $report !== null,
+                'submitted_evening'        => $report !== null && $report->achievement !== null,
+                'is_achieved'              => (bool) ($report?->is_achieved ?? false),
+                'yesterday_pending_id'     => $yesterday?->id,
+                'yesterday_pending_target' => $yesterday?->target,
             ],
         ]);
     }
 
-    // ─── GET /summary ─────────────────────────────────────────────────────────
+    // ============================================================
+    // GET /api/company/employee/daily-reports/summary?month=&year=
+    // ============================================================
     public function summary(Request $request)
     {
+        $this->ensureEmployee();
+
         $validator = Validator::make($request->all(), [
             'month' => 'required|integer|between:1,12',
-            'year'  => 'required|integer',
+            'year'  => 'required|integer|min:2020|max:2099',
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'status' => false,
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->validationError($validator);
         }
 
-        $summary = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id())
+        $row = $this->myQuery()
             ->whereMonth('date', $request->month)
             ->whereYear('date', $request->year)
             ->selectRaw('
                 COUNT(*) as total_days,
-                SUM(CASE WHEN is_achieved = 1 THEN 1 ELSE 0 END) as total_achieved,
+                SUM(CASE WHEN is_achieved = 1 AND achievement IS NOT NULL THEN 1 ELSE 0 END) as total_achieved,
                 SUM(CASE WHEN is_achieved = 0 AND achievement IS NOT NULL THEN 1 ELSE 0 END) as total_not_achieved,
-                SUM(CASE WHEN achievement IS NULL THEN 1 ELSE 0 END) as total_pending,
-                ROUND(
-                    SUM(CASE WHEN is_achieved = 1 THEN 1 ELSE 0 END) * 100.0
-                    / NULLIF(SUM(CASE WHEN achievement IS NOT NULL THEN 1 ELSE 0 END), 0)
-                , 2) as achievement_rate
+                SUM(CASE WHEN achievement IS NULL THEN 1 ELSE 0 END) as total_pending
             ')
             ->first();
 
+        $achieved    = (int) ($row->total_achieved ?? 0);
+        $notAchieved = (int) ($row->total_not_achieved ?? 0);
+        $filled      = $achieved + $notAchieved;
+
         return response()->json([
             'status' => true,
-            'data'   => $summary,
+            'data'   => [
+                'total_days'         => (int) ($row->total_days ?? 0),
+                'total_achieved'     => $achieved,
+                'total_not_achieved' => $notAchieved,
+                'total_pending'      => (int) ($row->total_pending ?? 0),
+                'achievement_rate'   => $filled ? round($achieved / $filled * 100, 2) : 0,
+            ],
         ]);
     }
 
-    // ─── GET /{id} ────────────────────────────────────────────────────────────
+    // ============================================================
+    // GET /api/company/employee/daily-reports/{id}
+    // ============================================================
     public function show($id)
     {
-        $report = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id())
-            ->findOrFail($id);
+        $this->ensureEmployee();
+
+        $report = $this->myQuery()->findOrFail($id);
 
         return response()->json([
-            'status' => true,
-            'data'   => $report,
+            'status'  => true,
+            'message' => 'Detail laporan harian',
+            'data'    => $report->toApiArray(),
         ]);
     }
 
-    // ─── POST / — Submit target pagi ─────────────────────────────────────────
+    // ============================================================
+    // POST /api/company/employee/daily-reports — Target pagi (multipart)
+    // field: target, attachment (opsional)
+    // ============================================================
     public function store(Request $request)
     {
-        $today = now()->toDateString();
-
-        $exists = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id())
-            ->where('date', $today)
-            ->exists();
-
-        if ($exists) {
-            return response()->json([
-                'status'  => false,
-                'message' => 'Kamu sudah submit target hari ini',
-            ], 422);
-        }
+        $this->ensureEmployee();
 
         $validator = Validator::make($request->all(), [
-            'target'     => 'required|string',
+            'target'     => 'required|string|min:3|max:5000',
             'attachment' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+        ], [
+            'target.required' => 'Target hari ini wajib diisi.',
+            'target.min'      => 'Target minimal 3 karakter.',
         ]);
 
         if ($validator->fails()) {
+            return $this->validationError($validator);
+        }
+
+        $today = now()->toDateString();
+
+        $existing = $this->myQuery()->whereDate('date', $today)->first();
+
+        if ($existing) {
             return response()->json([
-                'status' => false,
-                'errors' => $validator->errors(),
+                'status'      => false,
+                'message'     => 'Kamu sudah mengisi target hari ini',
+                'existing_id' => $existing->id,
             ], 422);
         }
 
@@ -178,40 +241,107 @@ class EmployeeDailyReportController extends Controller
             $data['attachment'] = $this->uploadAttachment($request->file('attachment'));
         }
 
-        $report = DailyReport::create($data);
+        try {
+            $report = DailyReport::create($data);
+        } catch (\Throwable $e) {
+            $this->deleteAttachment($data['attachment'] ?? null);
+            throw $e;
+        }
 
         return response()->json([
             'status'  => true,
-            'message' => 'Target pagi berhasil disubmit',
-            'data'    => $report,
+            'message' => 'Target pagi berhasil disimpan',
+            'data'    => $report->toApiArray(),
         ], 201);
     }
 
-    // ─── POST /{id} — Update pencapaian sore ─────────────────────────────────
+    // ============================================================
+    // POST /api/company/employee/daily-reports/{id}   (multipart)
+    //
+    // Dua mode:
+    //  A. Isi pencapaian sore  → kirim achievement + is_achieved (+ reason_not_achieved)
+    //  B. Edit target pagi     → kirim target saja (hanya sebelum sore diisi)
+    //
+    // Batas waktu: laporan bisa diisi/diedit sampai akhir HARI BERIKUTNYA.
+    // ============================================================
     public function update(Request $request, $id)
     {
-        $report = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id())
-            ->findOrFail($id);
+        $this->ensureEmployee();
 
-        $validator = Validator::make($request->all(), [
-            'achievement'         => 'required|string',
-            'is_achieved'         => 'required|boolean',
-            'reason_not_achieved' => 'nullable|string|required_if:is_achieved,false',
-            'attachment'          => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
-        ]);
+        $report = $this->myQuery()->findOrFail($id);
 
-        if ($validator->fails()) {
+        if (!$report->can_update) {
             return response()->json([
-                'status' => false,
-                'errors' => $validator->errors(),
+                'status'  => false,
+                'message' => 'Laporan tanggal ' . $report->date->format('d/m/Y') . ' sudah tidak bisa diubah.',
             ], 422);
         }
 
+        $this->normalizeBoolean($request, 'is_achieved');
+
+        // ── Mode B: edit target saja ──────────────────────────────
+        if (!$request->has('achievement') && $request->has('target')) {
+            if ($report->achievement !== null) {
+                return response()->json([
+                    'status'  => false,
+                    'message' => 'Target tidak bisa diubah setelah pencapaian sore diisi.',
+                ], 422);
+            }
+
+            $validator = Validator::make($request->all(), [
+                'target'     => 'required|string|min:3|max:5000',
+                'attachment' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+            ]);
+
+            if ($validator->fails()) {
+                return $this->validationError($validator);
+            }
+
+            $data = ['target' => $request->target];
+
+            if ($request->hasFile('attachment')) {
+                $this->deleteAttachment($report->attachment);
+                $data['attachment'] = $this->uploadAttachment($request->file('attachment'));
+            }
+
+            $report->update($data);
+
+            return response()->json([
+                'status'  => true,
+                'message' => 'Target berhasil diupdate',
+                'data'    => $report->fresh()->toApiArray(),
+            ]);
+        }
+
+        // ── Mode A: pencapaian sore ───────────────────────────────
+        $validator = Validator::make($request->all(), [
+            'achievement'         => 'required|string|min:3|max:5000',
+            'is_achieved'         => 'required|boolean',
+            // Sebelumnya required_if:is_achieved,false → tidak jalan kalau aplikasi kirim "0"
+            'reason_not_achieved' => [
+                'nullable',
+                'string',
+                'max:2000',
+                Rule::requiredIf($request->input('is_achieved') === false),
+            ],
+            'attachment'          => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+        ], [
+            'achievement.required'         => 'Pencapaian hari ini wajib diisi.',
+            'is_achieved.required'         => 'Pilih apakah target tercapai atau tidak.',
+            'is_achieved.boolean'          => 'Nilai tercapai harus ya / tidak.',
+            'reason_not_achieved.required' => 'Alasan wajib diisi kalau target tidak tercapai.',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->validationError($validator);
+        }
+
+        $isAchieved = (bool) $request->input('is_achieved');
+
         $data = [
             'achievement'         => $request->achievement,
-            'is_achieved'         => filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN),
-            'reason_not_achieved' => $request->reason_not_achieved,
+            'is_achieved'         => $isAchieved,
+            'reason_not_achieved' => $isAchieved ? null : $request->reason_not_achieved,
         ];
 
         if ($request->hasFile('attachment')) {
@@ -223,16 +353,21 @@ class EmployeeDailyReportController extends Controller
 
         return response()->json([
             'status'  => true,
-            'message' => 'Pencapaian sore berhasil disubmit',
-            'data'    => $report->fresh(),
+            'message' => 'Pencapaian sore berhasil disimpan',
+            'data'    => $report->fresh()->toApiArray(),
         ]);
     }
 
-    // pdf
+    // ============================================================
+    // EXPORT PDF
+    // GET /api/company/employee/daily-reports/export
+    // filter: month+year | start+end | year, is_achieved
+    // ============================================================
     public function export(Request $request)
     {
-        $query = DailyReport::where('company_id', Auth::user()->company_id)
-            ->where('user_id', Auth::id());
+        $this->ensureEmployee();
+
+        $query = $this->myQuery();
 
         if ($request->filled('month') && $request->filled('year')) {
             $query->whereMonth('date', $request->month)
@@ -244,53 +379,32 @@ class EmployeeDailyReportController extends Controller
         }
 
         if ($request->filled('is_achieved')) {
-            $query->where(
-                'is_achieved',
-                filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN)
-            );
+            $query->where('is_achieved', filter_var($request->is_achieved, FILTER_VALIDATE_BOOLEAN))
+                ->whereNotNull('achievement');
         }
 
         $reports = $query->orderByDesc('date')->get();
 
         $stats = [
             'total'           => $reports->count(),
-            'achieved'        => $reports->where('is_achieved', true)->count(),
+            'achieved'        => $reports->where('is_achieved', true)->whereNotNull('achievement')->count(),
             'not_achieved'    => $reports->where('is_achieved', false)->whereNotNull('achievement')->count(),
             'pending_evening' => $reports->whereNull('achievement')->count(),
         ];
 
-        $achievementRate = $stats['achieved'] + $stats['not_achieved'] > 0
-            ? round($stats['achieved'] / ($stats['achieved'] + $stats['not_achieved']) * 100, 1)
-            : 0;
+        $filled          = $stats['achieved'] + $stats['not_achieved'];
+        $achievementRate = $filled > 0 ? round($stats['achieved'] / $filled * 100, 1) : 0;
 
-        $bulanLabel = [
-            1 => 'Januari',
-            2 => 'Februari',
-            3 => 'Maret',
-            4 => 'April',
-            5 => 'Mei',
-            6 => 'Juni',
-            7 => 'Juli',
-            8 => 'Agustus',
-            9 => 'September',
-            10 => 'Oktober',
-            11 => 'November',
-            12 => 'Desember',
-        ];
-
-        $month       = $request->month;
+        $month       = $request->month ? (int) $request->month : null;
         $year        = $request->year ?? now()->year;
         $periodLabel = $month
-            ? ($bulanLabel[$month] ?? $month) . ' ' . $year
+            ? (DailyReport::MONTH_NAMES[$month] ?? $month) . ' ' . $year
             : ($request->filled('start') && $request->filled('end')
                 ? $request->start . ' s/d ' . $request->end
-                : 'Semua Periode');
-
-        $user     = Auth::user();
-        $fileName = 'daily-report-' . now()->format('Y-m-d') . '.pdf';
+                : ($request->filled('year') ? 'Tahun ' . $year : 'Semua Periode'));
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.employee_daily_report', [
-            'user'            => $user,
+            'user'            => Auth::user(),
             'reports'         => $reports,
             'stats'           => $stats,
             'achievementRate' => $achievementRate,
@@ -300,6 +414,6 @@ class EmployeeDailyReportController extends Controller
             ->setPaper('a4', 'portrait')
             ->setOptions(['defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true]);
 
-        return $pdf->download($fileName);
+        return $pdf->download('daily-report-' . now()->format('Y-m-d') . '.pdf');
     }
 }
