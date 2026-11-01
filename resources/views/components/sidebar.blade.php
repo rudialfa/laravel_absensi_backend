@@ -111,9 +111,16 @@
                     </a>
                 </li>
 
+                {{-- Tiket Bantuan + jumlah tiket yang menunggu balasan --}}
+                @php
+                    $openTickets = \App\Models\SupportTicket::where('status', 'open')->count();
+                @endphp
                 <li class="{{ request()->is('superadmin/support-tickets*') ? 'active' : '' }}">
                     <a href="{{ route('superadmin.support-tickets.index') }}" class="nav-link">
                         <i class="fas fa-headset"></i><span>Tiket Bantuan</span>
+                        @if ($openTickets > 0)
+                            <span class="badge badge-danger ml-auto" style="margin-left:auto">{{ $openTickets }}</span>
+                        @endif
                     </a>
                 </li>
 

@@ -67,5 +67,8 @@ class Kernel extends HttpKernel
         'role' => \App\Http\Middleware\RoleMiddleware::class,
         'context' => \App\Http\Middleware\ContextMiddleware::class,
         'verify.device' => \App\Http\Middleware\VerifyDeviceToken::class,
+
+        // BARU: kunci akses kalau langganan perusahaan habis (lewat masa toleransi 3 hari)
+        'subscription' => \App\Http\Middleware\CheckSubscription::class,
     ];
 }

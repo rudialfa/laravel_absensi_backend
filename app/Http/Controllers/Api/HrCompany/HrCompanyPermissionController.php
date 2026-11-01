@@ -6,11 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Attendance;
 use App\Models\Permission;
 use App\Services\AttendanceRuleService;
+use App\Services\Notifiers\ApprovalNotifier;
 use Illuminate\Http\Request;
 
 class HrCompanyPermissionController extends Controller
 {
-    public function __construct(private AttendanceRuleService $rules) {}
+    public function __construct(
+        private AttendanceRuleService $rules,
+        private ApprovalNotifier $approvals,
+    ) {}
 
     // Kolom user yang aman dikirim. JANGAN kirim seluruh user:
     // face_embedding bisa puluhan KB dan ikut terkirim di setiap baris.
@@ -250,6 +254,9 @@ class HrCompanyPermissionController extends Controller
         // Koreksi absen yang sudah terlanjur tercatat telat / pulang cepat
         $this->rules->recalculateForPermission($perm);
 
+        // 🔔 Notifikasi ke karyawan
+        $this->approvals->decided(ApprovalNotifier::KIND_PERMISSION, $perm, true, $request->input('note'));
+
         return response()->json([
             'status'  => true,
             'message' => 'Izin disetujui',
@@ -286,6 +293,9 @@ class HrCompanyPermissionController extends Controller
         ]);
 
         $this->rules->recalculateForPermission($perm);
+
+        // 🔔 Notifikasi ke karyawan
+        $this->approvals->decided(ApprovalNotifier::KIND_PERMISSION, $perm, false, $request->input('note'));
 
         return response()->json([
             'status'  => true,

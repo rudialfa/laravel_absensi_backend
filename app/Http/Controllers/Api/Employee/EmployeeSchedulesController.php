@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Employee;
 use App\Http\Controllers\Controller;
 use App\Models\Schedule;
 use App\Models\ScheduleParticipant;
+use App\Services\Notifiers\ScheduleNotifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -13,6 +14,8 @@ class EmployeeSchedulesController extends Controller
 {
     // Jangan load user utuh (face_embedding bisa puluhan KB per user)
     private const USER_COLS = 'id,name,position,department,image_url';
+
+    public function __construct(private ScheduleNotifier $scheduleNotifier) {}
 
     private function ensureEmployee(): void
     {
@@ -40,7 +43,7 @@ class EmployeeSchedulesController extends Controller
             ->where('company_id', $companyId)
             ->where(function ($q) use ($userId) {
                 $q->where('user_id', $userId)
-                    ->orWhereHas('participants', fn($q2) => $q2->where('user_id', $userId));
+                ->orWhereHas('participants', fn($q2) => $q2->where('user_id', $userId));
             });
     }
 
@@ -187,6 +190,9 @@ class EmployeeSchedulesController extends Controller
             'note'         => $request->note,
             'responded_at' => now(),
         ]);
+
+        // 🔔 Kabari pembuat jadwal (HR)
+        $this->scheduleNotifier->responded($schedule, $user, $request->status, $request->note);
 
         $schedule->load($this->relations());
 

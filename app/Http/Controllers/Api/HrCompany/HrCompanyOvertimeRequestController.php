@@ -5,12 +5,15 @@ namespace App\Http\Controllers\Api\HrCompany;
 use App\Http\Controllers\Controller;
 use App\Models\Attendance;
 use App\Models\OvertimeRequest;
+use App\Services\Notifiers\ApprovalNotifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class HrCompanyOvertimeRequestController extends Controller
 {
     private const USER_COLUMNS = 'user:id,name,email,department,position,image_url';
+
+    public function __construct(private ApprovalNotifier $approvals) {}
 
     // Sebelumnya TIDAK ADA cek role: karyawan biasa bisa approve lembur sendiri
     // lewat endpoint HR kalau route tidak dijaga middleware.
@@ -174,6 +177,9 @@ class HrCompanyOvertimeRequestController extends Controller
                 ]);
             }
 
+            // 🔔 Notifikasi ke karyawan
+            $this->approvals->decided(ApprovalNotifier::KIND_OVERTIME, $overtime, true, $request->approval_note);
+
             $overtime->load([self::USER_COLUMNS, 'attendance', 'approver:id,name']);
 
             return response()->json([
@@ -216,6 +222,9 @@ class HrCompanyOvertimeRequestController extends Controller
             'approved_at'   => now(),
             'approval_note' => $request->approval_note,
         ]);
+
+        // 🔔 Notifikasi ke karyawan
+        $this->approvals->decided(ApprovalNotifier::KIND_OVERTIME, $overtime, false, $request->approval_note);
 
         return response()->json([
             'status'  => true,

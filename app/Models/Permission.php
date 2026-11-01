@@ -2,12 +2,14 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class Permission extends Model
 {
     use HasFactory;
+
     protected $guarded = [];
 
     public const TYPE_TIDAK_MASUK      = 'tidak_masuk';
@@ -35,8 +37,8 @@ class Permission extends Model
     // PENTING: tanpa cast ini, is_approved dari MySQL bernilai 1/0 (int),
     // sehingga pengecekan `=== true` selalu gagal.
     protected $casts = [
-        'date_permission' => 'date',
-        'end_date'        => 'date',
+        'date_permission' => 'date:Y-m-d',
+        'end_date'        => 'date:Y-m-d',
         'is_approved'     => 'boolean',
         'approved_at'     => 'datetime',
     ];

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\HrCompany;
 use App\Http\Controllers\Controller;
 use App\Models\Schedule;
 use App\Models\ScheduleParticipant;
+use App\Services\Notifiers\ScheduleNotifier;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,6 +17,8 @@ class HrCompanyScheduleController extends Controller
     private const USER_COLS = 'id,name,position,department,image_url';
     private const TYPES     = ['meeting', 'task_duty', 'visit', 'training', 'other'];
     private const STATUSES  = ['upcoming', 'done', 'canceled'];
+
+    public function __construct(private ScheduleNotifier $scheduleNotifier) {}
 
     // ----------------------------------------------------------
     // HELPERS
@@ -196,6 +199,12 @@ class HrCompanyScheduleController extends Controller
             }
 
             DB::commit();
+
+            // 🔔 Notifikasi ke pemilik jadwal + peserta
+            $this->scheduleNotifier->created(
+                $schedule,
+                isset($rows) ? collect($rows)->pluck('user_id')->all() : []
+            );
         } catch (\Throwable $e) {
             DB::rollBack();
 
@@ -293,7 +302,31 @@ class HrCompanyScheduleController extends Controller
             $data['recurrence_end_date'] = null;
         }
 
+        // Simpan nilai lama untuk menentukan perlu notifikasi atau tidak
+        $old = [
+            'title'          => $schedule->title,
+            'start_datetime' => $schedule->start_datetime?->format('Y-m-d H:i'),
+            'end_datetime'   => $schedule->end_datetime?->format('Y-m-d H:i'),
+            'location'       => json_encode($schedule->location),
+            'status'         => $schedule->status,
+        ];
+
         $schedule->update($data); // waktu dikonversi ke WIB di model
+        $schedule->refresh();
+
+        // 🔔 Notifikasi: dibatalkan, atau judul / waktu / lokasi berubah
+        if ($old['status'] !== 'canceled' && $schedule->status === 'canceled') {
+            $this->scheduleNotifier->canceled($schedule);
+        } elseif (
+            $schedule->status === 'upcoming' && (
+                $old['title'] !== $schedule->title
+                || $old['start_datetime'] !== $schedule->start_datetime?->format('Y-m-d H:i')
+                || $old['end_datetime'] !== $schedule->end_datetime?->format('Y-m-d H:i')
+                || $old['location'] !== json_encode($schedule->location)
+            )
+        ) {
+            $this->scheduleNotifier->updated($schedule);
+        }
 
         return response()->json([
             'success' => true,
@@ -309,7 +342,14 @@ class HrCompanyScheduleController extends Controller
     {
         $this->ensureHr();
 
-        $this->findOrFail($id)->delete();
+        $schedule = $this->findOrFail($id);
+
+        // 🔔 Notifikasi pembatalan (sebelum dihapus, supaya daftar peserta masih ada)
+        if ($schedule->status === 'upcoming' && $schedule->time_status !== 'past') {
+            $this->scheduleNotifier->canceled($schedule);
+        }
+
+        $schedule->delete();
 
         return response()->json([
             'success' => true,
@@ -353,6 +393,11 @@ class HrCompanyScheduleController extends Controller
             ]);
 
             $added[] = $userId;
+        }
+
+        // 🔔 Undangan ke peserta yang baru ditambahkan
+        if ($added) {
+            $this->scheduleNotifier->invited($schedule, $added);
         }
 
         return response()->json([

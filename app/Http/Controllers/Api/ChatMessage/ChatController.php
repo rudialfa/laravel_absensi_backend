@@ -11,6 +11,8 @@ use App\Models\ChatMessage;
 use App\Models\ChatMessageAttachment;
 use App\Models\ChatMessageRead;
 use App\Models\User;
+use App\Services\NotificationService;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +21,69 @@ use Illuminate\Support\Facades\Validator;
 
 class ChatController extends Controller
 {
+    public function __construct(private NotificationService $notif) {}
+
+    private const HARI  = [0 => 'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    private const BULAN = [1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+    // ============================================================
+    // HELPER TANGGAL & JAM
+    // Sebelumnya created_at dikirim UTC ("...T02:00:00.000000Z") → di room chat
+    // tidak ada tanggal & jam bisa geser 7 jam. Sekarang server mengirim
+    // tanggal + jam WIB siap tampil, plus label pemisah ("Hari ini", "Kemarin").
+    // ============================================================
+    private function local($value): ?Carbon
+    {
+        return $value ? Carbon::parse($value)->timezone(config('app.timezone')) : null;
+    }
+
+    /** Label pemisah tanggal di room chat: "Hari ini" / "Kemarin" / "Senin, 27 Oktober 2026" */
+    private function dateLabel(?Carbon $at): ?string
+    {
+        if (!$at) return null;
+
+        $today = now()->timezone(config('app.timezone'))->startOfDay();
+
+        if ($at->isSameDay($today)) return 'Hari ini';
+        if ($at->isSameDay($today->copy()->subDay())) return 'Kemarin';
+
+        return self::HARI[$at->dayOfWeek] . ', ' . $at->day . ' ' . self::BULAN[$at->month] . ' ' . $at->year;
+    }
+
+    /** Waktu singkat untuk daftar percakapan: "14:30" / "Kemarin" / "27/10/26" */
+    private function shortTime(?Carbon $at): ?string
+    {
+        if (!$at) return null;
+
+        $today = now()->timezone(config('app.timezone'))->startOfDay();
+
+        if ($at->isSameDay($today)) return $at->format('H:i');
+        if ($at->isSameDay($today->copy()->subDay())) return 'Kemarin';
+        if ($at->gte($today->copy()->subDays(6))) return self::HARI[$at->dayOfWeek];
+
+        return $at->format('d/m/y');
+    }
+
+    private function fmt($value): ?string
+    {
+        return $this->local($value)?->format('Y-m-d H:i:s');
+    }
+
+    /** Teks singkat isi pesan untuk notifikasi */
+    private function preview(ChatMessage $message): string
+    {
+        $body = trim((string) $message->body);
+
+        if ($message->type === 'image') {
+            return '📷 Foto' . ($body !== '' ? ': ' . \Illuminate\Support\Str::limit($body, 60) : '');
+        }
+        if ($message->type === 'video') {
+            return '🎥 Video' . ($body !== '' ? ': ' . \Illuminate\Support\Str::limit($body, 60) : '');
+        }
+
+        return \Illuminate\Support\Str::limit($body, 100);
+    }
+
     // ============================================================
     // 1. LIST CONVERSATIONS (inbox)
     //    GET /api/chat/conversations?page=1
@@ -64,7 +129,9 @@ class ChatController extends Controller
                     ? $this->formatMessage($conv->lastMessage, $me->id)
                     : null,
                 'unread_count' => $conv->unreadCountFor($me->id),
-                'updated_at'   => $conv->updated_at,
+                // Jam / tanggal singkat untuk daftar chat, contoh "14:30" / "Kemarin"
+                'last_message_time' => $this->shortTime($this->local($conv->lastMessage?->created_at ?? $conv->updated_at)),
+                'updated_at'   => $this->fmt($conv->updated_at),
             ];
         });
 
@@ -258,6 +325,31 @@ class ChatController extends Controller
             // Broadcast ke lawan bicara via Reverb
             // ShouldBroadcastNow = langsung tanpa queue delay
             broadcast(new NewChatMessage($message));
+
+            // 🔔 Push notification ke lawan chat (tidak disimpan di kotak masuk,
+            // karena pesan sudah ada di menu chat)
+            $otherId = (int) $conv->user_one_id === (int) $me->id
+                ? (int) $conv->user_two_id
+                : (int) $conv->user_one_id;
+
+            $this->notif->sendLater(
+                $otherId,
+                'chat.message',
+                $me->name,
+                $this->preview($message),
+                [
+                    'category' => 'chat',
+                    'action'   => 'chat_room',
+                    'store'    => false,
+                    'data'     => [
+                        'conversation_id' => $conv->id,
+                        'message_id'      => $message->id,
+                        'sender_id'       => $me->id,
+                        'sender_name'     => $me->name,
+                        'sender_image'    => $me->image_url ? asset($me->image_url) : '',
+                    ],
+                ]
+            );
 
             return response()->json([
                 'success' => true,
@@ -534,7 +626,7 @@ class ChatController extends Controller
             'body'            => $msg->isDeletedForEveryone() ? null : $msg->body,
             'is_deleted'      => $msg->isDeletedForEveryone(),
             'is_edited'       => $msg->edited_at !== null,
-            'edited_at'       => $msg->edited_at,
+            'edited_at'       => $this->fmt($msg->edited_at),
             'attachments'     => $msg->isDeletedForEveryone()
                 ? []
                 : $msg->attachments->map(fn($a) => [
@@ -554,8 +646,14 @@ class ChatController extends Controller
                 'sender' => $msg->replyTo->sender?->name,
             ] : null,
             'is_read'         => $isRead,
-            'read_at'         => $msg->reads->where('user_id', '!=', $myUserId)->first()?->read_at,
-            'created_at'      => $msg->created_at,
+            'read_at'         => $this->fmt($msg->reads->where('user_id', '!=', $myUserId)->first()?->read_at),
+
+            // Waktu WIB siap tampil (sebelumnya UTC tanpa tanggal)
+            'created_at'      => $this->fmt($msg->created_at),
+            'date'            => $this->local($msg->created_at)?->format('Y-m-d'),
+            'time'            => $this->local($msg->created_at)?->format('H:i'),
+            // Label pemisah tanggal: tampilkan di atas pesan pertama setiap tanggal
+            'date_label'      => $this->dateLabel($this->local($msg->created_at)),
         ];
     }
 }

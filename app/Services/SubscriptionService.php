@@ -6,6 +6,8 @@ use App\Models\Company;
 use App\Models\CompanySubscription;
 use App\Models\SubscriptionInvoice;
 use App\Models\SubscriptionPlan;
+use App\Services\Notifiers\SubscriptionNotifier;
+use Illuminate\Support\Facades\Log;
 
 class SubscriptionService
 {
@@ -69,7 +71,8 @@ class SubscriptionService
     }
 
     /**
-     * Dipanggil setelah invoice dinyatakan lunas (dari webhook Midtrans).
+     * Dipanggil setelah invoice dinyatakan lunas
+     * (webhook Midtrans, cek VA manual, verifikasi superadmin).
      */
     public function activateFromInvoice(SubscriptionInvoice $invoice): CompanySubscription
     {
@@ -89,6 +92,43 @@ class SubscriptionService
 
         $subscription->activate($plan, $invoice);
 
-        return $subscription->fresh();
+        $fresh = $subscription->fresh();
+
+        // 🔔 Notifikasi "Pembayaran berhasil" ke penanggung jawab billing.
+        // Dibungkus try supaya kalau notifikasi gagal, aktivasi langganan tetap jalan.
+        try {
+            app(SubscriptionNotifier::class)->paymentSuccess($invoice->fresh(), $fresh);
+        } catch (\Throwable $e) {
+            Log::error('Notifikasi pembayaran gagal', [
+                'invoice_id' => $invoice->id,
+                'error'      => $e->getMessage(),
+            ]);
+        }
+
+        return $fresh;
+    }
+
+    /**
+     * Sinkronkan status semua langganan yang sudah lewat expires_at:
+     * trial/active → grace → expired. Dipakai oleh command subscriptions:expire.
+     *
+     * @return int jumlah langganan yang statusnya berubah
+     */
+    public function expireAll(): int
+    {
+        $count = 0;
+
+        CompanySubscription::whereIn('status', ['trial', 'active', 'grace'])
+            ->where('expires_at', '<=', now())
+            ->get()
+            ->each(function (CompanySubscription $sub) use (&$count) {
+                $before = $sub->status;
+
+                if ($sub->syncStatus()->status !== $before) {
+                    $count++;
+                }
+            });
+
+        return $count;
     }
 }

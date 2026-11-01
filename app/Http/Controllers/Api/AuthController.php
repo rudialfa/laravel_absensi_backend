@@ -166,7 +166,14 @@ class AuthController extends Controller
     //logout
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+
+        // BARU: hapus fcm_token supaya HP ini tidak menerima notifikasi
+        // akun yang sudah logout (contoh: HP dipakai bergantian)
+        $user->fcm_token = null;
+        $user->save();
+
+        $user->currentAccessToken()->delete();
 
         return response(['message' => 'Logged out Sucessfully'], 200);
     }
@@ -207,18 +214,33 @@ class AuthController extends Controller
         ]);
     }
 
-    //update fcm_token
+    // ============================================================
+    // POST /api/auth/update-fcm-token
+    // body: { fcm_token }
+    //
+    // Dipanggil aplikasi setelah login DAN setiap kali token berubah.
+    // ============================================================
     public function updateFcmToken(Request $request)
     {
         $request->validate([
-            'fcm_token' => 'required',
+            'fcm_token' => 'required|string|max:500',
         ]);
 
-        $user = $request->user();
-        $user->fcm_token = $request->fcm_token;
+        $user  = $request->user();
+        $token = trim($request->fcm_token);
+
+        // BARU: 1 HP = 1 token. Kalau HP ini sebelumnya dipakai login akun lain,
+        // lepas token dari akun lain itu. Tanpa ini, akun lama tetap mengirim
+        // notifikasi ke HP ini (notifikasi nyasar ke orang lain).
+        User::where('fcm_token', $token)
+            ->where('id', '!=', $user->id)
+            ->update(['fcm_token' => null]);
+
+        $user->fcm_token = $token;
         $user->save();
 
         return response([
+            'status'  => true,
             'message' => 'FCM token updated',
         ], 200);
     }

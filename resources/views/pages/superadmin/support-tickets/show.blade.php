@@ -32,9 +32,9 @@
                                 <p class="text-muted mb-1">
                                     Dari: <strong>{{ $ticket->user->name ?? '-' }}</strong>
                                     ({{ $ticket->company->name ?? '-' }})
-                                    &middot; {{ $ticket->created_at->format('d/m/Y H:i') }}
+                                    &middot; {{ $ticket->created_at->timezone('Asia/Jakarta')->format('d/m/Y H:i') }}
                                 </p>
-                                <p>{{ $ticket->message }}</p>
+                                <p class="mb-0" style="white-space: pre-line">{{ $ticket->message }}</p>
                             </div>
                         </div>
 
@@ -47,12 +47,25 @@
                                     <div class="media mb-3 pb-3 border-bottom">
                                         <div class="media-body">
                                             <strong>{{ $reply->user->name ?? '-' }}</strong>
+                                            @if ($reply->user_id === $ticket->user_id)
+                                                <span class="badge badge-info">Pelanggan</span>
+                                            @endif
                                             @if ($reply->is_internal_note)
                                                 <span class="badge badge-secondary">Catatan Internal</span>
                                             @endif
                                             <small
-                                                class="text-muted float-right">{{ $reply->created_at->format('d/m/Y H:i') }}</small>
-                                            <p class="mb-0">{{ $reply->message }}</p>
+                                                class="text-muted float-right">{{ $reply->created_at->timezone('Asia/Jakarta')->format('d/m/Y H:i') }}</small>
+                                            <p class="mb-0" style="white-space: pre-line">{{ $reply->message }}</p>
+                                            @if ($reply->attachment)
+                                                @php
+                                                    $att = \Illuminate\Support\Str::startsWith($reply->attachment, ['http://', 'https://'])
+                                                        ? $reply->attachment
+                                                        : \Illuminate\Support\Facades\Storage::disk('public')->url($reply->attachment);
+                                                @endphp
+                                                <a href="{{ $att }}" target="_blank" class="d-inline-block mt-2">
+                                                    <img src="{{ $att }}" alt="Lampiran" style="max-width: 220px; max-height: 220px; border-radius: 8px; border: 1px solid #eee">
+                                                </a>
+                                            @endif
                                         </div>
                                     </div>
                                 @empty

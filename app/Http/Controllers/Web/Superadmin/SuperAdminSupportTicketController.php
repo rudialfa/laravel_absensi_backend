@@ -7,10 +7,13 @@ use App\Models\AuditLog;
 use App\Models\SupportTicket;
 use App\Models\SupportTicketReply;
 use App\Models\User;
+use App\Services\Notifiers\SupportTicketNotifier;
 use Illuminate\Http\Request;
 
 class SuperAdminSupportTicketController extends Controller
 {
+    public function __construct(private SupportTicketNotifier $notifier) {}
+
     /**
      * List semua tiket bantuan dari semua tenant.
      */
@@ -67,7 +70,7 @@ class SuperAdminSupportTicketController extends Controller
             'is_internal_note' => 'boolean',
         ]);
 
-        SupportTicketReply::create([
+        $reply = SupportTicketReply::create([
             'ticket_id' => $ticket->id,
             'user_id' => auth()->id(),
             'message' => $data['message'],
@@ -75,10 +78,18 @@ class SuperAdminSupportTicketController extends Controller
             'is_internal_note' => $request->boolean('is_internal_note'),
         ]);
 
-        // Balasan dari superadmin otomatis pindahkan status ke in_progress kalau masih open
-        if ($ticket->status === 'open') {
+        // Balasan dari superadmin (bukan catatan internal) → status jadi in_progress kalau masih open
+        if (! $reply->is_internal_note && $ticket->status === 'open') {
             $ticket->status = 'in_progress';
-            $ticket->save();
+        }
+        $ticket->touch();
+        $ticket->save();
+
+        // 🔔 Kirim notifikasi ke pemilik tiket (catatan internal tidak dikirim)
+        try {
+            $this->notifier->replied($ticket, $reply);
+        } catch (\Throwable $e) {
+            report($e);
         }
 
         AuditLog::create([
@@ -111,7 +122,18 @@ class SuperAdminSupportTicketController extends Controller
             $ticket->resolved_at = now();
         }
 
+        if (in_array($data['status'], ['open', 'in_progress'], true)) {
+            $ticket->resolved_at = null;
+        }
+
         $ticket->save();
+
+        // 🔔 Beri tahu pemilik tiket
+        try {
+            $this->notifier->statusChanged($ticket, $oldStatus);
+        } catch (\Throwable $e) {
+            report($e);
+        }
 
         AuditLog::create([
             'user_id' => auth()->id(),

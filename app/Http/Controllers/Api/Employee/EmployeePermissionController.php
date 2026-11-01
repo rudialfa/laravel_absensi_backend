@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Employee;
 
 use App\Http\Controllers\Controller;
 use App\Models\Permission;
+use App\Services\Notifiers\ApprovalNotifier;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
@@ -11,6 +12,8 @@ use Illuminate\Validation\Rule;
 
 class EmployeePermissionController extends Controller
 {
+    public function __construct(private ApprovalNotifier $approvals) {}
+
     private function ensureEmployee(): void
     {
         if (!auth()->check() || auth()->user()->role !== 'employee') {
@@ -212,6 +215,9 @@ class EmployeePermissionController extends Controller
             'image'           => $imagePath,
             'is_approved'     => null, // pending, menunggu HR
         ]);
+
+        // 🔔 Notifikasi ke HR
+        $this->approvals->submitted(ApprovalNotifier::KIND_PERMISSION, $perm);
 
         return response()->json([
             'status'  => true,

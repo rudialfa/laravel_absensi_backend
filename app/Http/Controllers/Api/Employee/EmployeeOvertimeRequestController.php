@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Attendance;
 use App\Models\OvertimeRequest;
 use App\Services\AttendancePhotoService;
+use App\Services\Notifiers\ApprovalNotifier;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
@@ -14,7 +15,10 @@ class EmployeeOvertimeRequestController extends Controller
 {
     private const EVIDENCE_FOLDER = 'image/overtime';
 
-    public function __construct(private AttendancePhotoService $photos) {}
+    public function __construct(
+        private AttendancePhotoService $photos,
+        private ApprovalNotifier $approvals,
+    ) {}
 
     private function ensureEmployee(): void
     {
@@ -167,8 +171,8 @@ class EmployeeOvertimeRequestController extends Controller
             ->where('user_id', $user->id)
             ->when(
                 $request->filled('attendance_id'),
-                fn($q) => $q->where('id', $request->attendance_id),
-                fn($q) => $q->whereDate('date', $date)
+            fn($q) => $q->where('id', $request->attendance_id),
+            fn($q) => $q->whereDate('date', $date)
             )
             ->first();
 
@@ -218,6 +222,9 @@ class EmployeeOvertimeRequestController extends Controller
             $this->photos->delete($imagePath);
             throw $e;
         }
+
+        // 🔔 Notifikasi ke HR
+        $this->approvals->submitted(ApprovalNotifier::KIND_OVERTIME, $overtime);
 
         $overtime->load(['attendance', 'approver:id,name']);
 
