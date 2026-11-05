@@ -18,8 +18,15 @@ class CompanySubscription extends Model
         'has_used_trial' => 'boolean',
     ];
 
-    // Masa tenggang setelah expires_at sebelum status jadi "expired"
+    // Masa tenggang BAWAAN setelah expires_at sebelum status jadi "expired".
+    // Nilai yang dipakai: graceDays() → bisa diubah superadmin di Pengaturan Sistem.
     public const GRACE_PERIOD_DAYS = 3;
+
+    /** Masa toleransi (hari) yang berlaku: dari Pengaturan Sistem, default 3. */
+    public static function graceDays(): int
+    {
+        return SystemSetting::int('grace_period_days', self::GRACE_PERIOD_DAYS, 0, 30);
+    }
 
     // ============================================================
     // RELATIONS
@@ -75,7 +82,7 @@ class CompanySubscription extends Model
     /**
      * Apakah subscription masih boleh akses fitur?
      * trial/active → aktif selama belum lewat expires_at.
-     * grace        → tetap dianggap aktif sampai expires_at + GRACE_PERIOD_DAYS.
+     * grace        → tetap dianggap aktif sampai expires_at + graceDays().
      * INI yang dipakai untuk unlock/lock fitur (bukan scopeActive di atas,
      * yang cuma buat query/reporting "subscription murni aktif").
      */
@@ -91,7 +98,7 @@ class CompanySubscription extends Model
 
         if ($this->status === 'grace') {
             return Carbon::now()->lessThan(
-                $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+                $this->expires_at->copy()->addDays(self::graceDays())
             );
         }
 
@@ -110,7 +117,7 @@ class CompanySubscription extends Model
 
     /**
      * Sisa hari. Untuk trial/active → sampai expires_at.
-     * Untuk grace → sampai batas akhir masa tenggang (expires_at + GRACE_PERIOD_DAYS).
+     * Untuk grace → sampai batas akhir masa tenggang (expires_at + graceDays()).
      */
     public function daysRemaining(): int
     {
@@ -119,7 +126,7 @@ class CompanySubscription extends Model
         }
 
         $target = $this->status === 'grace'
-            ? $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            ? $this->expires_at->copy()->addDays(self::graceDays())
             : $this->expires_at;
 
         return max(0, (int) Carbon::now()->diffInDays($target, false));
@@ -138,7 +145,7 @@ class CompanySubscription extends Model
         }
 
         if (Carbon::now()->greaterThanOrEqualTo($this->expires_at)) {
-            $graceUntil = $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS);
+            $graceUntil = $this->expires_at->copy()->addDays(self::graceDays());
             $newStatus  = Carbon::now()->lessThan($graceUntil) ? 'grace' : 'expired';
 
             if ($newStatus !== $this->status) {

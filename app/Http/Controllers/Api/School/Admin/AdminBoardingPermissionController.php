@@ -68,7 +68,11 @@ class AdminBoardingPermissionController extends Controller
         abort_unless($permission->status === 'approved', 422, 'Izin ini belum disetujui atau sudah selesai');
 
         $data = $request->validate([
-            'tanggal_kembali_aktual' => 'nullable|date',
+            // Tanggal kembali tidak boleh sebelum tanggal keluar & tidak boleh di masa depan
+            'tanggal_kembali_aktual' => 'nullable|date|after_or_equal:' . $permission->tanggal_keluar->toDateString() . '|before_or_equal:today',
+        ], [
+            'tanggal_kembali_aktual.after_or_equal'  => 'Tanggal kembali tidak boleh sebelum tanggal keluar',
+            'tanggal_kembali_aktual.before_or_equal' => 'Tanggal kembali tidak boleh di masa depan',
         ]);
 
         $permission->update([

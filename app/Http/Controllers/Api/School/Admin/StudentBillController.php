@@ -61,13 +61,14 @@ class StudentBillController extends Controller
         $companyId = $request->user()->company_id;
 
         $billType = BillType::findOrFail($data['bill_type_id']);
-        abort_if($billType->company_id !== $companyId, 403);
+        abort_if((int) $billType->company_id !== (int) $companyId, 403);
 
         $studentsQuery = Student::where('company_id', $companyId)->where('is_active', true);
 
         if (!empty($data['student_ids'])) {
             $studentsQuery->whereIn('id', $data['student_ids']);
         } elseif (!empty($data['class_id'])) {
+            abort_unless(\App\Models\ClassRoom::where('id', $data['class_id'])->where('company_id', $companyId)->exists(), 422, 'Kelas bukan milik sekolah ini');
             $studentsQuery->where('class_id', $data['class_id']);
         }
 
@@ -118,18 +119,21 @@ class StudentBillController extends Controller
             'notes'   => 'nullable|string',
         ]);
 
-        abort_if($bill->status === 'lunas', 422, 'Tagihan ini sudah lunas');
-        abort_if($data['amount'] > $bill->remaining_amount, 422, 'Jumlah bayar melebihi sisa tagihan (' . $bill->remaining_amount . ')');
-
         $payment = DB::transaction(function () use ($data, $bill, $request) {
-            $receiptNumber = 'KWT-' . now()->year . '-' . str_pad((string) (BillPayment::count() + 1), 6, '0', STR_PAD_LEFT);
+            // Kunci baris tagihan supaya 2 pembayaran bersamaan tidak melebihi sisa tagihan
+            $bill = StudentBill::whereKey($bill->id)->lockForUpdate()->firstOrFail();
+            $remaining = max(0, (float) $bill->amount - (float) $bill->payments()->sum('amount'));
+
+            abort_if($remaining <= 0, 422, 'Tagihan ini sudah lunas');
+            abort_if((float) $data['amount'] > $remaining, 422, 'Jumlah bayar melebihi sisa tagihan (' . $remaining . ')');
 
             $payment = BillPayment::create([
                 'student_bill_id' => $bill->id,
                 'amount'          => $data['amount'],
                 'method'          => $data['method'],
                 'paid_at'         => $data['paid_at'],
-                'receipt_number'  => $receiptNumber,
+                // Nomor dari kwitansi terakhir tahun ini (bukan count()+1 yang bisa dobel kalau ada yang dihapus)
+                'receipt_number'  => BillPayment::generateReceiptNumber(),
                 'notes'           => $data['notes'] ?? null,
                 'recorded_by'     => $request->user()->id,
             ]);

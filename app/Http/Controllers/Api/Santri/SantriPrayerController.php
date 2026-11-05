@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Santri;
 
 use App\Http\Controllers\Controller;
 use App\Models\Prayer;
+use App\Services\PrayerTimeService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,17 +21,21 @@ class SantriPrayerController extends Controller
 
     private function ensureSantri(): void
     {
-        if (!auth()->check() || auth()->user()->role !== 'santri') {
+        // Route /api/pesantren/prayers/* mengarah ke controller ini untuk santri DAN ustadz
+        // (grup route ustadz dengan path yang sama tertimpa), jadi keduanya diizinkan.
+        if (!auth()->check() || !in_array(auth()->user()->role, ['santri', 'ustadz'], true)) {
             abort(response()->json([
                 'status'  => false,
-                'message' => 'Akses ditolak (khusus Santri)',
+                'message' => 'Akses ditolak (khusus Santri & Ustadz)',
             ], 403));
         }
     }
 
     private function city(): string
     {
-        return auth()->user()->company?->city ?? 'Magelang';
+        $city = trim((string) auth()->user()->company?->city);
+
+        return $city !== '' ? $city : PrayerTimeService::FALLBACK_CITY;
     }
 
     private function timezone(): string
@@ -54,7 +59,7 @@ class SantriPrayerController extends Controller
     {
         return [
             'id'     => $p->id,
-            'date'   => (string) $p->date,
+            'date'   => Carbon::parse($p->date)->format('Y-m-d'),
             'city'   => $p->city,
             'source' => $p->source,
             'waktu'  => [
@@ -86,11 +91,12 @@ class SantriPrayerController extends Controller
         return Prayer::updateOrCreate(
             ['date' => $date, 'city' => $city],
             [
-                'fajr'    => $timings['Fajr']    ?? null,
-                'dzuhur'  => $timings['Dhuhr']   ?? null,
-                'ashar'   => $timings['Asr']      ?? null,
-                'maghrib' => $timings['Maghrib']  ?? null,
-                'isya'    => $timings['Isha']     ?? null,
+                // API mengirim "04:12 (WIB)" — kolom TIME hanya menerima "04:12"
+                'fajr'    => PrayerTimeService::normalize($timings['Fajr'] ?? null),
+                'dzuhur'  => PrayerTimeService::normalize($timings['Dhuhr'] ?? null),
+                'ashar'   => PrayerTimeService::normalize($timings['Asr'] ?? null),
+                'maghrib' => PrayerTimeService::normalize($timings['Maghrib'] ?? null),
+                'isya'    => PrayerTimeService::normalize($timings['Isha'] ?? null),
                 'source'  => 'aladhan_api',
             ]
         );
@@ -357,7 +363,7 @@ class SantriPrayerController extends Controller
             ->whereYear('date',  $year)
             ->orderBy('date')
             ->get()
-            ->keyBy(fn($p) => $p->date->format('Y-m-d'));
+            ->keyBy(fn($p) => Carbon::parse($p->date)->format('Y-m-d'));
 
         // DB sudah lengkap — langsung return
         if ($existing->count() >= $daysInMonth) {

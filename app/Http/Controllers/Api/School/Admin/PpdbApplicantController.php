@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\School\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\ClassRoom;
 use App\Models\PpdbApplicant;
 use App\Models\PpdbTestScore;
 use App\Models\Student;
@@ -40,6 +41,8 @@ class PpdbApplicantController extends Controller
             'test_date' => 'required|date',
         ]);
 
+        abort_if($applicant->status === 'aktif', 422, 'Pendaftar ini sudah jadi murid');
+
         $score = PpdbTestScore::updateOrCreate(
             ['ppdb_applicant_id' => $applicant->id, 'jenis' => $data['jenis']],
             [
@@ -69,6 +72,13 @@ class PpdbApplicantController extends Controller
             'status' => 'required|in:lulus,tidak_lulus',
             'notes'  => 'nullable|string',
         ]);
+
+        // Hasil hanya bisa diumumkan untuk pendaftar yang belum daftar ulang / belum jadi murid
+        abort_unless(
+            in_array($applicant->status, ['pending', 'tes', 'lulus', 'tidak_lulus'], true),
+            422,
+            'Pendaftar ini sudah daftar ulang / sudah jadi murid, hasil tidak bisa diubah lagi'
+        );
 
         $applicant->update(['status' => $data['status'], 'notes' => $data['notes'] ?? $applicant->notes]);
 
@@ -109,15 +119,37 @@ class PpdbApplicantController extends Controller
             'nis'      => 'nullable|string|max:30',
         ]);
 
+        // Kelas tujuan harus milik sekolah yang sama
+        abort_unless(
+            ClassRoom::where('id', $data['class_id'])->where('company_id', $applicant->company_id)->exists(),
+            422,
+            'Kelas bukan milik sekolah ini'
+        );
+
+        // students.nis wajib diisi & unik per sekolah. Kalau admin tidak mengisi,
+        // buat otomatis: tahun + 4 digit urut (contoh 20270001).
+        if (!empty($data['nis'])) {
+            abort_if(
+                Student::withTrashed()->where('company_id', $applicant->company_id)->where('nis', $data['nis'])->exists(),
+                422,
+                'NIS ' . $data['nis'] . ' sudah dipakai murid lain di sekolah ini'
+            );
+        }
+
         $student = DB::transaction(function () use ($applicant, $data) {
+            // Kunci pendaftar supaya tidak dikonversi 2x bersamaan
+            $applicant = PpdbApplicant::whereKey($applicant->id)->lockForUpdate()->firstOrFail();
+            abort_if($applicant->student_id, 422, 'Pendaftar ini sudah dikonversi sebelumnya');
+
             $student = Student::create([
                 'company_id'   => $applicant->company_id,
                 'class_id'     => $data['class_id'],
                 'name'         => $applicant->full_name,
                 'gender'       => $applicant->gender,
                 'birth_date'   => $applicant->birth_date,
-                'nis'          => $data['nis'] ?? null,
+                'nis'          => $data['nis'] ?? $this->nextNis($applicant->company_id),
                 'is_boarding'  => $applicant->wants_boarding,
+                'enrolled_at'  => now()->toDateString(),
                 'is_active'    => true,
             ]);
 
@@ -131,5 +163,25 @@ class PpdbApplicantController extends Controller
             'message' => 'Pendaftar berhasil dikonversi jadi siswa aktif',
             'data'    => $student,
         ], 201);
+    }
+
+    /**
+     * NIS otomatis: tahun berjalan + 4 digit urut, lanjut dari NIS terbesar
+     * berawalan tahun yang sama di sekolah ini (termasuk murid yang sudah dihapus).
+     */
+    private function nextNis(int $companyId): string
+    {
+        $prefix = (string) now()->year;
+
+        $last = Student::withTrashed()
+            ->where('company_id', $companyId)
+            ->where('nis', 'like', $prefix . '%')
+            ->whereRaw('LENGTH(nis) = ?', [strlen($prefix) + 4])
+            ->lockForUpdate()
+            ->max('nis');
+
+        $next = $last ? ((int) substr($last, strlen($prefix))) + 1 : 1;
+
+        return $prefix . str_pad((string) $next, 4, '0', STR_PAD_LEFT);
     }
 }

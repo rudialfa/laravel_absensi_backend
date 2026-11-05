@@ -1,0 +1,3549 @@
+﻿
+===== app\Console\Commands\CleanupOldAttendancePhotos.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\StudentAttendance;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Storage;
+
+class CleanupOldAttendancePhotos extends Command
+{
+    protected $signature = 'school:cleanup-attendance-photos';
+
+    protected $description = 'Hapus file foto bukti absen yang lebih tua dari retention policy (config school.photo_retention_days). Record absen di database TETAP disimpan, hanya file foto yang dibuang.';
+
+    public function handle(): int
+    {
+        $retentionDays = config('school.photo_retention_days', 90);
+        $cutoffDate = now()->subDays($retentionDays)->toDateString();
+
+        $attendances = StudentAttendance::whereDate('date', '<', $cutoffDate)
+            ->whereNotNull('photo_evidence')
+            ->get();
+
+        $deletedCount = 0;
+
+        foreach ($attendances as $attendance) {
+            if (Storage::disk('attendance_photos')->exists($attendance->photo_evidence)) {
+                Storage::disk('attendance_photos')->delete($attendance->photo_evidence);
+                $deletedCount++;
+            }
+
+            // Kosongkan kolomnya juga, biar tidak dicek ulang tiap kali command ini jalan
+            $attendance->update(['photo_evidence' => null]);
+        }
+
+        $this->info("Selesai. {$deletedCount} foto absen (sebelum {$cutoffDate}) berhasil dihapus.");
+
+        return self::SUCCESS;
+    }
+}
+
+===== app\Console\Commands\ExpireSubscriptions.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\VaPayment;
+use App\Services\InvoiceService;
+use App\Services\SubscriptionService;
+use Illuminate\Console\Command;
+
+/**
+ * Rapikan status langganan, invoice, dan VA yang sudah lewat waktu.
+ *
+ *   php artisan subscriptions:expire
+ *
+ * Dijalankan scheduler setiap jam (lihat app/Console/Kernel.php).
+ */
+class ExpireSubscriptions extends Command
+{
+    protected $signature   = 'subscriptions:expire';
+    protected $description = 'Expire subscription, invoice, dan VA yang sudah melewati waktu aktif';
+
+    public function handle(
+        SubscriptionService $subscriptionService,
+        InvoiceService      $invoiceService,
+    ): int {
+        $this->info('[' . now()->format('Y-m-d H:i') . '] Memulai proses expire...');
+
+        // 1. Langganan: trial/active → grace → expired
+        $subs = $subscriptionService->expireAll();
+        $this->info("- Langganan berubah status : {$subs}");
+
+        // 2. Invoice pending yang sudah lewat due_at → expired (VA-nya ikut expired)
+        $invoices = $invoiceService->expireOverdueInvoices();
+        $this->info("- Invoice expired          : {$invoices}");
+
+        // 3. VA pending yang sudah lewat expired_at (yang belum ikut tertutup di langkah 2)
+        $vas = 0;
+        VaPayment::expired()->get()->each(function (VaPayment $va) use (&$vas) {
+            $va->markAsExpired();
+            $vas++;
+        });
+        $this->info("- VA expired               : {$vas}");
+
+        $this->info('Selesai.');
+
+        return self::SUCCESS;
+    }
+}
+
+===== app\Console\Commands\FcmTest.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\User;
+use App\Services\FcmService;
+use Illuminate\Console\Command;
+
+/**
+ * Tes kirim notifikasi ke 1 user — untuk memastikan FCM sudah benar.
+ *
+ *   php artisan fcm:test 12
+ */
+class FcmTest extends Command
+{
+    protected $signature = 'fcm:test {user_id : ID user tujuan}';
+
+    protected $description = 'Kirim notifikasi tes ke satu user';
+
+    public function handle(FcmService $fcm): int
+    {
+        if (!$fcm->isConfigured()) {
+            $this->error('File service account tidak ditemukan: ' . config('fcm.credentials'));
+            $this->line('Download dari Firebase Console → Project settings → Service accounts → Generate new private key.');
+            return self::FAILURE;
+        }
+
+        $user = User::find($this->argument('user_id'));
+
+        if (!$user) {
+            $this->error('User tidak ditemukan.');
+            return self::FAILURE;
+        }
+
+        if (!$user->fcm_token) {
+            $this->error("User {$user->name} belum punya fcm_token.");
+            $this->line('Pastikan aplikasi memanggil endpoint update FCM token setelah login.');
+            return self::FAILURE;
+        }
+
+        $r = $fcm->sendToToken($user->fcm_token, '🔔 Tes notifikasi', 'Kalau ini muncul, FCM sudah jalan.', [
+            'type' => 'test',
+        ]);
+
+        if ($r['ok']) {
+            $this->info("Terkirim ke {$user->name}. Cek HP-nya.");
+            return self::SUCCESS;
+        }
+
+        $this->error('Gagal: ' . $r['error']);
+
+        if ($r['invalid_token']) {
+            $this->line('Token HP tidak berlaku lagi. Minta user logout lalu login ulang di aplikasi.');
+        }
+
+        return self::FAILURE;
+    }
+}
+
+===== app\Console\Commands\NotifCheck.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\AppNotification;
+use App\Models\Attendance;
+use App\Models\CompanyHoliday;
+use App\Models\Leaves;
+use App\Models\Permission;
+use App\Models\User;
+use App\Services\AttendanceRuleService;
+use App\Services\FcmService;
+use App\Support\CompanySettings;
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+
+/**
+ * Cek kenapa pengingat absen (masuk / belum absen / pulang) tidak sampai ke 1 karyawan.
+ *
+ *   php artisan notif:check 26
+ *   php artisan notif:check 26 --date=2026-11-04
+ *
+ * Yang dicek: zona waktu server, FCM, token HP, hari kerja, libur, cuti, izin,
+ * shift & jam masuk/pulang, jam kirim pengingat, status absen, dan apakah sudah pernah terkirim.
+ */
+class NotifCheck extends Command
+{
+    protected $signature = 'notif:check
+        {user_id : ID karyawan}
+        {--date= : Tanggal yang dicek (default hari ini), contoh 2026-11-04}';
+
+    protected $description = 'Diagnosa pengingat absen untuk 1 karyawan';
+
+    public function handle(AttendanceRuleService $rules, FcmService $fcm): int
+    {
+        $user = User::find($this->argument('user_id'));
+        if (! $user) {
+            $this->error('User tidak ditemukan.');
+            return self::FAILURE;
+        }
+
+        $company = $user->company;
+        if (! $company) {
+            $this->error('User tidak terhubung ke perusahaan.');
+            return self::FAILURE;
+        }
+
+        $date = $this->option('date') ?: now()->toDateString();
+        $set  = CompanySettings::notification($company);
+        $ok   = fn(bool $v) => $v ? '<fg=green>✔</>' : '<fg=red>✘</>';
+
+        $this->info("Karyawan : {$user->name} (id {$user->id}, role {$user->role})");
+        $this->info("Perusahaan: {$company->name} (id {$company->id})");
+        $this->info("Tanggal  : {$date}");
+        $this->newLine();
+
+        // ---------- 1. Server ----------
+        $this->line('<options=bold>1. Server</>');
+        $tz = config('app.timezone');
+        $this->line("  {$ok($tz === 'Asia/Jakarta')} Zona waktu aplikasi: {$tz}"
+            . ($tz === 'Asia/Jakarta' ? '' : '  ← harus Asia/Jakarta (config/app.php)'));
+        $this->line('    Jam server sekarang: ' . now()->format('Y-m-d H:i:s'));
+        $this->line("  {$ok($fcm->isConfigured())} FCM siap (file kunci: " . config('fcm.credentials') . ')');
+        $this->line("  {$ok((bool)$company->is_active)} Perusahaan aktif");
+        $this->line("  {$ok($user->role === 'employee')} Role employee (pengingat absen hanya untuk employee)");
+        $this->line("  {$ok((bool)$user->is_active)} Akun aktif");
+        $this->line("  {$ok((bool)$user->fcm_token)} Token HP ada"
+            . ($user->fcm_token ? '' : '  ← logout lalu login lagi di HP'));
+
+        $last = AppNotification::where('type', 'like', 'attendance.%')->latest('id')->first();
+        $this->line('    Pengingat terakhir terkirim (semua user): '
+            . ($last ? $last->created_at->timezone($tz)->format('Y-m-d H:i') : 'BELUM PERNAH ← scheduler kemungkinan tidak jalan'));
+
+        // ---------- 2. Hari ini ----------
+        $this->newLine();
+        $this->line('<options=bold>2. Hari ini</>');
+        $isWorkDay = CompanySettings::isWorkDay($company, $date);
+        $this->line("  {$ok($isWorkDay)} Hari kerja (" . CompanySettings::workDaysLabel($company) . ')');
+
+        $holiday = CompanyHoliday::where('company_id', $company->id)->activeOn($date)->first();
+        $this->line("  {$ok(!$holiday)} Bukan hari libur" . ($holiday ? "  ← libur: {$holiday->name}" : ''));
+
+        $onLeave = Leaves::where('company_id', $company->id)->where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->whereDate('start_date', '<=', $date)->whereDate('end_date', '>=', $date)
+            ->exists();
+        $this->line("  {$ok(!$onLeave)} Tidak sedang cuti");
+
+        $perms = $rules->approvedPermissionsOn($user->id, $company->id, $date);
+        $fullDay = $perms->contains('type', Permission::TYPE_TIDAK_MASUK);
+        $this->line("  {$ok(!$fullDay)} Tidak ada izin \"tidak masuk\" yang disetujui");
+        if ($perms->isNotEmpty()) {
+            $this->line('    Izin disetujui: ' . $perms->pluck('type')->implode(', '));
+        }
+
+        // ---------- 3. Jadwal ----------
+        $this->newLine();
+        $this->line('<options=bold>3. Shift & jam</>');
+        $shift = $rules->resolveShift($user, $date);
+        $in    = $rules->scheduledIn($shift, $company, $date);
+        $out   = $rules->scheduledOut($shift, $company, $date);
+
+        $this->line('    Shift      : ' . ($shift ? "{$shift->name}" : '(jam perusahaan)'));
+        $this->line('    Jam masuk  : ' . ($in ? $in->format('Y-m-d H:i') : '-'));
+        $this->line('    Jam pulang : ' . ($out ? $out->format('Y-m-d H:i') : '-'));
+
+        if (! $in) {
+            $this->error('  Jam masuk kosong → pengingat tidak bisa dihitung. Isi jam masuk perusahaan / shift.');
+            return self::SUCCESS;
+        }
+
+        [$allowedIn]  = $rules->allowedIn($in, $perms, $date);
+        [$allowedOut] = $rules->allowedOut($out, $perms, $date);
+
+        // ---------- 4. Pengingat ----------
+        $this->newLine();
+        $this->line('<options=bold>4. Jadwal kirim pengingat</>');
+
+        $att        = Attendance::where('company_id', $company->id)->where('user_id', $user->id)->whereDate('date', $date)->first();
+        $checkedIn  = $att && $att->time_in;
+        $checkedOut = $att && $att->time_out;
+        $this->line('    Status absen: ' . ($checkedIn ? 'sudah masuk ' . $att->time_in : 'belum masuk')
+            . ($checkedOut ? ', sudah pulang ' . $att->time_out : ''));
+
+        $sent = fn(string $type) => AppNotification::where('user_id', $user->id)
+            ->where('type', $type)->where('data->date', $date)->first();
+
+        $rows = [];
+
+        $c = $set['checkin_reminder'];
+        $t = $allowedIn->copy()->subMinutes((int) $c['minutes_before']);
+        $s = $sent('attendance.checkin_reminder');
+        $rows[] = [
+            'Absen masuk',
+            $c['enabled'] ? 'ON' : 'OFF',
+            $t->format('H:i') . ' – ' . $t->copy()->addMinutes(10)->format('H:i'),
+            $checkedIn ? 'dilewati (sudah absen)' : 'akan dikirim',
+            $s ? 'YA ' . $s->created_at->timezone($tz)->format('H:i') . ' (' . ($s->push_status ?? '-') . ')' : 'belum',
+        ];
+
+        $c = $set['late_reminder'];
+        $t = $allowedIn->copy()->addMinutes((int) $c['minutes_after']);
+        $s = $sent('attendance.late_reminder');
+        $rows[] = [
+            'Belum absen',
+            $c['enabled'] ? 'ON' : 'OFF',
+            $t->format('H:i') . ' – ' . $t->copy()->addMinutes(10)->format('H:i'),
+            $checkedIn ? 'dilewati (sudah absen)' : 'akan dikirim',
+            $s ? 'YA ' . $s->created_at->timezone($tz)->format('H:i') . ' (' . ($s->push_status ?? '-') . ')' : 'belum',
+        ];
+
+        $c = $set['checkout_reminder'];
+        $s = $sent('attendance.checkout_reminder');
+        if ($allowedOut) {
+            $t = $allowedOut->copy()->addMinutes((int) $c['minutes_after']);
+            $rows[] = [
+                'Absen pulang',
+                $c['enabled'] ? 'ON' : 'OFF',
+                $t->format('H:i') . ' – ' . $t->copy()->addMinutes(10)->format('H:i'),
+                ! $checkedIn ? 'dilewati (belum absen masuk)' : ($checkedOut ? 'dilewati (sudah pulang)' : 'akan dikirim'),
+                $s ? 'YA ' . $s->created_at->timezone($tz)->format('H:i') . ' (' . ($s->push_status ?? '-') . ')' : 'belum',
+            ];
+        }
+
+        $this->table(['Pengingat', 'Setelan', 'Jam kirim', 'Kondisi', 'Sudah terkirim?'], $rows);
+
+        $this->newLine();
+        $this->line('Catatan:');
+        $this->line('- Pengingat hanya terkirim kalau scheduler berjalan TEPAT di rentang "Jam kirim".');
+        $this->line('  Lokal: biarkan "php artisan schedule:work" terbuka. Server: cron schedule:run tiap menit.');
+        $this->line('- push_status: sent = sampai ke FCM, no_token = HP belum terdaftar, failed = gagal (lihat laravel.log).');
+        $this->line('- Simulasi tanpa menunggu jam: php artisan notifications:tick --at="' . $date . ' ' . $allowedIn->copy()->subMinutes((int) $set['checkin_reminder']['minutes_before'])->format('H:i') . '"');
+
+        return self::SUCCESS;
+    }
+}
+
+===== app\Console\Commands\NotifDemo.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\CompanyHoliday;
+use App\Models\Leaves;
+use App\Models\OvertimeRequest;
+use App\Models\Permission;
+use App\Models\Schedule;
+use App\Models\SubscriptionInvoice;
+use App\Models\SupportTicket;
+use App\Models\User;
+use App\Services\NotificationService;
+use Illuminate\Console\Command;
+
+/**
+ * Kirim notifikasi CONTOH untuk setiap jenis `action`, ke 1 user,
+ * memakai data asli terakhir di perusahaannya (izin, cuti, jadwal, dll).
+ *
+ * Gunanya: tes pop-up, isi lonceng, dan apakah klik notifikasi membuka halaman yang benar.
+ *
+ *   php artisan notif:demo 12                          → semua jenis sesuai role user
+ *   php artisan notif:demo 12 --only=holiday_detail    → satu jenis saja
+ *   php artisan notif:demo 12 --list                   → lihat daftar jenis tanpa mengirim
+ *
+ * Notifikasi diberi awalan [TES] dan ikut tersimpan di lonceng aplikasi.
+ */
+class NotifDemo extends Command
+{
+    protected $signature = 'notif:demo
+        {user_id : ID user tujuan}
+        {--only= : Kirim satu action saja, contoh: leave_detail}
+        {--list : Tampilkan daftar action tanpa mengirim}
+        {--delay=3 : Jeda (detik) antar notifikasi}';
+
+    protected $description = 'Kirim notifikasi contoh untuk semua jenis action ke satu user';
+
+    public function handle(NotificationService $notif): int
+    {
+        $user = User::find($this->argument('user_id'));
+
+        if (! $user) {
+            $this->error('User tidak ditemukan.');
+            return self::FAILURE;
+        }
+
+        if (! $user->fcm_token) {
+            $this->warn("{$user->name} belum punya fcm_token → hanya masuk lonceng, tidak ada pop-up.");
+        }
+
+        $items = $this->items($user);
+        $only  = $this->option('only');
+
+        if ($only) {
+            $items = array_values(array_filter($items, fn($i) => $i['action'] === $only));
+            if (! $items) {
+                $this->error("Action '{$only}' tidak tersedia untuk role {$user->role}. Pakai --list untuk melihat daftar.");
+                return self::FAILURE;
+            }
+        }
+
+        $this->info("User: {$user->name} (role: {$user->role}, company: {$user->company_id})");
+        $this->newLine();
+
+        if ($this->option('list')) {
+            $this->table(['action', 'judul', 'status'], array_map(fn($i) => [
+                $i['action'],
+                $i['title'],
+                $i['skip'] ?? 'siap',
+            ], $items));
+            return self::SUCCESS;
+        }
+
+        $delay = max(0, (int) $this->option('delay'));
+        $sent  = 0;
+
+        foreach ($items as $n => $i) {
+            if (! empty($i['skip'])) {
+                $this->line("  ⏭  {$i['action']} — dilewati: {$i['skip']}");
+                continue;
+            }
+
+            $r = $notif->send($user, 'demo.' . $i['action'], '[TES] ' . $i['title'], $i['body'], [
+                'category' => $i['category'],
+                'action'   => $i['action'],
+                'data'     => $i['data'],
+            ]);
+
+            $status = $r['sent'] ? 'terkirim' : ($r['no_token'] ? 'tanpa token' : 'gagal push');
+            $this->line("  ✔  {$i['action']} — {$status}");
+            $sent++;
+
+            if ($delay && $n < count($items) - 1) {
+                sleep($delay);
+            }
+        }
+
+        $this->newLine();
+        $this->info("Selesai: {$sent} notifikasi. Klik satu per satu di HP / di lonceng aplikasi.");
+
+        return self::SUCCESS;
+    }
+
+    /** Daftar notifikasi contoh sesuai role */
+    private function items(User $user): array
+    {
+        $cid = (int) $user->company_id;
+
+        $latest = function (string $model, bool $own = false) use ($cid, $user) {
+            try {
+                $q = $model::query()->where('company_id', $cid);
+                if ($own) $q->where('user_id', $user->id);
+                return $q->latest('id')->first();
+            } catch (\Throwable $e) {
+                return null;
+            }
+        };
+
+        $isHr = $user->role === 'hr';
+        $own  = ! $isHr;
+
+        $perm     = $latest(Permission::class, $own);
+        $leave    = $latest(Leaves::class, $own);
+        $overtime = $latest(OvertimeRequest::class, $own);
+        $schedule = $latest(Schedule::class);
+        $holiday  = $latest(CompanyHoliday::class);
+        $ticket   = SupportTicket::where('user_id', $user->id)->latest('id')->first();
+
+        $none = fn($what) => "belum ada data {$what}" . ($own ? ' milik user ini' : ' di perusahaan ini');
+
+        $list = [];
+
+        // ---------- Pengajuan ----------
+        foreach (
+            [
+                ['permission', $perm, 'izin'],
+                ['leave', $leave, 'cuti'],
+                ['overtime', $overtime, 'lembur'],
+            ] as [$kind, $row, $label]
+        ) {
+            $list[] = [
+                'action'   => $isHr ? "hr_{$kind}_detail" : "{$kind}_detail",
+                'category' => 'approval',
+                'title'    => $isHr ? "📝 Pengajuan {$label} baru" : "✅ Pengajuan {$label} disetujui",
+                'body'     => $isHr ? "Contoh: ada pengajuan {$label} menunggu persetujuan." : "Contoh: {$label} Anda disetujui HR.",
+                'data'     => ['kind' => $kind, "{$kind}_id" => (string) ($row->id ?? ''), 'employee_id' => (string) ($row->user_id ?? '')],
+                'skip'     => $row ? null : $none($label),
+            ];
+        }
+
+        if ($isHr) {
+            $list[] = [
+                'action' => 'hr_approvals',
+                'category' => 'reminder',
+                'title'  => '📋 Pengajuan menunggu keputusan',
+                'body'   => 'Contoh ringkasan pagi: ada izin, cuti, dan lembur yang belum diputuskan.',
+                'data'   => ['izin' => '1', 'cuti' => '1', 'lembur' => '1', 'laporan_bulanan' => '0'],
+            ];
+        } else {
+            $today = now('Asia/Jakarta')->format('Y-m-d');
+            $list[] = [
+                'action' => 'attendance_checkin',
+                'category' => 'attendance',
+                'title'  => '⏰ Jangan lupa absen masuk',
+                'body'   => 'Contoh pengingat absen masuk.',
+                'data'   => ['date' => $today],
+            ];
+            $list[] = [
+                'action' => 'attendance_checkout',
+                'category' => 'attendance',
+                'title'  => '🏠 Waktunya absen pulang',
+                'body'   => 'Contoh pengingat absen pulang.',
+                'data'   => ['date' => $today],
+            ];
+        }
+
+        // ---------- Shift / jadwal / libur ----------
+        $list[] = [
+            'action' => 'shift_schedule',
+            'category' => 'schedule',
+            'title'  => '🔄 Shift Anda berubah',
+            'body'   => 'Contoh: shift besok diubah HR.',
+            'data'   => ['date' => now('Asia/Jakarta')->addDay()->format('Y-m-d')],
+        ];
+        $list[] = [
+            'action' => 'schedule_detail',
+            'category' => 'schedule',
+            'title'  => '📅 Jadwal: ' . ($schedule->title ?? '-'),
+            'body'   => 'Contoh notifikasi jadwal / tugas.',
+            'data'   => ['schedule_id' => (string) ($schedule->id ?? ''), 'needs_response' => '0'],
+            'skip'   => $schedule ? null : $none('jadwal'),
+        ];
+        $list[] = [
+            'action' => 'holiday_detail',
+            'category' => 'holiday',
+            'title'  => '🏖️ Libur: ' . ($holiday->name ?? '-'),
+            'body'   => 'Contoh notifikasi hari libur.',
+            'data'   => [
+                'holiday_id' => (string) ($holiday->id ?? ''),
+                'event'      => 'created',
+                'start_date' => $holiday?->start_date ? \Illuminate\Support\Carbon::parse($holiday->start_date)->format('Y-m-d') : '',
+                'end_date'   => $holiday?->end_date ? \Illuminate\Support\Carbon::parse($holiday->end_date)->format('Y-m-d') : '',
+            ],
+            'skip'   => $holiday ? null : $none('libur'),
+        ];
+
+        // ---------- Langganan (hanya penanggung jawab billing) ----------
+        if (method_exists($user, 'isBillingManager') && $user->isBillingManager()) {
+            $invoice = null;
+            try {
+                $invoice = SubscriptionInvoice::where('company_id', $cid)->latest('id')->first();
+            } catch (\Throwable $e) {
+            }
+
+            $list[] = [
+                'action' => 'subscription_status',
+                'category' => 'subscription',
+                'title'  => '⏳ Langganan hampir habis',
+                'body'   => 'Contoh: masa aktif tinggal 3 hari.',
+                'data'   => ['days_left' => '3'],
+            ];
+            $list[] = [
+                'action' => 'subscription_plans',
+                'category' => 'subscription',
+                'title'  => '🔒 Langganan berakhir',
+                'body'   => 'Contoh: pilih paket untuk memperpanjang.',
+                'data'   => [],
+            ];
+            $list[] = [
+                'action' => 'subscription_invoice',
+                'category' => 'subscription',
+                'title'  => '🧾 Tagihan belum dibayar',
+                'body'   => 'Contoh notifikasi invoice.',
+                'data'   => [
+                    'invoice_id'     => (string) ($invoice->id ?? ''),
+                    'invoice_number' => (string) ($invoice->invoice_number ?? ''),
+                ],
+                'skip'   => $invoice ? null : 'belum ada invoice di perusahaan ini',
+            ];
+        }
+
+        // ---------- Tiket bantuan ----------
+        $list[] = [
+            'action' => 'support_ticket_detail',
+            'category' => 'system',
+            'title'  => '💬 Balasan tiket bantuan',
+            'body'   => 'Tim Dukungan: contoh balasan tiket.',
+            'data'   => ['ticket_id' => (string) ($ticket->id ?? ''), 'status' => (string) ($ticket->status ?? '')],
+            'skip'   => $ticket ? null : 'user ini belum pernah membuat tiket (buat 1 tiket dulu dari aplikasi)',
+        ];
+
+        return $list;
+    }
+}
+
+===== app\Console\Commands\SendHolidayReminders.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\CompanyHoliday;
+use App\Services\HolidayNotifier;
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+
+/**
+ * Kirim pengingat H-1 libur ke HP karyawan.
+ *
+ * Manual:   php artisan holidays:remind
+ * Tes:      php artisan holidays:remind --date=2026-10-27 --force
+ * Otomatis: didaftarkan di scheduler (lihat panduan)
+ */
+class SendHolidayReminders extends Command
+{
+    protected $signature = 'holidays:remind
+                            {--date= : Tanggal libur yang dicek (default: besok)}
+                            {--force : Kirim ulang walau pengingat sudah pernah dikirim}';
+
+    protected $description = 'Kirim notifikasi pengingat H-1 sebelum libur ke karyawan';
+
+    public function handle(HolidayNotifier $notifier): int
+    {
+        $date = $this->option('date')
+            ? Carbon::parse($this->option('date'))->toDateString()
+            : now()->addDay()->toDateString();
+
+        $holidays = CompanyHoliday::query()
+            ->whereDate('start_date', $date)
+            ->when(!$this->option('force'), fn($q) => $q->whereNull('reminder_sent_at'))
+            ->get();
+
+        if ($holidays->isEmpty()) {
+            $this->info("Tidak ada libur yang dimulai {$date}.");
+            return self::SUCCESS;
+        }
+
+        foreach ($holidays as $holiday) {
+            $r = $notifier->reminder($holiday);
+
+            $holiday->forceFill(['reminder_sent_at' => now()])->save();
+
+            $this->line(sprintf(
+                '[company %d] %s → terkirim %d, gagal %d, tanpa token %d',
+                $holiday->company_id,
+                $holiday->name,
+                $r['sent'],
+                $r['failed'],
+                $r['skipped']
+            ));
+        }
+
+        return self::SUCCESS;
+    }
+}
+
+===== app\Console\Commands\SendScheduledNotifications.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\AppNotification;
+use App\Models\Attendance;
+use App\Models\Company;
+use App\Models\CompanyHoliday;
+use App\Models\Leaves;
+use App\Models\MonthlyReport;
+use App\Models\OvertimeRequest;
+use App\Models\Permission;
+use App\Models\Schedule;
+use App\Models\ScheduleParticipant;
+use App\Models\Shift;
+use App\Models\User;
+use App\Services\AttendanceRuleService;
+use App\Services\HolidayNotifier;
+use App\Services\NotificationService;
+use App\Services\Notifiers\ScheduleNotifier;
+use App\Support\CompanySettings;
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * SEMUA notifikasi terjadwal — dijalankan scheduler SETIAP MENIT.
+ *
+ *   ⏰ Pengingat absen masuk        (X menit sebelum jam masuk)
+ *   ⚠️ "Anda belum absen masuk"     (X menit setelah jam masuk)
+ *   🏠 Pengingat absen pulang       (di jam pulang)
+ *   🔄 Shift besok berbeda          (malam sebelumnya)
+ *   🔔 Besok libur                  (H-1)
+ *   📋 Ringkasan pengajuan untuk HR (pagi)
+ *   📅 Pengingat jadwal/tugas       (sesuai reminder_offsets jadwal)
+ *
+ * Jam & on/off mengikuti pengaturan HR masing-masing company
+ * (GET/PUT /api/company/hr/settings/notifications).
+ *
+ * Aman dijalankan berkali-kali: setiap notifikasi dicek dulu supaya tidak terkirim dobel.
+ *
+ * TES tanpa menunggu jamnya (simulasi waktu):
+ *   php artisan notifications:tick --at="2026-10-30 07:45"
+ *   php artisan notifications:tick --at="2026-10-30 07:45" --dry-run   ← hanya tampilkan, tidak kirim
+ */
+class SendScheduledNotifications extends Command
+{
+    protected $signature = 'notifications:tick
+                            {--at= : Simulasi waktu sekarang, contoh "2026-10-30 07:45"}
+                            {--dry-run : Tampilkan saja, jangan kirim}';
+
+    protected $description = 'Kirim semua notifikasi terjadwal (pengingat absen, shift, libur, ringkasan HR, jadwal)';
+
+    /** Toleransi: kalau scheduler telat jalan, masih dikirim dalam X menit */
+    private const WINDOW_MINUTES = 10;
+
+    private const HARI  = [0 => 'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    private const BULAN = [1 => 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+    private bool $dry = false;
+    private int $total = 0;
+
+    private NotificationService $notif;
+    private AttendanceRuleService $rules;
+    private HolidayNotifier $holidays;
+    private ScheduleNotifier $schedules;
+
+    // Dependency diambil di handle() (bukan constructor) supaya tidak ikut
+    // dibuat setiap kali menjalankan perintah artisan lain.
+    public function handle(
+        NotificationService $notif,
+        AttendanceRuleService $rules,
+        HolidayNotifier $holidays,
+        ScheduleNotifier $schedules,
+    ): int {
+        $this->notif     = $notif;
+        $this->rules     = $rules;
+        $this->holidays  = $holidays;
+        $this->schedules = $schedules;
+
+        $this->dry = (bool) $this->option('dry-run');
+
+        if ($this->option('at')) {
+            Carbon::setTestNow(Carbon::parse($this->option('at'), config('app.timezone')));
+            $this->warn('Simulasi waktu: ' . now()->format('Y-m-d H:i'));
+        }
+
+        $companies = Company::where('is_active', true)->get();
+
+        foreach ($companies as $company) {
+            try {
+                $this->processCompany($company);
+            } catch (\Throwable $e) {
+                Log::error('notifications:tick gagal', ['company_id' => $company->id, 'error' => $e->getMessage()]);
+                $this->error("[company {$company->id}] " . $e->getMessage());
+            }
+        }
+
+        try {
+            $this->scheduleReminders();
+        } catch (\Throwable $e) {
+            Log::error('notifications:tick jadwal gagal', ['error' => $e->getMessage()]);
+            $this->error('[jadwal] ' . $e->getMessage());
+        }
+
+        $this->info(($this->dry ? '[DRY RUN] ' : '') . "Selesai. Total notifikasi: {$this->total}");
+
+        Carbon::setTestNow();
+
+        return self::SUCCESS;
+    }
+
+    // ==========================================================
+    // HELPER
+    // ==========================================================
+
+    private function tgl(Carbon $d): string
+    {
+        return self::HARI[$d->dayOfWeek] . ', ' . $d->day . ' ' . self::BULAN[$d->month];
+    }
+
+    /** Apakah sekarang berada di [target, target + WINDOW) */
+    private function inWindow(?Carbon $target): bool
+    {
+        if (!$target) return false;
+
+        $now = now();
+
+        return $now->gte($target) && $now->lt($target->copy()->addMinutes(self::WINDOW_MINUTES));
+    }
+
+    private function todayAt(string $hhmm): Carbon
+    {
+        return Carbon::parse(now()->toDateString() . ' ' . $hhmm);
+    }
+
+    /** Sudah pernah dikirim (type + tanggal) ke user ini? */
+    private function alreadySent(int $userId, string $type, string $dateKey): bool
+    {
+        return AppNotification::where('user_id', $userId)
+            ->where('type', $type)
+            ->where('data->date', $dateKey)
+            ->exists();
+    }
+
+    private function deliver($users, string $type, string $title, string $body, array $options, string $logLabel): void
+    {
+        $count = is_countable($users) ? count($users) : 1;
+
+        if ($count === 0) return;
+
+        $this->total += $count;
+        $this->line(($this->dry ? '[DRY] ' : '') . "{$logLabel} → {$count} penerima: {$title}");
+
+        if (!$this->dry) {
+            $this->notif->send($users, $type, $title, $body, $options);
+        }
+    }
+
+    // ==========================================================
+    // PER COMPANY
+    // ==========================================================
+
+    private function processCompany(Company $company): void
+    {
+        $today     = now()->toDateString();
+        $isWorkDay = CompanySettings::isWorkDay($company, $today);
+        $isHoliday = CompanyHoliday::where('company_id', $company->id)->activeOn($today)->exists();
+
+        if ($isWorkDay && !$isHoliday) {
+            $this->attendanceReminders($company);
+            $this->hrDigest($company);
+        }
+
+        // Pulang shift malam (masuk kemarin, pulang hari ini) tetap diingatkan walau hari ini libur
+        $this->nightShiftCheckoutReminders($company);
+
+        $this->holidayReminder($company);
+        $this->shiftTomorrow($company);
+    }
+
+    // ----------------------------------------------------------
+    // ⏰ ABSEN MASUK, BELUM ABSEN, ABSEN PULANG
+    // ----------------------------------------------------------
+
+    private function attendanceReminders(Company $company): void
+    {
+        $set = CompanySettings::notification($company);
+
+        $anyOn = $set['checkin_reminder']['enabled'] || $set['late_reminder']['enabled'] || $set['checkout_reminder']['enabled'];
+        if (!$anyOn) return;
+
+        $today = now()->toDateString();
+
+        $employees = User::where('company_id', $company->id)
+            ->where('role', 'employee')
+            ->where('is_active', true)
+            ->get();
+
+        if ($employees->isEmpty()) return;
+
+        // Data hari ini sekali ambil
+        $attendances = Attendance::where('company_id', $company->id)
+            ->whereDate('date', $today)
+            ->get()
+            ->keyBy('user_id');
+
+        $onLeave = Leaves::where('company_id', $company->id)
+            ->where('status', 'approved')
+            ->whereDate('start_date', '<=', $today)
+            ->whereDate('end_date', '>=', $today)
+            ->pluck('user_id')
+            ->map(fn($v) => (int) $v)
+            ->all();
+
+        foreach ($employees as $user) {
+            if (in_array((int) $user->id, $onLeave, true)) continue;
+
+            $perms = $this->rules->approvedPermissionsOn($user->id, $company->id, $today);
+
+            // Izin tidak masuk seharian → tidak perlu diingatkan
+            if ($perms->contains('type', Permission::TYPE_TIDAK_MASUK)) continue;
+
+            $shift        = $this->rules->resolveShift($user, $today);
+            $scheduledIn  = $this->rules->scheduledIn($shift, $company, $today);
+            $scheduledOut = $this->rules->scheduledOut($shift, $company, $today);
+
+            if (!$scheduledIn) continue;
+
+            // Jam masuk/pulang yang sudah memperhitungkan izin datang terlambat / pulang cepat
+            [$allowedIn]  = $this->rules->allowedIn($scheduledIn, $perms, $today);
+            [$allowedOut] = $this->rules->allowedOut($scheduledOut, $perms, $today);
+
+            $att        = $attendances->get($user->id);
+            $checkedIn  = $att && $att->time_in;
+            $checkedOut = $att && $att->time_out;
+
+            // 1) Pengingat absen masuk
+            if ($set['checkin_reminder']['enabled'] && !$checkedIn) {
+                $target = $allowedIn->copy()->subMinutes((int) $set['checkin_reminder']['minutes_before']);
+
+                if ($this->inWindow($target) && !$this->alreadySent($user->id, 'attendance.checkin_reminder', $today)) {
+                    $this->deliver(
+                        $user->id,
+                        'attendance.checkin_reminder',
+                        '⏰ Jangan lupa absen masuk',
+                        'Jam masuk Anda hari ini ' . $allowedIn->format('H:i') . ' WIB'
+                            . ($shift ? ' (' . $shift->name . ')' : '') . '.',
+                        ['category' => 'attendance', 'action' => 'attendance_checkin', 'data' => ['date' => $today]],
+                        "[{$company->id}] checkin_reminder user {$user->id}"
+                    );
+                }
+            }
+
+            // 2) Belum absen setelah lewat jam masuk
+            if ($set['late_reminder']['enabled'] && !$checkedIn) {
+                $target = $allowedIn->copy()->addMinutes((int) $set['late_reminder']['minutes_after']);
+
+                if ($this->inWindow($target) && !$this->alreadySent($user->id, 'attendance.late_reminder', $today)) {
+                    $this->deliver(
+                        $user->id,
+                        'attendance.late_reminder',
+                        '⚠️ Anda belum absen masuk',
+                        'Jam masuk ' . $allowedIn->format('H:i') . ' WIB sudah lewat. Segera absen, atau ajukan izin kalau berhalangan.',
+                        ['category' => 'attendance', 'action' => 'attendance_checkin', 'data' => ['date' => $today]],
+                        "[{$company->id}] late_reminder user {$user->id}"
+                    );
+                }
+            }
+
+            // 3) Pengingat absen pulang (shift biasa: pulang di hari yang sama)
+            if (
+                $set['checkout_reminder']['enabled'] && $checkedIn && !$checkedOut
+                && $allowedOut && $allowedOut->isSameDay(now())
+            ) {
+                $target = $allowedOut->copy()->addMinutes((int) $set['checkout_reminder']['minutes_after']);
+
+                if ($this->inWindow($target) && !$this->alreadySent($user->id, 'attendance.checkout_reminder', $today)) {
+                    $this->deliver(
+                        $user->id,
+                        'attendance.checkout_reminder',
+                        '🏠 Jangan lupa absen pulang',
+                        'Jam pulang Anda ' . $allowedOut->format('H:i') . ' WIB. Absen pulang sebelum meninggalkan lokasi.',
+                        ['category' => 'attendance', 'action' => 'attendance_checkout', 'data' => ['date' => $today]],
+                        "[{$company->id}] checkout_reminder user {$user->id}"
+                    );
+                }
+            }
+        }
+    }
+
+    /** Shift malam: masuk kemarin, jam pulang jatuh hari ini */
+    private function nightShiftCheckoutReminders(Company $company): void
+    {
+        if (!CompanySettings::notif($company, 'checkout_reminder.enabled', true)) return;
+
+        $yesterday = now()->subDay()->toDateString();
+        $minutes   = (int) CompanySettings::notif($company, 'checkout_reminder.minutes_after', 0);
+
+        $open = Attendance::where('company_id', $company->id)
+            ->whereDate('date', $yesterday)
+            ->whereNotNull('time_in')
+            ->whereNull('time_out')
+            ->whereNotNull('scheduled_in')
+            ->whereNotNull('scheduled_out')
+            ->whereColumn('scheduled_out', '<', 'scheduled_in')
+            ->get();
+
+        foreach ($open as $att) {
+            $target = Carbon::parse(now()->toDateString() . ' ' . $att->scheduled_out)->addMinutes($minutes);
+
+            if ($this->inWindow($target) && !$this->alreadySent($att->user_id, 'attendance.checkout_reminder', $yesterday)) {
+                $this->deliver(
+                    $att->user_id,
+                    'attendance.checkout_reminder',
+                    '🏠 Jangan lupa absen pulang',
+                    'Shift malam Anda selesai jam ' . substr($att->scheduled_out, 0, 5) . ' WIB.',
+                    ['category' => 'attendance', 'action' => 'attendance_checkout', 'data' => ['date' => $yesterday]],
+                    "[{$company->id}] night_checkout user {$att->user_id}"
+                );
+            }
+        }
+    }
+
+    // ----------------------------------------------------------
+    // 📋 RINGKASAN UNTUK HR
+    // ----------------------------------------------------------
+
+    private function hrDigest(Company $company): void
+    {
+        $set = CompanySettings::notif($company, 'hr_daily_digest');
+
+        if (empty($set['enabled']) || !$this->inWindow($this->todayAt($set['time']))) return;
+
+        $today = now()->toDateString();
+
+        $counts = [
+            'izin'            => Permission::where('company_id', $company->id)->whereNull('is_approved')->count(),
+            'cuti'            => Leaves::where('company_id', $company->id)->where('status', 'pending')->count(),
+            'lembur'          => OvertimeRequest::where('company_id', $company->id)->where('status', 'pending')->count(),
+            'laporan bulanan' => MonthlyReport::where('company_id', $company->id)->where('status', 'submitted')->count(),
+        ];
+
+        $total = array_sum($counts);
+        if ($total === 0) return;
+
+        $parts = collect($counts)->filter()->map(fn($n, $label) => "{$n} {$label}")->implode(', ');
+
+        $hrs = $this->notif->hrOf($company->id)
+            ->reject(fn($hr) => $this->alreadySent($hr->id, 'hr.daily_digest', $today))
+            ->pluck('id')
+            ->all();
+
+        $this->deliver(
+            $hrs,
+            'hr.daily_digest',
+            '📋 ' . $total . ' pengajuan menunggu persetujuan',
+            ucfirst($parts) . ' belum diputuskan.',
+            [
+                'category' => 'approval',
+                'action'   => 'hr_approvals',
+                'data'     => ['date' => $today] + collect($counts)->mapWithKeys(fn($v, $k) => [str_replace(' ', '_', $k) => $v])->all(),
+            ],
+            "[{$company->id}] hr_daily_digest"
+        );
+    }
+
+    // ----------------------------------------------------------
+    // 🔔 BESOK LIBUR
+    // ----------------------------------------------------------
+
+    private function holidayReminder(Company $company): void
+    {
+        $set = CompanySettings::notif($company, 'holiday_reminder');
+
+        if (empty($set['enabled']) || !$this->inWindow($this->todayAt($set['time']))) return;
+
+        $tomorrow = now()->addDay()->toDateString();
+
+        $holidays = CompanyHoliday::where('company_id', $company->id)
+            ->whereDate('start_date', $tomorrow)
+            ->whereNull('reminder_sent_at')
+            ->get();
+
+        foreach ($holidays as $h) {
+            $this->total++;
+            $this->line(($this->dry ? '[DRY] ' : '') . "[{$company->id}] holiday_reminder: {$h->name}");
+
+            if (!$this->dry) {
+                $this->holidays->reminder($h);
+                $h->forceFill(['reminder_sent_at' => now()])->save();
+            }
+        }
+    }
+
+    // ----------------------------------------------------------
+    // 🔄 SHIFT BESOK BERBEDA DARI BIASANYA
+    // ----------------------------------------------------------
+
+    private function shiftTomorrow(Company $company): void
+    {
+        $set = CompanySettings::notif($company, 'shift_tomorrow');
+
+        if (empty($set['enabled']) || !$this->inWindow($this->todayAt($set['time']))) return;
+
+        $tomorrow = now()->addDay();
+        $date     = $tomorrow->toDateString();
+
+        if (!CompanySettings::isWorkDay($company, $tomorrow)) return;
+        if (CompanyHoliday::where('company_id', $company->id)->activeOn($date)->exists()) return;
+
+        $defaultShiftId = Shift::where('company_id', $company->id)->where('is_default', true)->value('id');
+
+        $employees = User::where('company_id', $company->id)
+            ->where('role', 'employee')
+            ->where('is_active', true)
+            ->get();
+
+        foreach ($employees as $user) {
+            $shift = $this->rules->resolveShift($user, $date);
+
+            // Hanya kirim kalau besok shift-nya BUKAN shift default (ada override / jadwal grup)
+            if (!$shift || (int) $shift->id === (int) $defaultShiftId) continue;
+            if ($this->alreadySent($user->id, 'shift.tomorrow', $date)) continue;
+
+            $this->deliver(
+                $user->id,
+                'shift.tomorrow',
+                '🔄 Shift besok: ' . $shift->name,
+                $this->tgl($tomorrow) . ', jam ' . substr($shift->start_time, 0, 5) . '–' . substr($shift->end_time, 0, 5) . ' WIB.',
+                ['category' => 'schedule', 'action' => 'shift_schedule', 'data' => ['date' => $date, 'shift_id' => $shift->id]],
+                "[{$company->id}] shift_tomorrow user {$user->id}"
+            );
+        }
+    }
+
+    // ==========================================================
+    // 📅 PENGINGAT JADWAL / TUGAS
+    // ==========================================================
+
+    private function scheduleReminders(): void
+    {
+        $now = now();
+
+        // Jadwal yang mulai dalam 24 jam ke depan (offset terbesar yang wajar)
+        $schedules = Schedule::query()
+            ->where('status', 'upcoming')
+            ->where('start_datetime', '>', $now)
+            ->where('start_datetime', '<=', $now->copy()->addDay()->addMinutes(self::WINDOW_MINUTES))
+            ->get();
+
+        foreach ($schedules as $s) {
+            $offsets = collect($s->reminder_offsets ?: [15])
+                ->map(fn($v) => (int) $v)
+                ->filter(fn($v) => $v > 0)
+                ->unique();
+
+            foreach ($offsets as $offset) {
+                $target = $s->start_datetime->copy()->subMinutes($offset);
+
+                if (!$this->inWindow($target)) continue;
+
+                $userIds = ScheduleParticipant::where('schedule_id', $s->id)
+                    ->where('status', '!=', 'declined')
+                    ->pluck('user_id')
+                    ->push($s->user_id)
+                    ->map(fn($v) => (int) $v)
+                    ->unique()
+                    ->reject(fn($uid) => AppNotification::where('user_id', $uid)
+                        ->where('type', 'schedule.reminder')
+                        ->where('reference_id', $s->id)
+                        ->where('data->offset', $offset)
+                        ->exists())
+                    ->values()
+                    ->all();
+
+                if (!$userIds) continue;
+
+                $this->total += count($userIds);
+                $this->line(($this->dry ? '[DRY] ' : '') . "schedule_reminder #{$s->id} ({$offset} mnt) → " . count($userIds) . " penerima: {$s->title}");
+
+                if (!$this->dry) {
+                    $this->schedules->reminder($s, $userIds, $offset);
+                }
+            }
+        }
+    }
+}
+
+===== app\Console\Commands\SendSubscriptionNotifications.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\AppNotification;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Services\NotificationService;
+use App\Services\Notifiers\SubscriptionNotifier;
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi LANGGANAN terjadwal — dijalankan scheduler setiap 15 menit.
+ *
+ *   ⏳ Trial hampir habis          H-3, H-1, hari H          (jam 09:00)
+ *   📅 Langganan hampir habis      H-7, H-3, H-1, hari H     (jam 09:00)
+ *   ⚠️ Masa toleransi (grace)      setiap hari selama 3 hari (jam 09:00)
+ *   🔒 Langganan kedaluwarsa       sekali, saat masa toleransi habis
+ *   💳 Invoice belum dibayar       sekali, 6 jam sebelum batas bayar
+ *   ❌ Invoice kedaluwarsa          sekali, setelah batas bayar lewat
+ *
+ * ("✅ Pembayaran berhasil" dikirim langsung saat pembayaran masuk,
+ *  lewat SubscriptionService::activateFromInvoice.)
+ *
+ * Penerima: penanggung jawab billing company (User::isBillingManager()).
+ * Aman dijalankan berkali-kali: setiap notifikasi punya "key" unik supaya tidak dobel.
+ *
+ * TES:
+ *   php artisan subscriptions:notify --at="2026-11-05 09:00" --dry-run
+ */
+class SendSubscriptionNotifications extends Command
+{
+    protected $signature = 'subscriptions:notify
+                            {--at= : Simulasi waktu sekarang, contoh "2026-11-05 09:00"}
+                            {--dry-run : Tampilkan saja, jangan kirim}';
+
+    protected $description = 'Kirim notifikasi langganan (trial, masa aktif, masa toleransi, invoice)';
+
+    /** Jam kirim pengingat harian */
+    private const SEND_AT = '09:00';
+
+    /** Pengingat sebelum berakhir (dalam hari) */
+    private const TRIAL_DAYS  = [3, 1, 0];
+    private const ACTIVE_DAYS = [7, 3, 1, 0];
+
+    /** Pengingat invoice: X jam sebelum due_at */
+    private const INVOICE_HOURS_BEFORE = 6;
+
+    private bool $dry = false;
+    private int $total = 0;
+
+    private NotificationService $notif;
+    private SubscriptionNotifier $subs;
+
+    public function handle(NotificationService $notif, SubscriptionNotifier $subs): int
+    {
+        $this->notif = $notif;
+        $this->subs  = $subs;
+        $this->dry   = (bool) $this->option('dry-run');
+
+        if ($this->option('at')) {
+            Carbon::setTestNow(Carbon::parse($this->option('at'), config('app.timezone')));
+            $this->warn('Simulasi waktu: ' . now()->format('Y-m-d H:i'));
+        }
+
+        try {
+            $this->subscriptionReminders();
+        } catch (\Throwable $e) {
+            Log::error('subscriptions:notify langganan gagal', ['error' => $e->getMessage()]);
+            $this->error('[langganan] ' . $e->getMessage());
+        }
+
+        try {
+            $this->invoiceReminders();
+        } catch (\Throwable $e) {
+            Log::error('subscriptions:notify invoice gagal', ['error' => $e->getMessage()]);
+            $this->error('[invoice] ' . $e->getMessage());
+        }
+
+        $this->info(($this->dry ? '[DRY RUN] ' : '') . "Selesai. Total notifikasi: {$this->total}");
+
+        Carbon::setTestNow();
+
+        return self::SUCCESS;
+    }
+
+    // ==========================================================
+    // HELPER
+    // ==========================================================
+
+    private function alreadySent(int $userId, string $type, string $key): bool
+    {
+        return AppNotification::where('user_id', $userId)
+            ->where('type', $type)
+            ->where('data->key', $key)
+            ->exists();
+    }
+
+    /** Hitung selisih hari kalender (abaikan jam) dari hari ini ke $date */
+    private function daysUntil(Carbon $date): int
+    {
+        $today  = now()->startOfDay();
+        $target = $date->copy()->timezone(config('app.timezone'))->startOfDay();
+
+        return (int) $today->diffInDays($target, false);
+    }
+
+    private function deliver(int $companyId, string $type, string $key, string $title, string $body, array $options, string $logLabel): void
+    {
+        $users = $this->subs->billingManagersOf($companyId)
+            ->reject(fn($u) => $this->alreadySent($u->id, $type, $key))
+            ->pluck('id')
+            ->all();
+
+        if (!$users) return;
+
+        $this->total += count($users);
+        $this->line(($this->dry ? '[DRY] ' : '') . "[{$companyId}] {$logLabel} → " . count($users) . " penerima: {$title}");
+
+        if (!$this->dry) {
+            $options['category']    = 'subscription';
+            $options['data']        = array_merge($options['data'] ?? [], ['key' => $key]);
+            $this->notif->send($users, $type, $title, $body, $options);
+        }
+    }
+
+    // ==========================================================
+    // ⏳ TRIAL / 📅 LANGGANAN / ⚠️ GRACE / 🔒 EXPIRED
+    // ==========================================================
+
+    private function subscriptionReminders(): void
+    {
+        // Pengingat harian hanya dikirim mulai jam SEND_AT
+        if (now()->lt(Carbon::parse(now()->toDateString() . ' ' . self::SEND_AT))) {
+            return;
+        }
+
+        $subs = CompanySubscription::with('plan')
+            ->whereIn('status', ['trial', 'active', 'grace', 'expired'])
+            ->get();
+
+        foreach ($subs as $sub) {
+            // Lewati baris "placeholder": dibuat saat invoice pertama, belum pernah aktif.
+            if ($sub->status === 'expired' && !$sub->has_used_trial && !$sub->last_invoice_id) {
+                continue;
+            }
+
+            if (!$sub->expires_at) continue;
+
+            $isTrial    = $sub->status === 'trial' || ($sub->plan?->is_free ?? false);
+            $expiresAt  = $sub->expires_at;
+            $graceUntil = $expiresAt->copy()->addDays(CompanySubscription::GRACE_PERIOD_DAYS);
+            $expDate    = $expiresAt->toDateString();
+            $planName   = $sub->plan->name ?? 'Langganan';
+
+            // ------------------------------------------------------
+            // 1) MASIH AKTIF → pengingat H-x
+            // ------------------------------------------------------
+            if (now()->lt($expiresAt)) {
+                $daysLeft = $this->daysUntil($expiresAt);
+                $steps    = $isTrial ? self::TRIAL_DAYS : self::ACTIVE_DAYS;
+
+                if (!in_array($daysLeft, $steps, true)) continue;
+
+                $when = $daysLeft === 0 ? 'hari ini' : "{$daysLeft} hari lagi";
+
+                if ($isTrial) {
+                    $type  = 'subscription.trial_ending';
+                    $title = "⏳ Masa trial berakhir {$when}";
+                    $body  = 'Trial berakhir ' . SubscriptionNotifier::tgl($expiresAt, true)
+                        . '. Pilih paket berlangganan supaya absensi tetap berjalan.';
+                } else {
+                    $type  = 'subscription.expiring';
+                    $title = "📅 Langganan berakhir {$when}";
+                    $body  = "Paket {$planName} berakhir " . SubscriptionNotifier::tgl($expiresAt, true)
+                        . '. Perpanjang sekarang supaya tidak terputus.';
+                }
+
+                $this->deliver(
+                    $sub->company_id,
+                    $type,
+                    "ending:{$expDate}:{$daysLeft}",
+                    $title,
+                    $body,
+                    ['action' => 'subscription_status', 'data' => ['expires_at' => $expDate, 'days_left' => $daysLeft]],
+                    $isTrial ? "trial_ending H-{$daysLeft}" : "expiring H-{$daysLeft}"
+                );
+
+                continue;
+            }
+
+            // ------------------------------------------------------
+            // 2) MASA TOLERANSI → setiap hari
+            // ------------------------------------------------------
+            if (now()->lt($graceUntil)) {
+                if (!$this->dry && $sub->status !== 'grace') {
+                    $sub->syncStatus();
+                }
+
+                $graceLeft = max(0, $this->daysUntil($graceUntil));
+                $today     = now()->toDateString();
+
+                $this->deliver(
+                    $sub->company_id,
+                    'subscription.grace',
+                    "grace:{$expDate}:{$today}",
+                    $graceLeft > 0
+                        ? "⚠️ Masa toleransi: sisa {$graceLeft} hari"
+                        : '⚠️ Masa toleransi berakhir hari ini',
+                    ($isTrial ? 'Masa trial' : "Paket {$planName}") . ' sudah berakhir ' . SubscriptionNotifier::tgl($expiresAt)
+                        . '. Aplikasi akan dikunci ' . SubscriptionNotifier::tgl($graceUntil, true)
+                        . ' jika belum diperpanjang.',
+                    ['action' => 'subscription_status', 'data' => ['expires_at' => $expDate, 'grace_until' => $graceUntil->toDateString(), 'days_left' => $graceLeft]],
+                    "grace sisa {$graceLeft}"
+                );
+
+                continue;
+            }
+
+            // ------------------------------------------------------
+            // 3) SUDAH KEDALUWARSA → sekali saja
+            //    (hanya dalam 3 hari setelah dikunci, supaya data lama tidak ikut dikirimi)
+            // ------------------------------------------------------
+            if (now()->lt($graceUntil->copy()->addDays(3))) {
+                if (!$this->dry && $sub->status !== 'expired') {
+                    $sub->syncStatus();
+                }
+
+                $this->deliver(
+                    $sub->company_id,
+                    'subscription.expired',
+                    "expired:{$expDate}",
+                    '🔒 Langganan kedaluwarsa',
+                    'Fitur aplikasi sudah dikunci sejak ' . SubscriptionNotifier::tgl($graceUntil, true)
+                        . '. Perpanjang langganan untuk membuka kembali.',
+                    ['action' => 'subscription_plans', 'data' => ['expires_at' => $expDate]],
+                    'expired'
+                );
+            }
+        }
+    }
+
+    // ==========================================================
+    // 💳 INVOICE BELUM DIBAYAR / ❌ INVOICE KEDALUWARSA
+    // ==========================================================
+
+    private function invoiceReminders(): void
+    {
+        // 💳 Pending, batas bayar tinggal <= 6 jam
+        $dueSoon = SubscriptionInvoice::with(['plan', 'vaPayment'])
+            ->where('status', 'pending')
+            ->whereBetween('due_at', [now(), now()->addHours(self::INVOICE_HOURS_BEFORE)])
+            ->get();
+
+        foreach ($dueSoon as $inv) {
+            $va = $inv->vaPayment;
+
+            $body = $inv->invoice_number . ' sebesar ' . SubscriptionNotifier::rupiah($inv->total_amount)
+                . ($va ? ' via VA ' . strtoupper($va->bank) . ' ' . $va->va_number : '')
+                . '. Batas bayar ' . SubscriptionNotifier::tgl($inv->due_at, true) . '.';
+
+            $this->deliver(
+                $inv->company_id,
+                'subscription.invoice_unpaid',
+                "invoice_due:{$inv->id}",
+                '💳 Invoice belum dibayar',
+                $body,
+                [
+                    'action'    => 'subscription_invoice',
+                    'reference' => $inv,
+                    'data'      => ['invoice_id' => $inv->id, 'invoice_number' => $inv->invoice_number],
+                ],
+                "invoice_unpaid #{$inv->id}"
+            );
+        }
+
+        // ❌ Lewat batas bayar dalam 24 jam terakhir, belum dibayar
+        $expired = SubscriptionInvoice::with('plan')
+            ->whereIn('status', ['pending', 'expired'])
+            ->whereBetween('due_at', [now()->subDay(), now()])
+            ->get();
+
+        foreach ($expired as $inv) {
+            // Kalau sudah ada invoice yang lebih baru, tidak perlu diingatkan lagi
+            $hasNewer = SubscriptionInvoice::where('company_id', $inv->company_id)
+                ->where('id', '>', $inv->id)
+                ->exists();
+
+            if ($hasNewer) continue;
+
+            $this->deliver(
+                $inv->company_id,
+                'subscription.invoice_expired',
+                "invoice_expired:{$inv->id}",
+                '❌ Invoice kedaluwarsa',
+                $inv->invoice_number . ' (' . ($inv->plan->name ?? '-') . ') tidak dibayar sampai batas waktu. '
+                    . 'Silakan pilih paket lagi untuk membuat tagihan baru.',
+                [
+                    'action'    => 'subscription_plans',
+                    'reference' => $inv,
+                    'data'      => ['invoice_id' => $inv->id, 'invoice_number' => $inv->invoice_number],
+                ],
+                "invoice_expired #{$inv->id}"
+            );
+        }
+    }
+}
+
+===== app\Console\Kernel.php =====
+<?php
+
+namespace App\Console;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+
+class Kernel extends ConsoleKernel
+{
+    /**
+     * Jadwal tugas otomatis.
+     *
+     * Supaya jalan, scheduler harus dihidupkan:
+     *   - Di komputer (development) : php artisan schedule:work   (biarkan jendela terbuka)
+     *   - Di server Linux           : cron  * * * * * cd /path/project && php artisan schedule:run >> /dev/null 2>&1
+     */
+    protected function schedule(Schedule $schedule): void
+    {
+        // CATATAN: setiap command cukup didaftarkan SATU kali.
+        // Sebelumnya 'notifications:tick' tertulis dua kali → notifikasi bisa terkirim dobel.
+        // 'holidays:remind' juga tidak dipakai lagi (pengingat libur H-1 sudah ada di notifications:tick).
+
+        // 🧹 Hapus foto absen lama (sekolah)
+        $schedule->command('school:cleanup-attendance-photos')
+            ->dailyAt('02:00')
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping();
+
+        // 🔔 Semua notifikasi terjadwal (pengingat absen, shift besok, libur H-1,
+        //    ringkasan HR, pengingat jadwal). Jam & on/off diatur HR per company.
+        $schedule->command('notifications:tick')
+            ->everyMinute()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(5)
+            ->appendOutputTo(storage_path('logs/notifications-tick.log'));
+
+        // 🧾 Rapikan status langganan, invoice, dan VA yang sudah lewat waktu
+        $schedule->command('subscriptions:expire')
+            ->hourly()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(10)
+            ->appendOutputTo(storage_path('logs/subscriptions.log'));
+
+        // 💳 Notifikasi langganan (trial, masa aktif, masa toleransi, invoice)
+        $schedule->command('subscriptions:notify')
+            ->everyFifteenMinutes()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(10)
+            ->appendOutputTo(storage_path('logs/subscriptions.log'));
+
+        // Bersihkan notifikasi lama (lebih dari 90 hari) setiap hari jam 02:00
+        $schedule->call(function () {
+            \App\Models\AppNotification::where('created_at', '<', now()->subDays(90))->delete();
+        })
+            ->dailyAt('02:00')
+            ->timezone('Asia/Jakarta')
+            ->name('cleanup-old-notifications')
+            ->withoutOverlapping();
+
+        // Kosongkan file log scheduler setiap Minggu jam 03:00 supaya tidak membengkak
+        $schedule->call(function () {
+            foreach (['notifications-tick.log', 'subscriptions.log'] as $file) {
+                $path = storage_path('logs/' . $file);
+                if (file_exists($path)) {
+                    file_put_contents($path, '');
+                }
+            }
+        })
+            ->weeklyOn(0, '03:00')
+            ->timezone('Asia/Jakarta')
+            ->name('truncate-scheduler-logs');
+    }
+
+    /**
+     * Daftarkan semua command di app/Console/Commands.
+     */
+    protected function commands(): void
+    {
+        $this->load(__DIR__ . '/Commands');
+
+        require base_path('routes/console.php');
+    }
+}
+
+===== app\Http\Controllers\Api\HrCompany\HrCompanyNotificationSettingController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\HrCompany;
+
+use App\Http\Controllers\Controller;
+use App\Support\CompanySettings;
+use Illuminate\Http\Request;
+
+/**
+ * Pengaturan hari kerja & notifikasi — diatur oleh HR masing-masing perusahaan.
+ *
+ * GET /api/company/hr/settings/notifications
+ * PUT /api/company/hr/settings/notifications
+ */
+class HrCompanyNotificationSettingController extends Controller
+{
+    private function ensureHr(): void
+    {
+        if (!auth()->check() || auth()->user()->role !== 'hr') {
+            abort(response()->json(['status' => false, 'message' => 'Akses ditolak (khusus HR)'], 403));
+        }
+    }
+
+    private function company()
+    {
+        $company = auth()->user()->company;
+
+        if (!$company) {
+            abort(response()->json(['status' => false, 'message' => 'Company tidak ditemukan'], 422));
+        }
+
+        return $company;
+    }
+
+    // ============================================================
+    // GET /api/company/hr/settings/notifications
+    // ============================================================
+    public function show()
+    {
+        $this->ensureHr();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Pengaturan hari kerja & notifikasi',
+            'data'    => CompanySettings::toApiArray($this->company()),
+        ]);
+    }
+
+    // ============================================================
+    // PUT /api/company/hr/settings/notifications
+    //
+    // Semua field opsional — kirim yang mau diubah saja. Contoh:
+    // {
+    //   "work_days": [1,2,3,4,5,6],
+    //   "notification": {
+    //     "checkin_reminder":    { "enabled": true, "minutes_before": 10 },
+    //     "hr_instant_approval": { "enabled": false },
+    //     "hr_daily_digest":     { "time": "07:30" }
+    //   }
+    // }
+    // ============================================================
+    public function update(Request $request)
+    {
+        $this->ensureHr();
+
+        $time = ['nullable', 'date_format:H:i'];
+
+        $request->validate([
+            'work_days'   => ['nullable', 'array', 'min:1', 'max:7'],
+            'work_days.*' => ['integer', 'between:1,7'],
+
+            'notification'                                    => ['nullable', 'array'],
+            'notification.checkin_reminder.enabled'           => ['nullable', 'boolean'],
+            'notification.checkin_reminder.minutes_before'    => ['nullable', 'integer', 'between:0,180'],
+            'notification.late_reminder.enabled'              => ['nullable', 'boolean'],
+            'notification.late_reminder.minutes_after'        => ['nullable', 'integer', 'between:5,240'],
+            'notification.checkout_reminder.enabled'          => ['nullable', 'boolean'],
+            'notification.checkout_reminder.minutes_after'    => ['nullable', 'integer', 'between:0,180'],
+            'notification.shift_tomorrow.enabled'             => ['nullable', 'boolean'],
+            'notification.shift_tomorrow.time'                => $time,
+            'notification.holiday_reminder.enabled'           => ['nullable', 'boolean'],
+            'notification.holiday_reminder.time'              => $time,
+            'notification.hr_instant_approval.enabled'        => ['nullable', 'boolean'],
+            'notification.hr_daily_digest.enabled'            => ['nullable', 'boolean'],
+            'notification.hr_daily_digest.time'               => $time,
+        ], [
+            'work_days.min'      => 'Pilih minimal 1 hari kerja.',
+            'work_days.*.between'=> 'Hari kerja harus angka 1 (Senin) sampai 7 (Minggu).',
+            '*.date_format'      => 'Format jam harus HH:mm, contoh 08:00.',
+        ]);
+
+        // Ubah "true"/"false"/"1"/"0" jadi boolean asli, dan angka jadi integer
+        $notification = $request->input('notification');
+        if (is_array($notification)) {
+            array_walk_recursive($notification, function (&$v, $k) {
+                if ($k === 'enabled') {
+                    $v = filter_var($v, FILTER_VALIDATE_BOOLEAN);
+                } elseif (in_array($k, ['minutes_before', 'minutes_after'], true)) {
+                    $v = (int) $v;
+                }
+            });
+        }
+
+        $company = $this->company();
+
+        CompanySettings::save($company, $request->input('work_days'), $notification);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Pengaturan berhasil disimpan',
+            'data'    => CompanySettings::toApiArray($company->fresh()),
+        ]);
+    }
+
+    // ============================================================
+    // POST /api/company/hr/settings/notifications/reset
+    // Kembalikan semua ke default
+    // ============================================================
+    public function reset()
+    {
+        $this->ensureHr();
+
+        $company = $this->company();
+        $company->forceFill(['work_days' => null, 'notification_settings' => null])->save();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Pengaturan dikembalikan ke default',
+            'data'    => CompanySettings::toApiArray($company->fresh()),
+        ]);
+    }
+}
+===== app\Http\Controllers\Api\NotificationController.php =====
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\AppNotification;
+use Illuminate\Http\Request;
+
+/**
+ * Kotak masuk notifikasi — dipakai SEMUA role (employee, hr, guru, wali, dst).
+ * Setiap user hanya bisa melihat notifikasinya sendiri.
+ */
+class NotificationController extends Controller
+{
+    private function myQuery()
+    {
+        return AppNotification::query()->where('user_id', auth()->id());
+    }
+
+    // ============================================================
+    // GET /api/notifications
+    // filter: category, unread=1, per_page
+    // ============================================================
+    public function index(Request $request)
+    {
+        $q = $this->myQuery();
+
+        if ($request->filled('category')) {
+            $q->where('category', $request->category);
+        }
+
+        if ($request->boolean('unread')) {
+            $q->whereNull('read_at');
+        }
+
+        $page = $q->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->paginate(min((int) $request->get('per_page', 20), 50));
+
+        $page->getCollection()->transform(fn($n) => $n->toApiArray());
+
+        return response()->json([
+            'status'       => true,
+            'message'      => 'Daftar notifikasi',
+            'unread_count' => $this->myQuery()->whereNull('read_at')->count(),
+            'data'         => $page,
+        ]);
+    }
+
+    // ============================================================
+    // GET /api/notifications/unread-count
+    // Untuk badge lonceng — panggil saat aplikasi dibuka / ada push masuk
+    // ============================================================
+    public function unreadCount()
+    {
+        $byCategory = $this->myQuery()
+            ->whereNull('read_at')
+            ->selectRaw('category, COUNT(*) as total')
+            ->groupBy('category')
+            ->pluck('total', 'category')
+            ->map(fn($v) => (int) $v);
+
+        return response()->json([
+            'status' => true,
+            'data'   => [
+                'total'       => (int) $byCategory->sum(),
+                'by_category' => $byCategory,
+            ],
+        ]);
+    }
+
+    // ============================================================
+    // PATCH /api/notifications/{id}/read
+    // ============================================================
+    public function markRead($id)
+    {
+        $notif = $this->myQuery()->findOrFail($id);
+
+        if (!$notif->read_at) {
+            $notif->update(['read_at' => now()]);
+        }
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Notifikasi ditandai sudah dibaca',
+            'data'    => $notif->fresh()->toApiArray(),
+        ]);
+    }
+
+    // ============================================================
+    // PATCH /api/notifications/read-all
+    // body opsional: { category }
+    // ============================================================
+    public function markAllRead(Request $request)
+    {
+        $count = $this->myQuery()
+            ->whereNull('read_at')
+            ->when($request->filled('category'), fn($q) => $q->where('category', $request->category))
+            ->update(['read_at' => now()]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => "{$count} notifikasi ditandai sudah dibaca",
+            'data'    => ['updated' => $count],
+        ]);
+    }
+
+    // ============================================================
+    // DELETE /api/notifications/{id}
+    // ============================================================
+    public function destroy($id)
+    {
+        $this->myQuery()->findOrFail($id)->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Notifikasi dihapus',
+        ]);
+    }
+}
+
+===== app\Models\AppNotification.php =====
+<?php
+
+namespace App\Models;
+
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Model;
+
+class AppNotification extends Model
+{
+    protected $table = 'app_notifications';
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'data'         => 'array',
+        'read_at'      => 'datetime',
+        'push_sent_at' => 'datetime',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // ----------------------------------------------------------
+    // SCOPES
+    // ----------------------------------------------------------
+
+    public function scopeForUser($query, int $userId)
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    public function scopeUnread($query)
+    {
+        return $query->whereNull('read_at');
+    }
+
+    // ----------------------------------------------------------
+    // FORMAT API
+    // ----------------------------------------------------------
+
+    /** "Baru saja", "5 menit lalu", "Kemarin 14:30", "20 Okt 14:30" */
+    public function getTimeLabelAttribute(): string
+    {
+        $tz  = config('app.timezone');
+        $at  = Carbon::parse($this->created_at)->timezone($tz);
+        $now = now()->timezone($tz);
+
+        $diff = (int) $at->diffInMinutes($now, true);
+
+        if ($diff < 1)  return 'Baru saja';
+        if ($diff < 60) return $diff . ' menit lalu';
+        if ($at->isSameDay($now)) return $at->format('H:i');
+        if ($at->isSameDay($now->copy()->subDay())) return 'Kemarin ' . $at->format('H:i');
+
+        $bulan = [1 => 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+        return $at->day . ' ' . $bulan[$at->month]
+            . ($at->year !== $now->year ? ' ' . $at->year : '')
+            . ' ' . $at->format('H:i');
+    }
+
+    public function toApiArray(): array
+    {
+        $tz = config('app.timezone');
+
+        return [
+            'id'             => $this->id,
+            'type'           => $this->type,
+            'category'       => $this->category,
+            'title'          => $this->title,
+            'body'           => $this->body,
+            'data'           => $this->data ?? (object) [],
+            'action'         => $this->action,
+            'reference_type' => $this->reference_type,
+            'reference_id'   => $this->reference_id,
+            'is_read'        => $this->read_at !== null,
+            'read_at'        => $this->read_at?->timezone($tz)->format('Y-m-d H:i:s'),
+            'time_label'     => $this->time_label,
+            'created_at'     => Carbon::parse($this->created_at)->timezone($tz)->format('Y-m-d H:i:s'),
+        ];
+    }
+}
+
+===== app\Models\User.php =====
+<?php
+
+namespace App\Models;
+
+use App\Models\ShiftGroup;
+use App\Models\UserShiftOverride;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Auth\Passwords\CanResetPassword;
+// use Illuminate\Contracts\Auth\CanResetPassword as CanResetPasswordContract;
+
+class User extends Authenticatable
+{
+    use HasApiTokens, HasFactory, Notifiable, CanResetPassword;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $guarded = [];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [
+        'password',
+        'remember_token',
+        'face_embedding',
+    ];
+
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
+        'salary' => 'decimal:2',
+    ];
+
+
+    // kode
+    // ═══════════════════════════════════════════════════════════════════
+    // ACCESSOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Tipe aplikasi berdasarkan company type.
+     * Contoh: 'company', 'pesantren', 'school'
+     */
+    public function getAppTypeAttribute(): ?string
+    {
+        return $this->company?->type;
+    }
+
+    /**
+     * Key untuk routing dashboard.
+     * Contoh: 'pesantren.ustadz', 'company.hr', 'company.employee'
+     */
+    public function getDashboardKeyAttribute(): ?string
+    {
+        return $this->company?->type . '.' . $this->role;
+    }
+
+    public function isBillingManager(): bool
+    {
+        if (! $this->company) {
+            return false;
+        }
+
+        return $this->role === $this->company->billingRole();
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI — UMUM
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Pesantren / perusahaan tempat user ini terdaftar.
+     */
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI — HR / COMPANY
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Semua record absensi milik user ini.
+     */
+    public function attendances(): HasMany
+    {
+        return $this->hasMany(Attendance::class);
+    }
+
+    /**
+     * Laporan bulanan milik user ini.
+     */
+    public function monthlyReports(): HasMany
+    {
+        return $this->hasMany(MonthlyReport::class);
+    }
+
+    /**
+     * Laporan harian milik user ini.
+     */
+    public function dailyReports(): HasMany
+    {
+        return $this->hasMany(DailyReport::class);
+    }
+
+    /**
+     * Skor performa milik user ini.
+     */
+    public function performanceScores(): HasMany
+    {
+        return $this->hasMany(PerformanceScore::class);
+    }
+
+    /**
+     * Shift group yang diikuti user ini (many-to-many).
+     */
+    public function shiftGroups()
+    {
+        return $this->belongsToMany(ShiftGroup::class, 'shift_group_users')
+            ->withPivot(['start_date', 'end_date'])
+            ->withTimestamps();
+    }
+
+    /**
+     * Override shift individual untuk user ini.
+     */
+    public function shiftOverrides(): HasMany
+    {
+        return $this->hasMany(UserShiftOverride::class);
+    }
+
+    /**
+     * Jadwal yang dimiliki / ditugaskan ke user ini.
+     */
+    public function schedules(): HasMany
+    {
+        return $this->hasMany(Schedule::class, 'user_id');
+    }
+
+    /**
+     * Jadwal yang dibuat oleh user ini (sebagai HR / creator).
+     */
+    public function createdSchedules(): HasMany
+    {
+        return $this->hasMany(Schedule::class, 'created_by');
+    }
+
+    /**
+     * Jadwal yang diikuti user ini sebagai peserta.
+     */
+    public function scheduleParticipations(): HasMany
+    {
+        return $this->hasMany(ScheduleParticipant::class, 'user_id');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI — PESANTREN (MutabaahYaumiyah)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * [Santri] Semua riwayat ngaji milik santri ini.
+     *
+     * Contoh:
+     *   $santri->mutabaahSebagaiSantri()->bulan(3, 2026)->get();
+     *   $santri->mutabaahSebagaiSantri()->hariIni()->get();
+     */
+    public function mutabaahSebagaiSantri(): HasMany
+    {
+        return $this->hasMany(MutabaahYaumiyah::class, 'santri_id');
+    }
+
+    /**
+     * [Ustadz] Semua sesi ngaji yang diajar oleh ustadz ini.
+     *
+     * Contoh:
+     *   $ustadz->mutabaahSebagaiUstadz()->hariIni()->get();
+     *   $ustadz->mutabaahSebagaiUstadz()->bulan(3, 2026)->count();
+     */
+    public function mutabaahSebagaiUstadz(): HasMany
+    {
+        return $this->hasMany(MutabaahYaumiyah::class, 'ustadz_id');
+    }
+
+    /**
+     * [Ustadz] Semua sesi yang sudah diparaf oleh ustadz ini.
+     */
+    public function mutabaahYangDiparaf(): HasMany
+    {
+        return $this->hasMany(MutabaahYaumiyah::class, 'signed_by');
+    }
+
+    /**
+     * [Santri] Record ngaji terakhir — posisi terkini santri.
+     * Berguna untuk auto-fill jilid & halaman saat ustadz input sesi baru.
+     *
+     * Contoh:
+     *   $santri->progressNgaji;           // → MutabaahYaumiyah|null
+     *   $santri->progressNgaji->jilid;    // → 2
+     *   $santri->progressNgaji->halaman_dari; // → 15
+     */
+    public function progressNgaji()
+    {
+        return $this->hasOne(MutabaahYaumiyah::class, 'santri_id')
+            ->latestOfMany();
+    }
+
+
+    // Untuk user role = 'wali': semua anak yang terhubung ke akun ini
+    public function guardedStudents()
+    {
+        return $this->belongsToMany(Student::class, 'student_guardians', 'user_id', 'student_id')
+            ->withPivot(['relationship', 'is_primary', 'can_submit_permission'])
+            ->withTimestamps();
+    }
+
+    // Baris pivot mentah wali-murid milik user ini
+    public function studentGuardianRows()
+    {
+        return $this->hasMany(StudentGuardian::class);
+    }
+
+    // Untuk user role = 'guru': semua kelas yang diampu (wali kelas / guru mapel)
+    public function teachingClasses()
+    {
+        return $this->belongsToMany(ClassRoom::class, 'class_teachers', 'user_id', 'class_id')
+            ->withPivot(['role_in_class', 'subject'])
+            ->withTimestamps();
+    }
+
+    // Untuk user role = 'guru': kelas di mana dia jadi wali kelas
+    public function homeroomClasses()
+    {
+        return $this->hasMany(ClassRoom::class, 'homeroom_teacher_id');
+    }
+
+    // Izin/sakit murid yang pernah diajukan oleh user ini (role wali)
+    public function submittedStudentPermissions()
+    {
+        return $this->hasMany(StudentPermission::class, 'submitted_by');
+    }
+
+    // Absen murid yang pernah diinput user ini lewat kiosk (role guru)
+    public function recordedStudentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class, 'recorded_by');
+    }
+}
+
+===== app\Services\FcmService.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Kirim push notification lewat FCM HTTP v1.
+ * Tidak butuh package tambahan — hanya file service account JSON.
+ *
+ * Pemakaian:
+ *   app(FcmService::class)->sendToUsers($users, 'Judul', 'Isi', ['type' => 'holiday']);
+ */
+class FcmService
+{
+    private const SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
+
+    private ?array $credentials = null;
+
+    // ----------------------------------------------------------
+    // KONFIGURASI
+    // ----------------------------------------------------------
+
+    public function isConfigured(): bool
+    {
+        return File::exists((string) config('fcm.credentials'));
+    }
+
+    private function credentials(): array
+    {
+        if ($this->credentials !== null) {
+            return $this->credentials;
+        }
+
+        $path = (string) config('fcm.credentials');
+
+        if (!File::exists($path)) {
+            throw new \RuntimeException("File service account FCM tidak ditemukan: {$path}");
+        }
+
+        $json = json_decode(File::get($path), true);
+
+        if (!is_array($json) || empty($json['client_email']) || empty($json['private_key'])) {
+            throw new \RuntimeException('File service account FCM tidak valid.');
+        }
+
+        return $this->credentials = $json;
+    }
+
+    private function projectId(): string
+    {
+        return config('fcm.project_id') ?: $this->credentials()['project_id'];
+    }
+
+    // ----------------------------------------------------------
+    // OAUTH TOKEN (berlaku 1 jam, di-cache 55 menit)
+    // ----------------------------------------------------------
+
+    private function base64Url(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    private function accessToken(): string
+    {
+        return Cache::remember('fcm_access_token', 55 * 60, function () {
+            $cred     = $this->credentials();
+            $tokenUri = $cred['token_uri'] ?? 'https://oauth2.googleapis.com/token';
+            $now      = time();
+
+            $header = $this->base64Url(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
+            $claims = $this->base64Url(json_encode([
+                'iss'   => $cred['client_email'],
+                'scope' => self::SCOPE,
+                'aud'   => $tokenUri,
+                'iat'   => $now,
+                'exp'   => $now + 3600,
+            ]));
+
+            $unsigned = $header . '.' . $claims;
+            $signature = '';
+
+            if (!openssl_sign($unsigned, $signature, $cred['private_key'], OPENSSL_ALGO_SHA256)) {
+                throw new \RuntimeException('Gagal menandatangani JWT FCM (cek private_key).');
+            }
+
+            $jwt = $unsigned . '.' . $this->base64Url($signature);
+
+            $res = Http::asForm()->timeout(15)->post($tokenUri, [
+                'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+                'assertion'  => $jwt,
+            ]);
+
+            if (!$res->successful() || !$res->json('access_token')) {
+                throw new \RuntimeException('Gagal ambil access token FCM: ' . $res->body());
+            }
+
+            return $res->json('access_token');
+        });
+    }
+
+    // ----------------------------------------------------------
+    // KIRIM
+    // ----------------------------------------------------------
+
+    /**
+     * @return array{ok:bool, invalid_token:bool, error:?string}
+     */
+    public function sendToToken(string $token, string $title, string $body, array $data = []): array
+    {
+        // FCM v1 mewajibkan semua nilai "data" berupa string
+        $data = collect($data)->map(fn($v) => is_scalar($v) ? (string) $v : json_encode($v))->all();
+
+        $payload = [
+            'message' => [
+                'token'        => $token,
+                'notification' => ['title' => $title, 'body' => $body],
+                'data'         => (object) $data,
+                'android'      => [
+                    'priority'     => 'HIGH',
+                    'notification' => [
+                        'channel_id' => config('fcm.android_channel_id'),
+                        'sound'      => 'default',
+                    ],
+                ],
+                'apns' => [
+                    'payload' => ['aps' => ['sound' => 'default']],
+                ],
+            ],
+        ];
+
+        try {
+            $res = Http::withToken($this->accessToken())
+                ->timeout(15)
+                ->post("https://fcm.googleapis.com/v1/projects/{$this->projectId()}/messages:send", $payload);
+        } catch (\Throwable $e) {
+            Log::warning('FCM error', ['error' => $e->getMessage()]);
+            return ['ok' => false, 'invalid_token' => false, 'error' => $e->getMessage()];
+        }
+
+        if ($res->successful()) {
+            return ['ok' => true, 'invalid_token' => false, 'error' => null];
+        }
+
+        // Token HP sudah tidak berlaku (aplikasi di-uninstall / login di HP lain)
+        $code    = $res->json('error.details.0.errorCode') ?? $res->json('error.status');
+        $invalid = in_array($code, ['UNREGISTERED', 'INVALID_ARGUMENT'], true) || $res->status() === 404;
+
+        // Token OAuth kadaluarsa → buang cache, percobaan berikutnya ambil token baru
+        if ($res->status() === 401) {
+            Cache::forget('fcm_access_token');
+        }
+
+        Log::warning('FCM gagal kirim', ['status' => $res->status(), 'code' => $code, 'body' => $res->body()]);
+
+        return ['ok' => false, 'invalid_token' => $invalid, 'error' => $code ?: $res->body()];
+    }
+
+    /**
+     * Kirim ke banyak user. Token yang sudah tidak berlaku otomatis dikosongkan.
+     *
+     * @param iterable<User> $users
+     * @return array{sent:int, failed:int, skipped:int, invalid_tokens_cleared:int}
+     */
+    public function sendToUsers(iterable $users, string $title, string $body, array $data = []): array
+    {
+        $result = ['sent' => 0, 'failed' => 0, 'skipped' => 0, 'invalid_tokens_cleared' => 0];
+
+        if (!$this->isConfigured()) {
+            Log::warning('FCM belum dikonfigurasi: file service account tidak ada.', [
+                'path' => config('fcm.credentials'),
+            ]);
+            return $result;
+        }
+
+        $seen = [];
+
+        foreach ($users as $user) {
+            $token = $user->fcm_token;
+
+            if (!$token || isset($seen[$token])) {
+                $result['skipped']++;
+                continue;
+            }
+            $seen[$token] = true;
+
+            $r = $this->sendToToken($token, $title, $body, $data);
+
+            if ($r['ok']) {
+                $result['sent']++;
+                continue;
+            }
+
+            $result['failed']++;
+
+            if ($r['invalid_token']) {
+                User::where('fcm_token', $token)->update(['fcm_token' => null]);
+                $result['invalid_tokens_cleared']++;
+            }
+        }
+
+        return $result;
+    }
+}
+
+===== app\Services\HolidayNotifier.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\CompanyHoliday;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+
+/**
+ * Notifikasi libur ke HP karyawan.
+ *  - created  : HR menambah libur
+ *  - updated  : HR mengubah tanggal / nama libur
+ *  - canceled : HR menghapus libur yang belum lewat
+ *  - reminder : H-1 sebelum libur (dijalankan scheduler)
+ *
+ * Versi baru: lewat NotificationService → selain pop-up,
+ * notifikasi libur sekarang juga masuk kotak masuk aplikasi.
+ */
+class HolidayNotifier
+{
+    public function __construct(private NotificationService $notif) {}
+
+    /**
+     * @return array{sent:int, failed:int, skipped:int, stored:int}
+     */
+    private function send(CompanyHoliday $h, string $event, string $title, string $body): array
+    {
+        $r = $this->notif->send(
+            $this->notif->employeesOf((int) $h->company_id),
+            'holiday.' . $event,
+            $title,
+            $body,
+            [
+                'category'       => 'holiday',
+                'action'         => 'holiday_detail',
+                // Untuk "canceled" data libur sudah terhapus, jadi pakai id manual
+                'reference_type' => 'CompanyHoliday',
+                'reference_id'   => $h->id,
+                'data'           => [
+                    'holiday_id' => $h->id,
+                    'event'      => $event,
+                    'start_date' => $h->start_date?->format('Y-m-d'),
+                    'end_date'   => $h->end_date?->format('Y-m-d'),
+                ],
+            ]
+        );
+
+        $result = [
+            'sent'    => $r['sent'],
+            'failed'  => $r['failed'],
+            'skipped' => $r['no_token'],
+            'stored'  => $r['stored'],
+        ];
+
+        Log::info("Notifikasi libur [{$event}]", ['holiday_id' => $h->id] + $result);
+
+        return $result;
+    }
+
+    public function created(CompanyHoliday $h): array
+    {
+        return $this->send($h, 'created', '📅 Libur: ' . $h->name, $h->period_label . $this->noteSuffix($h));
+    }
+
+    public function updated(CompanyHoliday $h): array
+    {
+        return $this->send($h, 'updated', '📅 Jadwal libur diperbarui', $h->name . ' — ' . $h->period_label);
+    }
+
+    public function canceled(CompanyHoliday $h): array
+    {
+        return $this->send($h, 'canceled', '❌ Libur dibatalkan', $h->name . ' (' . $h->period_label . ') dibatalkan. Masuk kerja seperti biasa.');
+    }
+
+    public function reminder(CompanyHoliday $h): array
+    {
+        return $this->send($h, 'reminder', '🔔 Besok libur: ' . $h->name, $h->period_label . $this->noteSuffix($h));
+    }
+
+    private function noteSuffix(CompanyHoliday $h): string
+    {
+        return $h->note ? ' — ' . Str::limit($h->note, 80) : '';
+    }
+}
+
+===== app\Services\NotificationService.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\AppNotification;
+use App\Models\User;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * SATU pintu untuk semua notifikasi aplikasi.
+ *
+ *  1. Simpan ke tabel app_notifications (kotak masuk di aplikasi)
+ *  2. Kirim push FCM ke HP penerima
+ *
+ * Contoh pemakaian di controller:
+ *
+ *   app(NotificationService::class)->send(
+ *       users:    $leave->user,                 // User | id | array | Collection
+ *       type:     'leave.approved',
+ *       title:    'Cuti disetujui ✅',
+ *       body:     'Cuti 27–29 Okt disetujui oleh HR.',
+ *       options:  [
+ *           'category'  => 'approval',
+ *           'action'    => 'leave_detail',
+ *           'reference' => $leave,              // otomatis isi reference_type & id
+ *           'data'      => ['leave_id' => $leave->id],
+ *       ],
+ *   );
+ *
+ * Opsi:
+ *   category  : chat|approval|reminder|attendance|schedule|holiday|report|payroll|school|subscription|system
+ *   action    : nama halaman tujuan di aplikasi (lihat daftar ACTION di CATATAN-API)
+ *   reference : model Eloquent yang dirujuk
+ *   data      : data tambahan (akan dikirim juga di payload FCM)
+ *   store     : false = tidak disimpan ke kotak masuk (contoh: chat)
+ *   push      : false = hanya simpan, tanpa push
+ *   later     : true  = push dikirim setelah response (tidak bikin API lambat)
+ */
+class NotificationService
+{
+    public function __construct(private FcmService $fcm) {}
+
+    /**
+     * Terima User / id / array / Collection, lalu SELALU ambil ulang dari database.
+     * Alasannya: User yang dimuat lewat relasi sering hanya berisi sebagian kolom
+     * (contoh 'user:id,name'), sehingga fcm_token kosong padahal sebenarnya ada.
+     *
+     * @return Collection<User>
+     */
+    private function resolveUsers($users): Collection
+    {
+        $items = $users instanceof Collection
+            ? $users
+            : collect(is_iterable($users) ? $users : [$users]);
+
+        $ids = $items
+            ->map(fn($u) => $u instanceof User ? $u->getKey() : $u)
+            ->filter()
+            ->map(fn($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return collect();
+        }
+
+        return User::whereIn('id', $ids)
+            ->where('is_active', true)
+            ->get(['id', 'company_id', 'fcm_token']);
+    }
+
+    /**
+     * @return array{stored:int, sent:int, failed:int, no_token:int}
+     */
+    public function send($users, string $type, string $title, string $body, array $options = []): array
+    {
+        $recipients = $this->resolveUsers($users);
+
+        $store     = $options['store'] ?? true;
+        $push      = $options['push'] ?? true;
+        $category  = $options['category'] ?? 'system';
+        $action    = $options['action'] ?? null;
+        $data      = $options['data'] ?? [];
+        $reference = $options['reference'] ?? null;
+
+        $refType = $reference ? class_basename($reference) : ($options['reference_type'] ?? null);
+        $refId   = $reference ? $reference->getKey() : ($options['reference_id'] ?? null);
+
+        $result = ['stored' => 0, 'sent' => 0, 'failed' => 0, 'no_token' => 0];
+
+        $jobs = [];
+
+        foreach ($recipients as $user) {
+            $notif = null;
+
+            if ($store) {
+                $notif = AppNotification::create([
+                    'company_id'     => $user->company_id,
+                    'user_id'        => $user->id,
+                    'type'           => $type,
+                    'category'       => $category,
+                    'title'          => $title,
+                    'body'           => $body,
+                    'data'           => $data ?: null,
+                    'action'         => $action,
+                    'reference_type' => $refType,
+                    'reference_id'   => $refId,
+                    'push_status'    => $push ? null : 'skipped',
+                ]);
+                $result['stored']++;
+            }
+
+            if ($push) {
+                $jobs[] = [$user, $notif];
+            }
+        }
+
+        if (!$jobs) {
+            return $result;
+        }
+
+        $runPush = function () use ($jobs, $type, $category, $action, $title, $body, $data, $refType, $refId, &$result) {
+            foreach ($jobs as [$user, $notif]) {
+                if (empty($user->fcm_token)) {
+                    $notif?->update(['push_status' => 'no_token']);
+                    $result['no_token']++;
+                    continue;
+                }
+
+                $payload = array_merge($data, [
+                    'type'            => $type,
+                    'category'        => $category,
+                    'action'          => $action ?? '',
+                    'notification_id' => $notif?->id ?? '',
+                    'reference_type'  => $refType ?? '',
+                    'reference_id'    => $refId ?? '',
+                ]);
+
+                $r = $this->fcm->sendToToken($user->fcm_token, $title, $body, $payload);
+
+                if ($r['ok']) {
+                    $notif?->update(['push_status' => 'sent', 'push_sent_at' => now()]);
+                    $result['sent']++;
+                } else {
+                    $notif?->update(['push_status' => 'failed']);
+                    $result['failed']++;
+
+                    if ($r['invalid_token']) {
+                        User::where('fcm_token', $user->fcm_token)->update(['fcm_token' => null]);
+                    }
+                }
+            }
+        };
+
+        if (!$this->fcm->isConfigured()) {
+            Log::warning('Push dilewati: FCM belum dikonfigurasi', ['type' => $type]);
+            return $result;
+        }
+
+        if ($options['later'] ?? false) {
+            // Kirim setelah response selesai → API tidak menunggu proses push
+            app()->terminating(function () use ($runPush, $type) {
+                try {
+                    $runPush();
+                } catch (\Throwable $e) {
+                    Log::error('Gagal kirim push', ['type' => $type, 'error' => $e->getMessage()]);
+                }
+            });
+
+            return $result;
+        }
+
+        try {
+            $runPush();
+        } catch (\Throwable $e) {
+            Log::error('Gagal kirim push', ['type' => $type, 'error' => $e->getMessage()]);
+        }
+
+        return $result;
+    }
+
+    /** Sama dengan send(), tapi push dikirim setelah response (untuk dipanggil dari controller). */
+    public function sendLater($users, string $type, string $title, string $body, array $options = []): array
+    {
+        return $this->send($users, $type, $title, $body, array_merge($options, ['later' => true]));
+    }
+
+    /** HR aktif di sebuah company (penerima notifikasi "menunggu persetujuan"). */
+    public function hrOf(int $companyId): Collection
+    {
+        return User::where('company_id', $companyId)
+            ->where('role', 'hr')
+            ->where('is_active', true)
+            ->get(['id', 'company_id', 'fcm_token']);
+    }
+
+    /** Karyawan aktif di sebuah company. */
+    public function employeesOf(int $companyId): Collection
+    {
+        return User::where('company_id', $companyId)
+            ->where('role', 'employee')
+            ->where('is_active', true)
+            ->get(['id', 'company_id', 'fcm_token']);
+    }
+}
+
+===== app\Services\Notifiers\ApprovalNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\Company;
+use App\Models\Leaves;
+use App\Models\OvertimeRequest;
+use App\Models\Permission;
+use App\Models\User;
+use App\Services\NotificationService;
+use App\Support\CompanySettings;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi pengajuan & persetujuan: izin, cuti, lembur.
+ *
+ *   submitted() → ke semua HR (kalau HR mengaktifkan "notifikasi langsung")
+ *   decided()   → ke karyawan yang mengajukan
+ *
+ * Semua dibungkus try/catch: gagal kirim notifikasi TIDAK PERNAH
+ * menggagalkan proses simpan / approve.
+ */
+class ApprovalNotifier
+{
+    public const KIND_PERMISSION = 'permission';
+    public const KIND_LEAVE      = 'leave';
+    public const KIND_OVERTIME   = 'overtime';
+
+    private const LABELS = [
+        self::KIND_PERMISSION => 'izin',
+        self::KIND_LEAVE      => 'cuti',
+        self::KIND_OVERTIME   => 'lembur',
+    ];
+
+    private const BULAN = [
+        1 => 'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'Mei',
+        'Jun',
+        'Jul',
+        'Agu',
+        'Sep',
+        'Okt',
+        'Nov',
+        'Des',
+    ];
+
+    public function __construct(private NotificationService $notif) {}
+
+    // ----------------------------------------------------------
+    // KE HR: ada pengajuan baru
+    // ----------------------------------------------------------
+
+    public function submitted(string $kind, Model $item): void
+    {
+        try {
+            $company = Company::find($item->company_id);
+
+            if (!$company || !CompanySettings::notif($company, 'hr_instant_approval.enabled', true)) {
+                return;
+            }
+
+            $employee = User::find($item->user_id, ['id', 'name']);
+            $label    = self::LABELS[$kind];
+
+            $this->notif->sendLater(
+                $this->notif->hrOf((int) $item->company_id),
+                "{$kind}.submitted",
+                '📝 Pengajuan ' . $label . ' baru',
+                ($employee?->name ?? 'Karyawan') . ' mengajukan ' . $this->detail($kind, $item),
+                [
+                    'category'  => 'approval',
+                    'action'    => "hr_{$kind}_detail",
+                    'reference' => $item,
+                    'data'      => [
+                        'kind'        => $kind,
+                        "{$kind}_id"  => $item->getKey(),
+                        'employee_id' => $item->user_id,
+                    ],
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::error('Notif pengajuan gagal', ['kind' => $kind, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ----------------------------------------------------------
+    // KE KARYAWAN: pengajuan disetujui / ditolak
+    // ----------------------------------------------------------
+
+    public function decided(string $kind, Model $item, bool $approved, ?string $note = null): void
+    {
+        try {
+            $label = self::LABELS[$kind];
+
+            $title = $approved
+                ? '✅ ' . ucfirst($label) . ' disetujui'
+                : '❌ ' . ucfirst($label) . ' ditolak';
+
+            $body = ucfirst($this->detail($kind, $item)) . ($approved ? ' telah disetujui HR.' : ' ditolak HR.');
+
+            if ($note) {
+                $body .= ($approved ? ' Catatan: ' : ' Alasan: ') . $note;
+            }
+
+            $this->notif->sendLater(
+                $item->user_id,
+                $kind . ($approved ? '.approved' : '.rejected'),
+                $title,
+                $body,
+                [
+                    'category'  => 'approval',
+                    'action'    => "{$kind}_detail",
+                    'reference' => $item,
+                    'data'      => [
+                        'kind'       => $kind,
+                        "{$kind}_id" => $item->getKey(),
+                        'approved'   => $approved ? 1 : 0,
+                    ],
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::error('Notif keputusan gagal', ['kind' => $kind, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ----------------------------------------------------------
+    // TEKS DETAIL
+    // ----------------------------------------------------------
+
+    private function tgl($date): string
+    {
+        $d = $date instanceof Carbon ? $date : Carbon::parse($date);
+
+        return $d->day . ' ' . self::BULAN[$d->month] . ' ' . $d->year;
+    }
+
+    private function range($start, $end): string
+    {
+        $s = $start instanceof Carbon ? $start : Carbon::parse($start);
+        $e = $end ? ($end instanceof Carbon ? $end : Carbon::parse($end)) : null;
+
+        if (!$e || $s->isSameDay($e)) {
+            return $this->tgl($s);
+        }
+
+        $days = (int) $s->diffInDays($e, true) + 1;
+
+        return $this->tgl($s) . ' – ' . $this->tgl($e) . " ({$days} hari)";
+    }
+
+    private function hm(?string $time): ?string
+    {
+        return $time ? substr($time, 0, 5) : null;
+    }
+
+    private function detail(string $kind, Model $item): string
+    {
+        if ($kind === self::KIND_PERMISSION && $item instanceof Permission) {
+            $text = strtolower($item->type_label) . ' ' . $this->range($item->date_permission, $item->end_date);
+
+            if ($item->start_time && $item->end_time) {
+                $text .= ' jam ' . $this->hm($item->start_time) . '–' . $this->hm($item->end_time);
+            } elseif ($item->end_time) {
+                $text .= ' s/d jam ' . $this->hm($item->end_time);
+            } elseif ($item->start_time) {
+                $text .= ' mulai jam ' . $this->hm($item->start_time);
+            }
+
+            return $text;
+        }
+
+        if ($kind === self::KIND_LEAVE && $item instanceof Leaves) {
+            return strtolower($item->type_label) . ' ' . $this->range($item->start_date, $item->end_date);
+        }
+
+        if ($kind === self::KIND_OVERTIME && $item instanceof OvertimeRequest) {
+            return 'lembur ' . $this->tgl($item->date)
+                . ' jam ' . $this->hm($item->start_time) . '–' . $this->hm($item->end_time)
+                . ' (' . $item->duration_label . ')';
+        }
+
+        return self::LABELS[$kind] ?? 'pengajuan';
+    }
+}
+
+===== app\Services\Notifiers\ScheduleNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\Schedule;
+use App\Models\ScheduleParticipant;
+use App\Models\User;
+use App\Services\NotificationService;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi jadwal / tugas.
+ *
+ *   created()          → pemilik jadwal ("Jadwal baru") + peserta ("Undangan")
+ *   invited()          → peserta yang baru ditambahkan
+ *   updated()          → pemilik + peserta yang tidak menolak
+ *   canceled()         → pemilik + peserta (jadwal dibatalkan / dihapus)
+ *   responded()        → pembuat jadwal (HR): peserta menerima / menolak
+ *   reminder()         → dipakai scheduler (B2c): X menit sebelum mulai
+ */
+class ScheduleNotifier
+{
+    public function __construct(private NotificationService $notif) {}
+
+    private function place(Schedule $s): ?string
+    {
+        $loc = $s->location;
+
+        if (is_array($loc)) {
+            return $loc['name'] ?? $loc['address'] ?? $loc['label'] ?? null;
+        }
+
+        return is_string($loc) && $loc !== '' ? $loc : null;
+    }
+
+    private function when(Schedule $s): string
+    {
+        $start = $s->start_datetime;
+
+        if (!$start) {
+            return 'Waktu belum ditentukan';
+        }
+
+        $text = Schedule::DAY_NAMES[$start->dayOfWeek] . ', ' . $start->day . ' '
+            . Schedule::MONTH_NAMES[$start->month] . ' ' . $start->year
+            . ', ' . $start->format('H:i');
+
+        if ($s->end_datetime) {
+            $text .= '–' . $s->end_datetime->format('H:i');
+        }
+
+        $text .= ' WIB';
+
+        if ($place = $this->place($s)) {
+            $text .= ' · ' . $place;
+        }
+
+        return $text;
+    }
+
+    private function options(Schedule $s, array $extra = []): array
+    {
+        return [
+            'category'  => 'schedule',
+            'action'    => 'schedule_detail',
+            'reference' => $s,
+            'data'      => array_merge(['schedule_id' => $s->id], $extra),
+        ];
+    }
+
+    /** Pemilik + peserta yang tidak menolak, kecuali user yang melakukan aksi */
+    private function audience(Schedule $s, bool $includeDeclined = false): array
+    {
+        $ids = ScheduleParticipant::where('schedule_id', $s->id)
+            ->when(!$includeDeclined, fn($q) => $q->where('status', '!=', 'declined'))
+            ->pluck('user_id')
+            ->push($s->user_id)
+            ->map(fn($v) => (int) $v)
+            ->unique()
+            ->reject(fn($id) => $id === (int) auth()->id())
+            ->values()
+            ->all();
+
+        return $ids;
+    }
+
+    private function safe(callable $fn, string $event): void
+    {
+        try {
+            $fn();
+        } catch (\Throwable $e) {
+            Log::error('Notif jadwal gagal', ['event' => $event, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ----------------------------------------------------------
+
+    public function created(Schedule $s, array $participantIds = []): void
+    {
+        $this->safe(function () use ($s, $participantIds) {
+            $type = \App\Models\Schedule::TYPE_LABELS[$s->type] ?? 'Jadwal';
+
+            // Pemilik jadwal
+            if ((int) $s->user_id !== (int) auth()->id()) {
+                $this->notif->sendLater(
+                    $s->user_id,
+                    'schedule.assigned',
+                    '📅 ' . $type . ' baru: ' . $s->title,
+                    $this->when($s),
+                    $this->options($s)
+                );
+            }
+
+            // Peserta
+            $this->invited($s, $participantIds);
+        }, 'created');
+    }
+
+    public function invited(Schedule $s, array $userIds): void
+    {
+        $this->safe(function () use ($s, $userIds) {
+            $ids = collect($userIds)
+                ->map(fn($v) => (int) $v)
+                ->reject(fn($id) => $id === (int) $s->user_id || $id === (int) auth()->id())
+                ->unique()
+                ->values();
+
+            if ($ids->isEmpty()) return;
+
+            $this->notif->sendLater(
+                $ids->all(),
+                'schedule.invited',
+                '✉️ Undangan: ' . $s->title,
+                $this->when($s) . '. Ketuk untuk menerima / menolak.',
+                $this->options($s, ['needs_response' => 1])
+            );
+        }, 'invited');
+    }
+
+    public function updated(Schedule $s): void
+    {
+        $this->safe(function () use ($s) {
+            $this->notif->sendLater(
+                $this->audience($s),
+                'schedule.updated',
+                '✏️ Jadwal diubah: ' . $s->title,
+                'Sekarang: ' . $this->when($s),
+                $this->options($s)
+            );
+        }, 'updated');
+    }
+
+    public function canceled(Schedule $s): void
+    {
+        $this->safe(function () use ($s) {
+            $this->notif->sendLater(
+                $this->audience($s, true),
+                'schedule.canceled',
+                '❌ Jadwal dibatalkan: ' . $s->title,
+                'Jadwal ' . $this->when($s) . ' dibatalkan.',
+                $this->options($s)
+            );
+        }, 'canceled');
+    }
+
+    public function responded(Schedule $s, User $participant, string $status, ?string $note = null): void
+    {
+        $this->safe(function () use ($s, $participant, $status, $note) {
+            $creatorId = (int) ($s->created_by ?: 0);
+
+            if (!$creatorId || $creatorId === (int) $participant->id) return;
+
+            $accepted = $status === 'accepted';
+
+            $this->notif->sendLater(
+                $creatorId,
+                $accepted ? 'schedule.accepted' : 'schedule.declined',
+                ($accepted ? '👍 ' : '👎 ') . $participant->name . ($accepted ? ' menerima' : ' menolak') . ' undangan',
+                $s->title . ($note ? ' — ' . $note : ''),
+                $this->options($s, ['participant_id' => $participant->id])
+            );
+        }, 'responded');
+    }
+
+    /** Dipanggil scheduler (B2c). $minutes = berapa menit sebelum mulai. */
+    public function reminder(Schedule $s, array $userIds, int $minutes): array
+    {
+        $label = $minutes >= 60 && $minutes % 60 === 0
+            ? ($minutes / 60) . ' jam'
+            : $minutes . ' menit';
+
+        return $this->notif->send(
+            $userIds,
+            'schedule.reminder',
+            '⏰ ' . $label . ' lagi: ' . $s->title,
+            $this->when($s),
+            $this->options($s, ['offset' => $minutes])
+        );
+    }
+}
+
+===== app\Services\Notifiers\ShiftNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\Shift;
+use App\Services\NotificationService;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi perubahan shift oleh HR.
+ *
+ *   overrideCreated()   → 1 karyawan: shift khusus untuk dia
+ *   overrideCanceled()  → 1 karyawan: shift khusus dibatalkan, kembali ke shift biasa
+ *   groupAssigned()     → semua anggota grup: grup dapat shift baru / diubah
+ */
+class ShiftNotifier
+{
+    private const BULAN = [
+        1 => 'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'Mei',
+        'Jun',
+        'Jul',
+        'Agu',
+        'Sep',
+        'Okt',
+        'Nov',
+        'Des',
+    ];
+
+    public function __construct(private NotificationService $notif) {}
+
+    private function tgl($date): string
+    {
+        $d = Carbon::parse($date);
+
+        return $d->day . ' ' . self::BULAN[$d->month] . ' ' . $d->year;
+    }
+
+    private function period($start, $end): string
+    {
+        if (!$end) {
+            return 'mulai ' . $this->tgl($start);
+        }
+
+        if (Carbon::parse($start)->isSameDay(Carbon::parse($end))) {
+            return 'tanggal ' . $this->tgl($start);
+        }
+
+        return $this->tgl($start) . ' – ' . $this->tgl($end);
+    }
+
+    private function shiftLabel(?Shift $shift): string
+    {
+        if (!$shift) return 'shift baru';
+
+        return $shift->name . ' (' . substr($shift->start_time, 0, 5) . '–' . substr($shift->end_time, 0, 5) . ')';
+    }
+
+    private function safe(callable $fn, string $event): void
+    {
+        try {
+            $fn();
+        } catch (\Throwable $e) {
+            Log::error('Notif shift gagal', ['event' => $event, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ----------------------------------------------------------
+
+    public function overrideCreated($override): void
+    {
+        $this->safe(function () use ($override) {
+            $shift = Shift::find($override->shift_id);
+
+            $this->notif->sendLater(
+                $override->user_id,
+                'shift.override_created',
+                '🔄 Shift Anda diubah',
+                'Shift ' . $this->shiftLabel($shift) . ' ' . $this->period($override->start_date, $override->end_date)
+                    . ($override->reason ? '. Alasan: ' . $override->reason : ''),
+                [
+                    'category'  => 'schedule',
+                    'action'    => 'shift_schedule',
+                    'reference' => $override,
+                    'data'      => [
+                        'shift_id'   => $override->shift_id,
+                        'start_date' => Carbon::parse($override->start_date)->toDateString(),
+                    ],
+                ]
+            );
+        }, 'override_created');
+    }
+
+    public function overrideCanceled($override): void
+    {
+        $this->safe(function () use ($override) {
+            $shift = Shift::find($override->shift_id);
+
+            $this->notif->sendLater(
+                $override->user_id,
+                'shift.override_canceled',
+                '↩️ Perubahan shift dibatalkan',
+                'Shift ' . $this->shiftLabel($shift) . ' ' . $this->period($override->start_date, $override->end_date)
+                    . ' dibatalkan. Anda kembali ke shift biasa.',
+                [
+                    'category'  => 'schedule',
+                    'action'    => 'shift_schedule',
+                    'reference' => $override,
+                    'data'      => [
+                        'start_date' => Carbon::parse($override->start_date)->toDateString(),
+                    ],
+                ]
+            );
+        }, 'override_canceled');
+    }
+
+    /** Anggota grup yang aktif di periode assignment */
+    private function groupMemberIds(int $groupId, $start, $end): array
+    {
+        return DB::table('shift_group_users')
+            ->where('shift_group_id', $groupId)
+            // keanggotaan sudah dimulai sebelum assignment berakhir
+            ->when($end, fn($q) => $q->where(function ($q2) use ($end) {
+                $q2->whereNull('start_date')->orWhere('start_date', '<=', $end);
+            }))
+            // dan belum berakhir saat assignment dimulai
+            ->where(function ($q) use ($start) {
+                $q->whereNull('end_date')->orWhere('end_date', '>=', $start);
+            })
+            ->pluck('user_id')
+            ->map(fn($v) => (int) $v)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    public function groupAssigned($assignment, bool $isUpdate = false): void
+    {
+        $this->safe(function () use ($assignment, $isUpdate) {
+            $userIds = $this->groupMemberIds(
+                (int) $assignment->shift_group_id,
+                Carbon::parse($assignment->start_date)->toDateString(),
+                $assignment->end_date ? Carbon::parse($assignment->end_date)->toDateString() : null
+            );
+
+            if (!$userIds) return;
+
+            $shift = Shift::find($assignment->shift_id);
+            $group = DB::table('shift_groups')->where('id', $assignment->shift_group_id)->value('name');
+
+            $this->notif->sendLater(
+                $userIds,
+                $isUpdate ? 'shift.group_updated' : 'shift.group_assigned',
+                $isUpdate ? '🔄 Jadwal shift grup diubah' : '📋 Jadwal shift baru',
+                'Grup ' . ($group ?: '-') . ': ' . $this->shiftLabel($shift) . ' '
+                    . $this->period($assignment->start_date, $assignment->end_date)
+                    . ($assignment->note ? '. ' . $assignment->note : ''),
+                [
+                    'category'  => 'schedule',
+                    'action'    => 'shift_schedule',
+                    'reference' => $assignment,
+                    'data'      => [
+                        'shift_id'       => $assignment->shift_id,
+                        'shift_group_id' => $assignment->shift_group_id,
+                        'start_date'     => Carbon::parse($assignment->start_date)->toDateString(),
+                    ],
+                ]
+            );
+        }, 'group_assigned');
+    }
+}
+
+===== app\Services\Notifiers\SubscriptionNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Models\User;
+use App\Services\NotificationService;
+use Carbon\Carbon;
+use Illuminate\Support\Collection;
+
+/**
+ * Notifikasi LANGGANAN (trial, invoice, pembayaran VA, masa aktif).
+ *
+ * Penerima: semua user aktif di company yang isBillingManager() = true
+ * (HR untuk company, dan role penanggung jawab billing untuk tipe lain
+ * sesuai config subscription.billing_roles).
+ */
+class SubscriptionNotifier
+{
+    private const HARI  = [0 => 'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    private const BULAN = [1 => 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+    public function __construct(private NotificationService $notif) {}
+
+    // ============================================================
+    // PENERIMA
+    // ============================================================
+
+    /** @return Collection<User> */
+    public function billingManagersOf(int $companyId): Collection
+    {
+        return User::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->get()
+            ->filter(fn(User $u) => $u->isBillingManager())
+            ->values();
+    }
+
+    // ============================================================
+    // FORMAT
+    // ============================================================
+
+    public static function tgl(?Carbon $d, bool $withTime = false): string
+    {
+        if (!$d) return '-';
+
+        $d = $d->copy()->timezone(config('app.timezone'));
+
+        $text = self::HARI[$d->dayOfWeek] . ', ' . $d->day . ' ' . self::BULAN[$d->month] . ' ' . $d->year;
+
+        return $withTime ? $text . ' ' . $d->format('H:i') . ' WIB' : $text;
+    }
+
+    public static function rupiah($amount): string
+    {
+        return 'Rp ' . number_format((float) $amount, 0, ',', '.');
+    }
+
+    // ============================================================
+    // ✅ PEMBAYARAN BERHASIL
+    // Dipanggil dari SubscriptionService::activateFromInvoice()
+    // (webhook Midtrans, cek VA manual, verifikasi superadmin).
+    // ============================================================
+
+    public function paymentSuccess(SubscriptionInvoice $invoice, CompanySubscription $subscription): void
+    {
+        $invoice->loadMissing(['plan', 'vaPayment']);
+
+        $users = $this->billingManagersOf($invoice->company_id);
+
+        if ($users->isEmpty()) return;
+
+        $bank = $invoice->vaPayment ? ' via VA ' . strtoupper($invoice->vaPayment->bank) : '';
+
+        $this->notif->sendLater(
+            $users,
+            'subscription.payment_success',
+            '✅ Pembayaran berhasil',
+            self::rupiah($invoice->total_amount) . $bank . ' untuk paket ' . ($invoice->plan->name ?? '-')
+                . ' sudah diterima. Langganan aktif sampai ' . self::tgl($subscription->expires_at) . '.',
+            [
+                'category'  => 'subscription',
+                'action'    => 'subscription_invoice',
+                'reference' => $invoice,
+                'data'      => [
+                    'key'            => 'paid:' . $invoice->id,
+                    'invoice_id'     => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
+                    'expires_at'     => $subscription->expires_at?->toDateString(),
+                ],
+            ],
+        );
+    }
+}
+
+===== app\Services\Notifiers\SupportTicketNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\SupportTicket;
+use App\Models\SupportTicketReply;
+use App\Services\NotificationService;
+use App\Support\HelpCenterFormat;
+use Illuminate\Support\Str;
+
+/**
+ * Notifikasi TIKET BANTUAN ke pemilik tiket (HR / karyawan).
+ * Dipanggil dari panel Super Admin saat membalas / mengubah status.
+ */
+class SupportTicketNotifier
+{
+    public function __construct(private NotificationService $notif) {}
+
+    /** Super Admin membalas (bukan catatan internal). */
+    public function replied(SupportTicket $ticket, SupportTicketReply $reply): void
+    {
+        if ($reply->is_internal_note || ! $ticket->user_id) {
+            return;
+        }
+
+        $this->notif->sendLater(
+            $ticket->user_id,
+            'support.reply',
+            '💬 Balasan tiket ' . HelpCenterFormat::ticketNumber($ticket),
+            'Tim Dukungan: ' . Str::limit(trim(preg_replace('/\s+/', ' ', $reply->message)), 120),
+            $this->options($ticket),
+        );
+    }
+
+    /** Status diubah Super Admin. Hanya resolved / closed / in_progress yang diberi tahu. */
+    public function statusChanged(SupportTicket $ticket, string $oldStatus): void
+    {
+        if ($oldStatus === $ticket->status || ! $ticket->user_id) {
+            return;
+        }
+
+        $number = HelpCenterFormat::ticketNumber($ticket);
+
+        [$title, $body] = match ($ticket->status) {
+            'resolved'    => ["✅ Tiket {$number} selesai", "\"{$ticket->subject}\" ditandai selesai. Balas tiket ini kalau masalah belum teratasi."],
+            'closed'      => ["🔒 Tiket {$number} ditutup", "\"{$ticket->subject}\" sudah ditutup. Buat tiket baru kalau masih butuh bantuan."],
+            'in_progress' => ["🛠️ Tiket {$number} sedang diproses", "Tim Dukungan sedang menangani \"{$ticket->subject}\"."],
+            default       => [null, null],
+        };
+
+        if (! $title) {
+            return;
+        }
+
+        $this->notif->sendLater($ticket->user_id, 'support.status', $title, $body, $this->options($ticket));
+    }
+
+    private function options(SupportTicket $ticket): array
+    {
+        return [
+            'category'  => 'system',
+            'action'    => 'support_ticket_detail',
+            'reference' => $ticket,
+            'data'      => [
+                'ticket_id' => (string) $ticket->id,
+                'status'    => $ticket->status,
+            ],
+        ];
+    }
+}
+
+===== config\fcm.php =====
+<?php
+
+return [
+    /*
+    |--------------------------------------------------------------------------
+    | Firebase Cloud Messaging (HTTP v1)
+    |--------------------------------------------------------------------------
+    |
+    | File service account dari Firebase Console:
+    |   Project settings → Service accounts → Generate new private key
+    |
+    | Project ini sudah punya file-nya di: storage/app/firebase-credentials.json
+    | (JANGAN di-commit ke git)
+    |
+    | Catatan: API lama FCM (server key / "legacy") sudah dimatikan Google
+    | sejak Juni 2024. Wajib pakai HTTP v1 dengan service account.
+    */
+
+    'credentials' => env('FCM_CREDENTIALS', storage_path('app/firebase-credentials.json')),
+
+    // Kosongkan untuk memakai project_id dari file service account
+    'project_id' => env('FCM_PROJECT_ID'),
+
+    // Harus sama dengan channel id yang dibuat di aplikasi Android
+    'android_channel_id' => env('FCM_ANDROID_CHANNEL', 'high_importance_channel'),
+
+    // Jam pengingat H-1 libur (WIB)
+    'holiday_reminder_time' => env('FCM_HOLIDAY_REMINDER_TIME', '17:00'),
+];
+
+===== config\queue.php =====
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Queue Connection Name
+    |--------------------------------------------------------------------------
+    |
+    | Laravel's queue API supports an assortment of back-ends via a single
+    | API, giving you convenient access to each back-end using the same
+    | syntax for every one. Here you may define a default connection.
+    |
+    */
+
+    'default' => env('QUEUE_CONNECTION', 'sync'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue Connections
+    |--------------------------------------------------------------------------
+    |
+    | Here you may configure the connection information for each server that
+    | is used by your application. A default configuration has been added
+    | for each back-end shipped with Laravel. You are free to add more.
+    |
+    | Drivers: "sync", "database", "beanstalkd", "sqs", "redis", "null"
+    |
+    */
+
+    'connections' => [
+
+        'sync' => [
+            'driver' => 'sync',
+        ],
+
+        'database' => [
+            'driver' => 'database',
+            'table' => 'jobs',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'after_commit' => false,
+        ],
+
+        'beanstalkd' => [
+            'driver' => 'beanstalkd',
+            'host' => 'localhost',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'block_for' => 0,
+            'after_commit' => false,
+        ],
+
+        'sqs' => [
+            'driver' => 'sqs',
+            'key' => env('AWS_ACCESS_KEY_ID'),
+            'secret' => env('AWS_SECRET_ACCESS_KEY'),
+            'prefix' => env('SQS_PREFIX', 'https://sqs.us-east-1.amazonaws.com/your-account-id'),
+            'queue' => env('SQS_QUEUE', 'default'),
+            'suffix' => env('SQS_SUFFIX'),
+            'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+            'after_commit' => false,
+        ],
+
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => env('REDIS_QUEUE', 'default'),
+            'retry_after' => 90,
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Job Batching
+    |--------------------------------------------------------------------------
+    |
+    | The following options configure the database and table that store job
+    | batching information. These options can be updated to any database
+    | connection and table which has been defined by your application.
+    |
+    */
+
+    'batching' => [
+        'database' => env('DB_CONNECTION', 'mysql'),
+        'table' => 'job_batches',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Failed Queue Jobs
+    |--------------------------------------------------------------------------
+    |
+    | These options configure the behavior of failed queue job logging so you
+    | can control which database and table are used to store the jobs that
+    | have failed. You may change them to any database / table you wish.
+    |
+    */
+
+    'failed' => [
+        'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
+        'database' => env('DB_CONNECTION', 'mysql'),
+        'table' => 'failed_jobs',
+    ],
+
+];
+
+===== ROUTE NOTIFIKASI =====
+
+  POST            api/auth/update-fcm-token ............................................................................. Api\AuthController@updateFcmToken
+  POST            api/company/hr/holidays/{id}/notify ..................................................... Api\HrCompany\HrCompanyHolidayController@notify
+  GET|HEAD        api/company/hr/settings/notifications ......................................... Api\HrCompany\HrCompanyNotificationSettingController@show
+  PUT             api/company/hr/settings/notifications ....................................... Api\HrCompany\HrCompanyNotificationSettingController@update
+  POST            api/company/hr/settings/notifications/reset .................................. Api\HrCompany\HrCompanyNotificationSettingController@reset
+  GET|HEAD        api/notifications ...................................................................................... Api\NotificationController@index
+  PATCH           api/notifications/read-all ....................................................................... Api\NotificationController@markAllRead
+  GET|HEAD        api/notifications/unread-count ................................................................... Api\NotificationController@unreadCount
+  DELETE          api/notifications/{id} ............................................................................... Api\NotificationController@destroy
+  PATCH           api/notifications/{id}/read ......................................................................... Api\NotificationController@markRead
+  PATCH           api/school/admin/ppdb-applicants/{applicant}/announce ................................. Api\School\Admin\PpdbApplicantController@announce
+
+
+===== DATA (hanya baca) =====
+
+   Illuminate\Database\QueryException  SQLSTATE[HY000] [2002] No connection could be made because the target machine actively refused it (Connection: mysql, SQL: select count(*) as aggregate from `app_notifications`).
+

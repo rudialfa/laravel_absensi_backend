@@ -27,11 +27,7 @@ class RoomAssignmentController extends Controller
 
         $student = Student::findOrFail($data['student_id']);
 
-        abort_if(
-            $student->company_id !== $room->dormitory->company_id,
-            403,
-            'Santri ini bukan dari sekolah yang sama dengan asrama'
-        );
+        $this->ensurePlaceable($student, $room);
 
         abort_if(
             !$student->is_boarding,
@@ -39,25 +35,26 @@ class RoomAssignmentController extends Controller
             'Santri ini tidak berstatus boarding'
         );
 
-        abort_if(
-            $student->activeRoomAssignment,
-            422,
-            'Santri ini sudah punya penempatan kamar aktif, gunakan fitur pindah kamar'
-        );
+        $assignment = DB::transaction(function () use ($student, $room, $data, $request) {
+            // Kunci kamar supaya 2 admin tidak mengisi slot terakhir bersamaan
+            $room = DormitoryRoom::whereKey($room->id)->lockForUpdate()->firstOrFail();
 
-        abort_if(
-            $room->available_slots <= 0,
-            422,
-            'Kamar ini sudah penuh'
-        );
+            abort_if(
+                RoomAssignment::where('student_id', $student->id)->whereNull('moved_out_at')->lockForUpdate()->exists(),
+                422,
+                'Santri ini sudah punya penempatan kamar aktif, gunakan fitur pindah kamar'
+            );
 
-        $assignment = RoomAssignment::create([
-            'student_id'  => $student->id,
-            'room_id'     => $room->id,
-            'moved_in_at' => $data['moved_in_at'] ?? now()->toDateString(),
-            'assigned_by' => $request->user()->id,
-            'notes'       => $data['notes'] ?? null,
-        ]);
+            abort_if($room->available_slots <= 0, 422, 'Kamar ini sudah penuh');
+
+            return RoomAssignment::create([
+                'student_id'  => $student->id,
+                'room_id'     => $room->id,
+                'moved_in_at' => $data['moved_in_at'] ?? now()->toDateString(),
+                'assigned_by' => $request->user()->id,
+                'notes'       => $data['notes'] ?? null,
+            ]);
+        });
 
         return response()->json([
             'status'  => true,
@@ -81,29 +78,16 @@ class RoomAssignmentController extends Controller
         $newRoom = DormitoryRoom::findOrFail($data['new_room_id']);
         $this->authorize('manageAssignments', $newRoom);
 
-        abort_if(
-            $student->company_id !== $newRoom->dormitory->company_id,
-            403,
-            'Santri ini bukan dari sekolah yang sama dengan asrama tujuan'
-        );
+        $this->ensurePlaceable($student, $newRoom);
 
-        $current = $student->activeRoomAssignment;
+        $newAssignment = DB::transaction(function () use ($newRoom, $student, $request, $data) {
+            $newRoom = DormitoryRoom::whereKey($newRoom->id)->lockForUpdate()->firstOrFail();
+            $current = RoomAssignment::where('student_id', $student->id)->whereNull('moved_out_at')->lockForUpdate()->first();
 
-        abort_if(!$current, 422, 'Santri ini belum punya penempatan kamar aktif');
+            abort_if(!$current, 422, 'Santri ini belum punya penempatan kamar aktif');
+            abort_if((int) $current->room_id === (int) $newRoom->id, 422, 'Santri sudah berada di kamar ini');
+            abort_if($newRoom->available_slots <= 0, 422, 'Kamar tujuan sudah penuh');
 
-        abort_if(
-            $current->room_id === $newRoom->id,
-            422,
-            'Santri sudah berada di kamar ini'
-        );
-
-        abort_if(
-            $newRoom->available_slots <= 0,
-            422,
-            'Kamar tujuan sudah penuh'
-        );
-
-        $newAssignment = DB::transaction(function () use ($current, $newRoom, $student, $request, $data) {
             $current->update(['moved_out_at' => now()->toDateString()]);
 
             return RoomAssignment::create([
@@ -187,5 +171,29 @@ class RoomAssignmentController extends Controller
             'message' => 'Data santri belum ditempatkan berhasil diambil',
             'data'    => $students,
         ]);
+    }
+
+    /**
+     * Syarat santri boleh ditempatkan di kamar:
+     * sekolah sama, santri aktif, kamar & asrama aktif, jenis kelamin sesuai asrama putra/putri.
+     */
+    private function ensurePlaceable(Student $student, DormitoryRoom $room): void
+    {
+        $dormitory = $room->dormitory;
+
+        abort_if(
+            (int) $student->company_id !== (int) $dormitory->company_id,
+            403,
+            'Santri ini bukan dari sekolah yang sama dengan asrama'
+        );
+
+        abort_unless($student->is_active, 422, 'Santri ini sudah tidak aktif');
+        abort_unless($room->is_active && $dormitory->is_active, 422, 'Kamar atau asrama ini sedang nonaktif');
+
+        abort_if(
+            $student->gender !== $dormitory->gender,
+            422,
+            'Asrama ' . $dormitory->name . ' khusus ' . ($dormitory->gender === 'L' ? 'putra' : 'putri') . ', tidak sesuai dengan jenis kelamin santri'
+        );
     }
 }

@@ -34,17 +34,37 @@ class Dormitory extends Model
         return $this->hasMany(DormitoryRoom::class);
     }
 
-    // Semua santri yang saat ini menghuni asrama ini (lewat kamar-kamarnya,
-    // hanya penempatan yang masih aktif / belum keluar)
-    public function students()
+    /**
+     * Penempatan aktif (penghuni sekarang) di semua kamar asrama ini.
+     * Relasi asli: dormitories → dormitory_rooms → room_assignments.
+     * Bisa dipakai withCount('activeAssignments') / with('activeAssignments.student').
+     */
+    public function activeAssignments()
     {
         return $this->hasManyThrough(
-            Student::class,
+            RoomAssignment::class,
             DormitoryRoom::class,
-            'dormitory_id',  // FK di dormitory_rooms -> dormitories
-            'id',            // FK di students -> id (lewat room_assignments, lihat accessor di bawah)
+            'dormitory_id', // FK di dormitory_rooms → dormitories
+            'room_id',      // FK di room_assignments → dormitory_rooms
             'id',
             'id'
+        )->whereNull('room_assignments.moved_out_at');
+    }
+
+    /**
+     * Santri yang SAAT INI menghuni asrama ini.
+     *
+     * Sebelumnya berupa hasManyThrough yang salah (mencocokkan students.id dengan
+     * dormitory_rooms.id) sehingga hasilnya murid yang keliru. Sekarang query builder biasa:
+     * pakai $dormitory->students()->get(), bukan $dormitory->students.
+     */
+    public function students()
+    {
+        return Student::whereIn(
+            'id',
+            RoomAssignment::whereNull('moved_out_at')
+                ->whereIn('room_id', DormitoryRoom::where('dormitory_id', $this->id)->select('id'))
+                ->select('student_id')
         );
     }
 }

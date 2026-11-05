@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Log;
  *
  *   ⏳ Trial hampir habis          H-3, H-1, hari H          (jam 09:00)
  *   📅 Langganan hampir habis      H-7, H-3, H-1, hari H     (jam 09:00)
- *   ⚠️ Masa toleransi (grace)      setiap hari selama 3 hari (jam 09:00)
+ *   ⚠️ Masa toleransi (grace)      setiap hari selama masa toleransi (jam 09:00)
  *   🔒 Langganan kedaluwarsa       sekali, saat masa toleransi habis
  *   💳 Invoice belum dibayar       sekali, 6 jam sebelum batas bayar
  *   ❌ Invoice kedaluwarsa          sekali, setelah batas bayar lewat
@@ -151,7 +151,7 @@ class SendSubscriptionNotifications extends Command
 
             $isTrial    = $sub->status === 'trial' || ($sub->plan?->is_free ?? false);
             $expiresAt  = $sub->expires_at;
-            $graceUntil = $expiresAt->copy()->addDays(CompanySubscription::GRACE_PERIOD_DAYS);
+            $graceUntil = $expiresAt->copy()->addDays(CompanySubscription::graceDays());
             $expDate    = $expiresAt->toDateString();
             $planName   = $sub->plan->name ?? 'Langganan';
 

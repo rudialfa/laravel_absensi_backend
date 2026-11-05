@@ -1,0 +1,2539 @@
+﻿
+===== app\Console\Commands\ExpireSubscriptions.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\VaPayment;
+use App\Services\InvoiceService;
+use App\Services\SubscriptionService;
+use Illuminate\Console\Command;
+
+/**
+ * Rapikan status langganan, invoice, dan VA yang sudah lewat waktu.
+ *
+ *   php artisan subscriptions:expire
+ *
+ * Dijalankan scheduler setiap jam (lihat app/Console/Kernel.php).
+ */
+class ExpireSubscriptions extends Command
+{
+    protected $signature   = 'subscriptions:expire';
+    protected $description = 'Expire subscription, invoice, dan VA yang sudah melewati waktu aktif';
+
+    public function handle(
+        SubscriptionService $subscriptionService,
+        InvoiceService      $invoiceService,
+    ): int {
+        $this->info('[' . now()->format('Y-m-d H:i') . '] Memulai proses expire...');
+
+        // 1. Langganan: trial/active → grace → expired
+        $subs = $subscriptionService->expireAll();
+        $this->info("- Langganan berubah status : {$subs}");
+
+        // 2. Invoice pending yang sudah lewat due_at → expired (VA-nya ikut expired)
+        $invoices = $invoiceService->expireOverdueInvoices();
+        $this->info("- Invoice expired          : {$invoices}");
+
+        // 3. VA pending yang sudah lewat expired_at (yang belum ikut tertutup di langkah 2)
+        $vas = 0;
+        VaPayment::expired()->get()->each(function (VaPayment $va) use (&$vas) {
+            $va->markAsExpired();
+            $vas++;
+        });
+        $this->info("- VA expired               : {$vas}");
+
+        $this->info('Selesai.');
+
+        return self::SUCCESS;
+    }
+}
+
+===== app\Console\Commands\SendSubscriptionNotifications.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\AppNotification;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Services\NotificationService;
+use App\Services\Notifiers\SubscriptionNotifier;
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi LANGGANAN terjadwal — dijalankan scheduler setiap 15 menit.
+ *
+ *   ⏳ Trial hampir habis          H-3, H-1, hari H          (jam 09:00)
+ *   📅 Langganan hampir habis      H-7, H-3, H-1, hari H     (jam 09:00)
+ *   ⚠️ Masa toleransi (grace)      setiap hari selama 3 hari (jam 09:00)
+ *   🔒 Langganan kedaluwarsa       sekali, saat masa toleransi habis
+ *   💳 Invoice belum dibayar       sekali, 6 jam sebelum batas bayar
+ *   ❌ Invoice kedaluwarsa          sekali, setelah batas bayar lewat
+ *
+ * ("✅ Pembayaran berhasil" dikirim langsung saat pembayaran masuk,
+ *  lewat SubscriptionService::activateFromInvoice.)
+ *
+ * Penerima: penanggung jawab billing company (User::isBillingManager()).
+ * Aman dijalankan berkali-kali: setiap notifikasi punya "key" unik supaya tidak dobel.
+ *
+ * TES:
+ *   php artisan subscriptions:notify --at="2026-11-05 09:00" --dry-run
+ */
+class SendSubscriptionNotifications extends Command
+{
+    protected $signature = 'subscriptions:notify
+                            {--at= : Simulasi waktu sekarang, contoh "2026-11-05 09:00"}
+                            {--dry-run : Tampilkan saja, jangan kirim}';
+
+    protected $description = 'Kirim notifikasi langganan (trial, masa aktif, masa toleransi, invoice)';
+
+    /** Jam kirim pengingat harian */
+    private const SEND_AT = '09:00';
+
+    /** Pengingat sebelum berakhir (dalam hari) */
+    private const TRIAL_DAYS  = [3, 1, 0];
+    private const ACTIVE_DAYS = [7, 3, 1, 0];
+
+    /** Pengingat invoice: X jam sebelum due_at */
+    private const INVOICE_HOURS_BEFORE = 6;
+
+    private bool $dry = false;
+    private int $total = 0;
+
+    private NotificationService $notif;
+    private SubscriptionNotifier $subs;
+
+    public function handle(NotificationService $notif, SubscriptionNotifier $subs): int
+    {
+        $this->notif = $notif;
+        $this->subs  = $subs;
+        $this->dry   = (bool) $this->option('dry-run');
+
+        if ($this->option('at')) {
+            Carbon::setTestNow(Carbon::parse($this->option('at'), config('app.timezone')));
+            $this->warn('Simulasi waktu: ' . now()->format('Y-m-d H:i'));
+        }
+
+        try {
+            $this->subscriptionReminders();
+        } catch (\Throwable $e) {
+            Log::error('subscriptions:notify langganan gagal', ['error' => $e->getMessage()]);
+            $this->error('[langganan] ' . $e->getMessage());
+        }
+
+        try {
+            $this->invoiceReminders();
+        } catch (\Throwable $e) {
+            Log::error('subscriptions:notify invoice gagal', ['error' => $e->getMessage()]);
+            $this->error('[invoice] ' . $e->getMessage());
+        }
+
+        $this->info(($this->dry ? '[DRY RUN] ' : '') . "Selesai. Total notifikasi: {$this->total}");
+
+        Carbon::setTestNow();
+
+        return self::SUCCESS;
+    }
+
+    // ==========================================================
+    // HELPER
+    // ==========================================================
+
+    private function alreadySent(int $userId, string $type, string $key): bool
+    {
+        return AppNotification::where('user_id', $userId)
+            ->where('type', $type)
+            ->where('data->key', $key)
+            ->exists();
+    }
+
+    /** Hitung selisih hari kalender (abaikan jam) dari hari ini ke $date */
+    private function daysUntil(Carbon $date): int
+    {
+        $today  = now()->startOfDay();
+        $target = $date->copy()->timezone(config('app.timezone'))->startOfDay();
+
+        return (int) $today->diffInDays($target, false);
+    }
+
+    private function deliver(int $companyId, string $type, string $key, string $title, string $body, array $options, string $logLabel): void
+    {
+        $users = $this->subs->billingManagersOf($companyId)
+            ->reject(fn($u) => $this->alreadySent($u->id, $type, $key))
+            ->pluck('id')
+            ->all();
+
+        if (!$users) return;
+
+        $this->total += count($users);
+        $this->line(($this->dry ? '[DRY] ' : '') . "[{$companyId}] {$logLabel} → " . count($users) . " penerima: {$title}");
+
+        if (!$this->dry) {
+            $options['category']    = 'subscription';
+            $options['data']        = array_merge($options['data'] ?? [], ['key' => $key]);
+            $this->notif->send($users, $type, $title, $body, $options);
+        }
+    }
+
+    // ==========================================================
+    // ⏳ TRIAL / 📅 LANGGANAN / ⚠️ GRACE / 🔒 EXPIRED
+    // ==========================================================
+
+    private function subscriptionReminders(): void
+    {
+        // Pengingat harian hanya dikirim mulai jam SEND_AT
+        if (now()->lt(Carbon::parse(now()->toDateString() . ' ' . self::SEND_AT))) {
+            return;
+        }
+
+        $subs = CompanySubscription::with('plan')
+            ->whereIn('status', ['trial', 'active', 'grace', 'expired'])
+            ->get();
+
+        foreach ($subs as $sub) {
+            // Lewati baris "placeholder": dibuat saat invoice pertama, belum pernah aktif.
+            if ($sub->status === 'expired' && !$sub->has_used_trial && !$sub->last_invoice_id) {
+                continue;
+            }
+
+            if (!$sub->expires_at) continue;
+
+            $isTrial    = $sub->status === 'trial' || ($sub->plan?->is_free ?? false);
+            $expiresAt  = $sub->expires_at;
+            $graceUntil = $expiresAt->copy()->addDays(CompanySubscription::GRACE_PERIOD_DAYS);
+            $expDate    = $expiresAt->toDateString();
+            $planName   = $sub->plan->name ?? 'Langganan';
+
+            // ------------------------------------------------------
+            // 1) MASIH AKTIF → pengingat H-x
+            // ------------------------------------------------------
+            if (now()->lt($expiresAt)) {
+                $daysLeft = $this->daysUntil($expiresAt);
+                $steps    = $isTrial ? self::TRIAL_DAYS : self::ACTIVE_DAYS;
+
+                if (!in_array($daysLeft, $steps, true)) continue;
+
+                $when = $daysLeft === 0 ? 'hari ini' : "{$daysLeft} hari lagi";
+
+                if ($isTrial) {
+                    $type  = 'subscription.trial_ending';
+                    $title = "⏳ Masa trial berakhir {$when}";
+                    $body  = 'Trial berakhir ' . SubscriptionNotifier::tgl($expiresAt, true)
+                        . '. Pilih paket berlangganan supaya absensi tetap berjalan.';
+                } else {
+                    $type  = 'subscription.expiring';
+                    $title = "📅 Langganan berakhir {$when}";
+                    $body  = "Paket {$planName} berakhir " . SubscriptionNotifier::tgl($expiresAt, true)
+                        . '. Perpanjang sekarang supaya tidak terputus.';
+                }
+
+                $this->deliver(
+                    $sub->company_id,
+                    $type,
+                    "ending:{$expDate}:{$daysLeft}",
+                    $title,
+                    $body,
+                    ['action' => 'subscription_status', 'data' => ['expires_at' => $expDate, 'days_left' => $daysLeft]],
+                    $isTrial ? "trial_ending H-{$daysLeft}" : "expiring H-{$daysLeft}"
+                );
+
+                continue;
+            }
+
+            // ------------------------------------------------------
+            // 2) MASA TOLERANSI → setiap hari
+            // ------------------------------------------------------
+            if (now()->lt($graceUntil)) {
+                if (!$this->dry && $sub->status !== 'grace') {
+                    $sub->syncStatus();
+                }
+
+                $graceLeft = max(0, $this->daysUntil($graceUntil));
+                $today     = now()->toDateString();
+
+                $this->deliver(
+                    $sub->company_id,
+                    'subscription.grace',
+                    "grace:{$expDate}:{$today}",
+                    $graceLeft > 0
+                        ? "⚠️ Masa toleransi: sisa {$graceLeft} hari"
+                        : '⚠️ Masa toleransi berakhir hari ini',
+                    ($isTrial ? 'Masa trial' : "Paket {$planName}") . ' sudah berakhir ' . SubscriptionNotifier::tgl($expiresAt)
+                        . '. Aplikasi akan dikunci ' . SubscriptionNotifier::tgl($graceUntil, true)
+                        . ' jika belum diperpanjang.',
+                    ['action' => 'subscription_status', 'data' => ['expires_at' => $expDate, 'grace_until' => $graceUntil->toDateString(), 'days_left' => $graceLeft]],
+                    "grace sisa {$graceLeft}"
+                );
+
+                continue;
+            }
+
+            // ------------------------------------------------------
+            // 3) SUDAH KEDALUWARSA → sekali saja
+            //    (hanya dalam 3 hari setelah dikunci, supaya data lama tidak ikut dikirimi)
+            // ------------------------------------------------------
+            if (now()->lt($graceUntil->copy()->addDays(3))) {
+                if (!$this->dry && $sub->status !== 'expired') {
+                    $sub->syncStatus();
+                }
+
+                $this->deliver(
+                    $sub->company_id,
+                    'subscription.expired',
+                    "expired:{$expDate}",
+                    '🔒 Langganan kedaluwarsa',
+                    'Fitur aplikasi sudah dikunci sejak ' . SubscriptionNotifier::tgl($graceUntil, true)
+                        . '. Perpanjang langganan untuk membuka kembali.',
+                    ['action' => 'subscription_plans', 'data' => ['expires_at' => $expDate]],
+                    'expired'
+                );
+            }
+        }
+    }
+
+    // ==========================================================
+    // 💳 INVOICE BELUM DIBAYAR / ❌ INVOICE KEDALUWARSA
+    // ==========================================================
+
+    private function invoiceReminders(): void
+    {
+        // 💳 Pending, batas bayar tinggal <= 6 jam
+        $dueSoon = SubscriptionInvoice::with(['plan', 'vaPayment'])
+            ->where('status', 'pending')
+            ->whereBetween('due_at', [now(), now()->addHours(self::INVOICE_HOURS_BEFORE)])
+            ->get();
+
+        foreach ($dueSoon as $inv) {
+            $va = $inv->vaPayment;
+
+            $body = $inv->invoice_number . ' sebesar ' . SubscriptionNotifier::rupiah($inv->total_amount)
+                . ($va ? ' via VA ' . strtoupper($va->bank) . ' ' . $va->va_number : '')
+                . '. Batas bayar ' . SubscriptionNotifier::tgl($inv->due_at, true) . '.';
+
+            $this->deliver(
+                $inv->company_id,
+                'subscription.invoice_unpaid',
+                "invoice_due:{$inv->id}",
+                '💳 Invoice belum dibayar',
+                $body,
+                [
+                    'action'    => 'subscription_invoice',
+                    'reference' => $inv,
+                    'data'      => ['invoice_id' => $inv->id, 'invoice_number' => $inv->invoice_number],
+                ],
+                "invoice_unpaid #{$inv->id}"
+            );
+        }
+
+        // ❌ Lewat batas bayar dalam 24 jam terakhir, belum dibayar
+        $expired = SubscriptionInvoice::with('plan')
+            ->whereIn('status', ['pending', 'expired'])
+            ->whereBetween('due_at', [now()->subDay(), now()])
+            ->get();
+
+        foreach ($expired as $inv) {
+            // Kalau sudah ada invoice yang lebih baru, tidak perlu diingatkan lagi
+            $hasNewer = SubscriptionInvoice::where('company_id', $inv->company_id)
+                ->where('id', '>', $inv->id)
+                ->exists();
+
+            if ($hasNewer) continue;
+
+            $this->deliver(
+                $inv->company_id,
+                'subscription.invoice_expired',
+                "invoice_expired:{$inv->id}",
+                '❌ Invoice kedaluwarsa',
+                $inv->invoice_number . ' (' . ($inv->plan->name ?? '-') . ') tidak dibayar sampai batas waktu. '
+                    . 'Silakan pilih paket lagi untuk membuat tagihan baru.',
+                [
+                    'action'    => 'subscription_plans',
+                    'reference' => $inv,
+                    'data'      => ['invoice_id' => $inv->id, 'invoice_number' => $inv->invoice_number],
+                ],
+                "invoice_expired #{$inv->id}"
+            );
+        }
+    }
+}
+
+===== app\Console\Kernel.php =====
+<?php
+
+namespace App\Console;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+
+class Kernel extends ConsoleKernel
+{
+    /**
+     * Jadwal tugas otomatis.
+     *
+     * Supaya jalan, scheduler harus dihidupkan:
+     *   - Di komputer (development) : php artisan schedule:work   (biarkan jendela terbuka)
+     *   - Di server Linux           : cron  * * * * * cd /path/project && php artisan schedule:run >> /dev/null 2>&1
+     */
+    protected function schedule(Schedule $schedule): void
+    {
+        // CATATAN: setiap command cukup didaftarkan SATU kali.
+        // Sebelumnya 'notifications:tick' tertulis dua kali → notifikasi bisa terkirim dobel.
+        // 'holidays:remind' juga tidak dipakai lagi (pengingat libur H-1 sudah ada di notifications:tick).
+
+        // 🧹 Hapus foto absen lama (sekolah)
+        $schedule->command('school:cleanup-attendance-photos')
+            ->dailyAt('02:00')
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping();
+
+        // 🔔 Semua notifikasi terjadwal (pengingat absen, shift besok, libur H-1,
+        //    ringkasan HR, pengingat jadwal). Jam & on/off diatur HR per company.
+        $schedule->command('notifications:tick')
+            ->everyMinute()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(5)
+            ->appendOutputTo(storage_path('logs/notifications-tick.log'));
+
+        // 🧾 Rapikan status langganan, invoice, dan VA yang sudah lewat waktu
+        $schedule->command('subscriptions:expire')
+            ->hourly()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(10)
+            ->appendOutputTo(storage_path('logs/subscriptions.log'));
+
+        // 💳 Notifikasi langganan (trial, masa aktif, masa toleransi, invoice)
+        $schedule->command('subscriptions:notify')
+            ->everyFifteenMinutes()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(10)
+            ->appendOutputTo(storage_path('logs/subscriptions.log'));
+
+        // Bersihkan notifikasi lama (lebih dari 90 hari) setiap hari jam 02:00
+        $schedule->call(function () {
+            \App\Models\AppNotification::where('created_at', '<', now()->subDays(90))->delete();
+        })
+            ->dailyAt('02:00')
+            ->timezone('Asia/Jakarta')
+            ->name('cleanup-old-notifications')
+            ->withoutOverlapping();
+
+        // Kosongkan file log scheduler setiap Minggu jam 03:00 supaya tidak membengkak
+        $schedule->call(function () {
+            foreach (['notifications-tick.log', 'subscriptions.log'] as $file) {
+                $path = storage_path('logs/' . $file);
+                if (file_exists($path)) {
+                    file_put_contents($path, '');
+                }
+            }
+        })
+            ->weeklyOn(0, '03:00')
+            ->timezone('Asia/Jakarta')
+            ->name('truncate-scheduler-logs');
+    }
+
+    /**
+     * Daftarkan semua command di app/Console/Commands.
+     */
+    protected function commands(): void
+    {
+        $this->load(__DIR__ . '/Commands');
+
+        require base_path('routes/console.php');
+    }
+}
+
+===== app\Http\Controllers\Api\Payment\BcaWebhookController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\Payment;
+
+use App\Http\Controllers\Controller;
+use App\Services\VaPaymentService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+class BcaWebhookController extends Controller
+{
+    public function __construct(
+        private VaPaymentService $vaPaymentService,
+    ) {}
+
+    // ============================================================
+    // POST /api/webhook/bca/inquiry
+    // BCA hit endpoint ini saat customer input nomor VA di ATM/mBanking
+    // BCA tanya: "Ada tagihan untuk VA ini?"
+    // Kita jawab dengan detail tagihan
+    // ============================================================
+
+    public function inquiry(Request $request): JsonResponse
+    {
+        Log::info('[BCA Webhook] Inquiry hit', [
+            'ip'      => $request->ip(),
+            'payload' => $request->all(),
+        ]);
+
+        // Validasi signature dari BCA (production wajib)
+        // Untuk sandbox bisa di-skip dulu, aktifkan saat production
+        // $this->validateBcaSignature($request);
+
+        $response = $this->vaPaymentService->handleBcaInquiry(
+            $request->all()
+        );
+
+        return response()->json($response);
+    }
+
+    // ============================================================
+    // POST /api/webhook/bca/payment
+    // BCA hit endpoint ini setelah customer selesai bayar VA
+    // BCA kasih tahu: "Customer sudah bayar, ini detailnya"
+    // Kita konfirmasi lalu aktifkan subscription
+    // ============================================================
+
+    public function payment(Request $request): JsonResponse
+    {
+        Log::info('[BCA Webhook] Payment Flag hit', [
+            'ip'      => $request->ip(),
+            'payload' => $request->all(),
+        ]);
+
+        // Validasi signature dari BCA (production wajib)
+        // $this->validateBcaSignature($request);
+
+        $response = $this->vaPaymentService->handleBcaPaymentFlag(
+            $request->all()
+        );
+
+        return response()->json($response);
+    }
+
+    // ============================================================
+    // VALIDASI SIGNATURE BCA (aktifkan saat production)
+    // ============================================================
+
+    /**
+     * Validasi bahwa request benar-benar datang dari BCA.
+     * BCA mengirim X-SIGNATURE di header menggunakan Symmetric Signature.
+     *
+     * Uncomment dan panggil method ini di inquiry() dan payment()
+     * saat sudah production.
+     */
+    // private function validateBcaSignature(Request $request): void
+    // {
+    //     $timestamp    = $request->header('X-TIMESTAMP');
+    //     $clientKey    = $request->header('X-CLIENT-KEY');
+    //     $signature    = $request->header('X-SIGNATURE');
+    //     $body         = $request->getContent();
+    //     $method       = $request->method();
+    //     $relativeUrl  = $request->getPathInfo();
+    //     $accessToken  = str_replace('Bearer ', '', $request->header('Authorization', ''));
+    //     $clientSecret = config('payment.bca.client_secret');
+    //
+    //     $hashedBody   = strtolower(hash('sha256', $body));
+    //     $stringToSign = implode(':', [strtoupper($method), $relativeUrl, $accessToken, $hashedBody, $timestamp]);
+    //     $expected     = base64_encode(hash_hmac('sha512', $stringToSign, $clientSecret, true));
+    //
+    //     if (! hash_equals($expected, $signature)) {
+    //         Log::warning('[BCA Webhook] Signature mismatch', compact('signature', 'expected'));
+    //         abort(401, 'Invalid Signature');
+    //     }
+    // }
+}
+
+===== app\Http\Controllers\Api\Payment\MidtransCallbackController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\Payment;
+
+use App\Http\Controllers\Controller;
+use App\Models\VaPaymentLog;
+use App\Services\Midtrans\CallbackService;
+use App\Services\SubscriptionService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
+
+class MidtransCallbackController extends Controller
+{
+    public function __construct(
+        private SubscriptionService $subscriptionService,
+    ) {}
+
+    // ============================================================
+    // POST /api/v1/midtrans/callback
+    // Didaftarkan sebagai "Payment Notification URL" di dashboard Midtrans.
+    // TIDAK pakai middleware auth:sanctum.
+    // ============================================================
+    public function handle(): JsonResponse
+    {
+        $callback     = new CallbackService();
+        $invoice      = $callback->getInvoice();
+        $notification = $callback->getNotification();
+
+        // Notification pakai magic __get (properti privat), jadi (array) cast
+        // tidak reliable — konversi lewat json_encode/json_decode.
+        $notificationArray = json_decode(json_encode($notification), true) ?? [];
+
+        if (! $invoice) {
+            Log::warning('Midtrans callback: invoice tidak ditemukan', [
+                'order_id' => $notificationArray['order_id'] ?? null,
+            ]);
+            return response()->json(['message' => 'Invoice tidak ditemukan'], 404);
+        }
+
+        $vaPayment = $invoice->vaPayment;
+
+        if (! $callback->isSignatureKeyVerified()) {
+            VaPaymentLog::record(
+                $vaPayment,
+                $vaPayment?->bank ?? 'bca',
+                $notificationArray,
+                null,
+                403,
+                false,
+                'Signature key tidak valid',
+            );
+
+            Log::warning('Midtrans callback: signature key tidak valid', [
+                'invoice' => $invoice->invoice_number,
+            ]);
+            return response()->json(['message' => 'Signature key tidak valid'], 403);
+        }
+
+        if ($callback->isSuccess()) {
+            if (! $invoice->isPaid()) {
+                $vaPayment?->markAsPaid(
+                    $vaPayment->payment_request_id,
+                    $notificationArray['transaction_id'] ?? null,
+                );
+                $invoice->markAsPaid();
+
+                $this->subscriptionService->activateFromInvoice($invoice);
+            }
+        } elseif ($callback->isExpire()) {
+            $invoice->markAsExpired();
+            $vaPayment?->markAsExpired();
+        } elseif ($callback->isCancelled()) {
+            $invoice->update(['status' => 'cancelled']);
+            $vaPayment?->markAsCancelled();
+        }
+
+        VaPaymentLog::record(
+            $vaPayment,
+            $vaPayment?->bank ?? 'bca',
+            $notificationArray,
+            ['status' => 'OK'],
+            200,
+            true,
+        );
+
+        return response()->json(['message' => 'OK']);
+    }
+}
+
+===== app\Http\Controllers\Api\Payment\SubscriptionController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\Payment;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Api\Subscription\SelectPlanRequest;
+use App\Models\SubscriptionPlan;
+use App\Services\InvoiceService;
+use App\Services\SubscriptionService;
+use App\Services\VaPaymentService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class SubscriptionController extends Controller
+{
+    public function __construct(
+        private SubscriptionService $subscriptionService,
+        private InvoiceService      $invoiceService,
+        private VaPaymentService    $vaPaymentService,
+    ) {}
+
+    // ============================================================
+    // GET /api/v1/subscriptions/plans
+    // ============================================================
+    public function plans(): JsonResponse
+    {
+        $plans = SubscriptionPlan::active()
+            ->orderBy('sort_order')
+            ->get()
+            ->map(fn($plan) => [
+                'id'            => $plan->id,
+                'name'          => $plan->name,
+                'slug'          => $plan->slug,
+                'description'   => $plan->description,
+                'duration_days' => $plan->duration_days,
+                'price'         => (float) $plan->price,
+                'price_label'   => $plan->is_free
+                    ? 'Gratis'
+                    : 'Rp ' . number_format($plan->price, 0, ',', '.'),
+            'is_free'      => $plan->is_free,
+            'is_popular'   => $plan->is_popular,
+            'saving_label' => $plan->saving_label,
+            ]);
+
+        return response()->json(['success' => true, 'data' => $plans]);
+    }
+
+    // ============================================================
+    // POST /api/v1/subscriptions/trial
+    // ============================================================
+    public function startTrial(Request $request): JsonResponse
+    {
+        $user    = $request->user();
+        $company = $user->company;
+
+        if (! $company) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Akun Anda belum terhubung ke perusahaan.',
+            ], 422);
+        }
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat memulai trial. Silakan hubungi admin perusahaan Anda.',
+            ], 403);
+        }
+
+        try {
+            $subscription = $this->subscriptionService->startTrial($company);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Trial berhasil dimulai.',
+                'data'    => $this->_formatSubscription($subscription),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+    }
+
+    // ============================================================
+    // GET /api/v1/subscriptions/status
+    // ============================================================
+    public function status(Request $request): JsonResponse
+    {
+        $user    = $request->user();
+        $company = $user->company;
+
+        if (! $company) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Akun tidak terhubung ke perusahaan.',
+            ], 422);
+        }
+
+        $status = $this->subscriptionService->getStatus($company);
+
+        // Detail tagihan/VA cuma relevan buat yang bisa bayar (billing manager
+        // company ini — misal hr/ustadz/teacher/doctor sesuai tipe company).
+        // Role lain (employee, santri, student, dst) tidak perlu tahu nomor VA.
+        $pendingInvoiceData = null;
+
+        if ($user->isBillingManager()) {
+            $pendingInvoice = $this->invoiceService->getPendingInvoice($company);
+
+            if ($pendingInvoice) {
+                $pendingInvoiceData = [
+                    'invoice_number' => $pendingInvoice->invoice_number,
+                    'total_amount'   => (float) $pendingInvoice->total_amount,
+                    'due_at'         => $pendingInvoice->due_at->toIso8601String(),
+                    'va'             => $pendingInvoice->vaPayment ? [
+                        'bank'       => $pendingInvoice->vaPayment->bank,
+                        'va_number'  => $pendingInvoice->vaPayment->va_number,
+                        'va_name'    => $pendingInvoice->vaPayment->va_name,
+                        'amount'     => (float) $pendingInvoice->vaPayment->amount,
+                        'expired_at' => $pendingInvoice->vaPayment->expired_at?->toIso8601String(),
+                    ] : null,
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => array_merge($status, [
+                'is_billing_manager' => $user->isBillingManager(),
+                'pending_invoice'    => $pendingInvoiceData,
+            ]),
+        ]);
+    }
+
+    // ============================================================
+    // POST /api/v1/subscriptions/select
+    // Pilih paket → buat invoice → buat VA Midtrans → return nomor VA
+    // ============================================================
+    public function selectPlan(SelectPlanRequest $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat memperpanjang langganan. Silakan hubungi admin perusahaan Anda.',
+            ], 403);
+        }
+
+        $company = $user->company;
+
+        if (! $company) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Akun tidak terhubung ke perusahaan.',
+            ], 422);
+        }
+
+        $plan = SubscriptionPlan::where('slug', $request->plan_slug)
+            ->where('is_active', true)
+            ->where('is_free', false)
+            ->firstOrFail();
+
+        try {
+            $invoice   = $this->invoiceService->create($company, $plan, $request->discount_code);
+            $vaPayment = $this->vaPaymentService->createVa($invoice, $request->bank);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Invoice berhasil dibuat. Silakan lakukan pembayaran.',
+                'data'    => [
+                    'invoice' => [
+                        'invoice_number'  => $invoice->invoice_number,
+                        'plan_name'       => $plan->name,
+                        'subtotal'        => (float) $invoice->subtotal,
+                        'discount_amount' => (float) $invoice->discount_amount,
+                        'total_amount'    => (float) $invoice->total_amount,
+                        'due_at'          => $invoice->due_at->toIso8601String(),
+                    ],
+                    'va' => [
+                        'bank'       => $vaPayment->bank,
+                        'va_number'  => $vaPayment->va_number,
+                        'va_name'    => $vaPayment->va_name,
+                        'amount'     => (float) $vaPayment->amount,
+                        'expired_at' => $vaPayment->expired_at?->toIso8601String(),
+                    ],
+                    'how_to_pay' => $this->_howToPay($vaPayment->bank, $vaPayment->va_number),
+                ],
+            ], 201);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+    }
+
+    // ============================================================
+    // POST /api/v1/subscriptions/check-va
+    // ============================================================
+    public function checkVa(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat mengecek status pembayaran.',
+            ], 403);
+        }
+
+        $company        = $user->company;
+        $pendingInvoice = $this->invoiceService->getPendingInvoice($company);
+
+        if (! $pendingInvoice || ! $pendingInvoice->vaPayment) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Tidak ada transaksi VA yang aktif.',
+            ], 404);
+        }
+
+        $vaPayment = $pendingInvoice->vaPayment;
+
+        if ($vaPayment->isPaid()) {
+            return response()->json([
+                'success' => true,
+                'data'    => ['status' => 'paid', 'message' => 'Pembayaran sudah dikonfirmasi.'],
+            ]);
+        }
+
+        try {
+            $result = $this->vaPaymentService->checkStatus($vaPayment);
+
+            return response()->json([
+                'success' => true,
+                'data'    => [
+                    'status'           => $vaPayment->fresh()->status,
+                    'midtrans_result'  => $result,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // ============================================================
+    // GET /api/v1/subscriptions/invoices
+    // ============================================================
+    // public function invoices(Request $request): JsonResponse
+    // {
+    //     $user = $request->user();
+
+    //     if (! $user->isBillingManager()) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => 'Hanya penanggung jawab billing yang dapat melihat histori invoice.',
+    //         ], 403);
+    //     }
+
+    //     $company  = $user->company;
+    //     $invoices = $this->invoiceService->getHistory($company);
+
+    //     $invoices->getCollection()->transform(fn($inv) => [
+    //         'invoice_number'  => $inv->invoice_number,
+    //         'plan_name'       => $inv->plan->name,
+    //         'subtotal'        => (float) $inv->subtotal,
+    //         'discount_amount' => (float) $inv->discount_amount,
+    //         'total_amount'    => (float) $inv->total_amount,
+    //         'status'          => $inv->status,
+    //         'issued_at'       => $inv->issued_at->toIso8601String(),
+    //         'paid_at'         => $inv->paid_at?->toIso8601String(),
+    //         'va'              => $inv->vaPayment ? [
+    //             'bank'      => $inv->vaPayment->bank,
+    //             'va_number' => $inv->vaPayment->va_number,
+    //             'status'    => $inv->vaPayment->status,
+    //         ] : null,
+    //     ]);
+
+    //     return response()->json(['success' => true, 'data' => $invoices]);
+    // }
+
+    // kode 2
+    public function invoices(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat melihat histori invoice.',
+            ], 403);
+        }
+
+        $company  = $user->company;
+        $status   = $request->query('status');
+        $invoices = $this->invoiceService->getHistory($company, $status);
+
+        $invoices->getCollection()->transform(fn($inv) => [
+            'id'              => $inv->id,
+            'invoice_number'  => $inv->invoice_number,
+            'plan_name'       => $inv->plan->name,
+            'subtotal'        => (float) $inv->subtotal,
+            'discount_amount' => (float) $inv->discount_amount,
+            'total_amount'    => (float) $inv->total_amount,
+            'status'          => $inv->status,
+            'issued_at'       => $inv->issued_at->toIso8601String(),
+            'due_at'          => $inv->due_at?->toIso8601String(),
+            'paid_at'         => $inv->paid_at?->toIso8601String(),
+            'va'              => $inv->vaPayment ? [
+                'bank'      => $inv->vaPayment->bank,
+                'va_number' => $inv->vaPayment->va_number,
+                'status'    => $inv->vaPayment->status,
+            ] : null,
+        ]);
+
+        return response()->json(['success' => true, 'data' => $invoices]);
+    }
+
+    // ============================================================
+    // GET /api/v1/subscriptions/invoices/{id}
+    // ============================================================
+    public function invoiceDetail(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+
+        if (! $user->isBillingManager()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya penanggung jawab billing yang dapat melihat detail invoice.',
+            ], 403);
+        }
+
+        $company = $user->company;
+
+        $invoice = $company->invoices()
+            ->with(['plan', 'discount', 'vaPayment'])
+            ->find($id);
+
+        if (! $invoice) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invoice tidak ditemukan.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'id'              => $invoice->id,
+                'invoice_number'  => $invoice->invoice_number,
+                'plan_name'       => $invoice->plan->name,
+                'subtotal'        => (float) $invoice->subtotal,
+                'discount_amount' => (float) $invoice->discount_amount,
+                'discount_name'   => $invoice->discount?->name,
+                'total_amount'    => (float) $invoice->total_amount,
+                'status'          => $invoice->status,
+                'issued_at'       => $invoice->issued_at->toIso8601String(),
+                'due_at'          => $invoice->due_at?->toIso8601String(),
+                'paid_at'         => $invoice->paid_at?->toIso8601String(),
+                'notes'           => $invoice->notes,
+                'va'              => $invoice->vaPayment ? [
+                    'bank'       => $invoice->vaPayment->bank,
+                    'va_number'  => $invoice->vaPayment->va_number,
+                    'va_name'    => $invoice->vaPayment->va_name,
+                    'amount'     => (float) $invoice->vaPayment->amount,
+                    'status'     => $invoice->vaPayment->status,
+                    'expired_at' => $invoice->vaPayment->expired_at?->toIso8601String(),
+                ] : null,
+                'how_to_pay' => ($invoice->status === 'pending' && $invoice->vaPayment)
+                    ? $this->_howToPay($invoice->vaPayment->bank, $invoice->vaPayment->va_number)
+                    : null,
+            ],
+        ]);
+    }
+
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+
+    private function _formatSubscription($subscription): array
+    {
+        return [
+            'status'         => $subscription->status,
+            'is_active'      => $subscription->isActive(),
+            'days_remaining' => $subscription->daysRemaining(),
+            'started_at'     => $subscription->started_at->toIso8601String(),
+            'expires_at'     => $subscription->expires_at->toIso8601String(),
+            'plan'           => [
+                'name'          => $subscription->plan->name,
+                'slug'          => $subscription->plan->slug,
+                'duration_days' => $subscription->plan->duration_days,
+            ],
+        ];
+    }
+
+    private function _howToPay(string $bank, string $vaNumber): array
+    {
+        return match ($bank) {
+            'bca' => [
+                'ATM BCA'      => "1. Pilih Transaksi Lainnya → Transfer → Ke Rek BCA Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'mBanking BCA' => "1. Login myBCA → Transfer → Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
+            'mandiri' => [
+                'ATM Mandiri'   => "1. Pilih Bayar/Beli → Lainnya → Multi Payment\n2. Masukkan kode perusahaan lalu nomor VA/Bill Key: {$vaNumber}\n3. Konfirmasi pembayaran",
+                'Livin Mandiri' => "1. Login Livin → Pembayaran → Multi Payment\n2. Masukkan nomor VA/Bill Key: {$vaNumber}\n3. Konfirmasi pembayaran",
+            ],
+            'bni' => [
+                'ATM BNI'      => "1. Pilih Menu Lain → Transfer → Virtual Account Billing\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'BNI Mobile'   => "1. Login BNI Mobile Banking → Transfer → Virtual Account Billing\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
+            'bri' => [
+                'ATM BRI'   => "1. Pilih Transaksi Lain → Pembayaran → Lainnya → BRIVA\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'BRImo'     => "1. Login BRImo → Pembayaran → BRIVA\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
+            'cimb' => [
+                'OCTO Mobile' => "1. Login OCTO Mobile → Pembayaran → Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+                'ATM CIMB'    => "1. Pilih Pembayaran → Virtual Account\n2. Masukkan nomor VA: {$vaNumber}\n3. Konfirmasi dan selesaikan pembayaran",
+            ],
+            default => [],
+        };
+    }
+}
+
+===== app\Http\Controllers\Web\SuperAdmin\SuperAdminVaPaymentController.php =====
+<?php
+
+namespace App\Http\Controllers\Web\SuperAdmin;
+
+use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
+use App\Models\VaPayment;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class SuperAdminVaPaymentController extends Controller
+{
+    /**
+     * List semua VA payment lintas tenant, buat monitoring pembayaran.
+     */
+    public function index(Request $request)
+    {
+        $query = VaPayment::with(['company', 'invoice'])->latest();
+
+        if ($request->filled('bank')) {
+            $query->where('bank', $request->bank);
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('va_number', 'like', "%{$search}%")
+                    ->orWhereHas('company', fn($c) => $c->where('name', 'like', "%{$search}%"));
+            });
+        }
+
+        $vaPayments = $query->paginate(20)->withQueryString();
+
+        return view('pages.superadmin.va-payments.index', compact('vaPayments'));
+    }
+
+    /**
+     * Detail 1 VA payment + timeline webhook log (inquiry/payment/inquiry_status).
+     */
+    public function show(string $id)
+    {
+        $vaPayment = VaPayment::with(['company', 'invoice.plan'])->findOrFail($id);
+
+        $logs = $vaPayment->logs()->orderBy('received_at', 'desc')->get();
+
+        return view('pages.superadmin.va-payments.show', compact('vaPayment', 'logs'));
+    }
+
+    /**
+     * Override manual: tandai VA (dan invoice terkait) lunas.
+     * Dipakai kalau webhook bank gagal masuk tapi customer sudah transfer (butuh bukti manual).
+     */
+    public function markPaid(Request $request, string $id)
+    {
+        $vaPayment = VaPayment::with('invoice.subscription.plan')->findOrFail($id);
+
+        $data = $request->validate([
+            'reason' => 'required|string|max:500',
+        ]);
+
+        if ($vaPayment->status === 'paid') {
+            return back()->with('error', 'VA ini sudah berstatus lunas.');
+        }
+
+        DB::transaction(function () use ($vaPayment) {
+            $vaPayment->status = 'paid';
+            $vaPayment->paid_at = now();
+            $vaPayment->save();
+
+            $invoice = $vaPayment->invoice;
+            if ($invoice && $invoice->status !== 'paid') {
+                $invoice->status = 'paid';
+                $invoice->paid_at = now();
+                $invoice->save();
+            }
+
+            $subscription = $invoice?->subscription;
+            if ($subscription) {
+                $plan = $subscription->plan;
+                $base = $subscription->expires_at && \Carbon\Carbon::parse($subscription->expires_at)->isFuture()
+                    ? \Carbon\Carbon::parse($subscription->expires_at)
+                    : now();
+
+                $subscription->status = 'active';
+                $subscription->expires_at = $base->addDays($plan->duration_days ?? 30);
+                $subscription->last_invoice_id = $invoice->id;
+                $subscription->save();
+            }
+        });
+
+        AuditLog::record(
+            'manual_mark_va_paid',
+            $vaPayment,
+            "Menandai VA {$vaPayment->va_number} ({$vaPayment->bank}) lunas secara manual. Alasan: {$data['reason']}"
+        );
+
+        return back()->with('success', 'VA & invoice berhasil ditandai lunas, langganan tenant diperpanjang otomatis.');
+    }
+}
+
+===== app\Models\SubscriptionDiscount.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+
+class SubscriptionDiscount extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = [
+        'discount_value'      => 'decimal:2',
+        'max_discount_amount' => 'decimal:2',
+        'valid_from'          => 'datetime',
+        'valid_until'         => 'datetime',
+        'is_active'           => 'boolean',
+    ];
+
+    // ============================================================
+    // RELATIONS
+    // ============================================================
+
+    /**
+     * Diskon bisa dikaitkan ke 1 plan tertentu (opsional).
+     * SubscriptionDiscount → belongsTo → SubscriptionPlan
+     */
+    public function plan()
+    {
+        return $this->belongsTo(SubscriptionPlan::class, 'plan_id');
+    }
+
+    /**
+     * Satu kode diskon bisa dipakai di banyak invoice.
+     * SubscriptionDiscount → hasMany → SubscriptionInvoice
+     */
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'discount_id');
+    }
+
+    // ============================================================
+    // SCOPES
+    // ============================================================
+
+    /**
+     * Diskon yang masih valid saat ini.
+     */
+    public function scopeValid($query)
+    {
+        $now = Carbon::now();
+
+        return $query
+            ->where('is_active', true)
+            ->where(fn($q) => $q->whereNull('valid_from')->orWhere('valid_from', '<=', $now))
+            ->where(fn($q) => $q->whereNull('valid_until')->orWhere('valid_until', '>=', $now))
+            ->where(fn($q) => $q->whereNull('max_usage')->orWhereRaw('used_count < max_usage'));
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    /**
+     * Hitung nominal potongan dari harga asli.
+     *
+     * @param  float $price  Harga sebelum diskon
+     * @return float         Nominal potongan (bukan harga akhir)
+     */
+    public function calculateDiscount(float $price): float
+    {
+        if ($this->discount_type === 'percent') {
+            $cut = $price * ((float) $this->discount_value / 100);
+
+            // Terapkan batas maksimal jika ada
+            if ($this->max_discount_amount) {
+                $cut = min($cut, (float) $this->max_discount_amount);
+            }
+
+            return round($cut, 2);
+        }
+
+        // fixed — tidak boleh melebihi harga asli
+        return min((float) $this->discount_value, $price);
+    }
+
+    public function isValid(): bool
+    {
+        $now = Carbon::now();
+
+        if (! $this->is_active)                                      return false;
+        if ($this->valid_from   && $now->lt($this->valid_from))      return false;
+        if ($this->valid_until  && $now->gt($this->valid_until))     return false;
+        if ($this->max_usage    && $this->used_count >= $this->max_usage) return false;
+
+        return true;
+    }
+
+    /** Tambah counter pemakaian */
+    public function incrementUsage(): void
+    {
+        $this->increment('used_count');
+    }
+}
+
+===== app\Models\SubscriptionInvoice.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class SubscriptionInvoice extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = [
+        'subtotal'        => 'decimal:2',
+        'discount_amount' => 'decimal:2',
+        'total_amount'    => 'decimal:2',
+        'issued_at'       => 'datetime',
+        'due_at'          => 'datetime',
+        'paid_at'         => 'datetime',
+    ];
+
+    // ============================================================
+    // RELATIONS
+    // ============================================================
+
+    /**
+     * Invoice ini milik satu company.
+     * SubscriptionInvoice → belongsTo → Company
+     */
+    public function company()
+    {
+        return $this->belongsTo(Company::class, 'company_id');
+    }
+
+    /**
+     * Invoice ini terkait satu subscription.
+     * SubscriptionInvoice → belongsTo → CompanySubscription
+     */
+    public function subscription()
+    {
+        return $this->belongsTo(CompanySubscription::class, 'subscription_id');
+    }
+
+    /**
+     * Invoice ini untuk satu plan tertentu.
+     * SubscriptionInvoice → belongsTo → SubscriptionPlan
+     */
+    public function plan()
+    {
+        return $this->belongsTo(SubscriptionPlan::class, 'plan_id');
+    }
+
+    /**
+     * Diskon yang digunakan pada invoice ini (opsional).
+     * SubscriptionInvoice → belongsTo → SubscriptionDiscount
+     */
+    public function discount()
+    {
+        return $this->belongsTo(SubscriptionDiscount::class, 'discount_id');
+    }
+
+    /**
+     * Invoice ini punya satu VA payment.
+     * SubscriptionInvoice → hasOne → VaPayment
+     */
+    public function vaPayment()
+    {
+        return $this->hasOne(VaPayment::class, 'invoice_id');
+    }
+
+    // ============================================================
+    // SCOPES
+    // ============================================================
+
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    public function scopePaid($query)
+    {
+        return $query->where('status', 'paid');
+    }
+
+    /** Invoice yang sudah lewat due_at tapi belum dibayar */
+    public function scopeOverdue($query)
+    {
+        return $query->where('status', 'pending')
+            ->where('due_at', '<', now());
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    /**
+     * Generate nomor invoice unik per hari.
+     * Format: INV-20250601-00001
+     */
+    public static function generateNumber(): string
+    {
+        $prefix = 'INV-' . now()->format('Ymd') . '-';
+
+        $last = static::where('invoice_number', 'like', $prefix . '%')
+            ->orderByDesc('id')
+            ->value('invoice_number');
+
+        $seq = $last ? ((int) substr($last, -5)) + 1 : 1;
+
+        return $prefix . str_pad($seq, 5, '0', STR_PAD_LEFT);
+    }
+
+    public function markAsPaid(): void
+    {
+        $this->update([
+            'status'  => 'paid',
+            'paid_at' => now(),
+        ]);
+    }
+
+    public function markAsExpired(): void
+    {
+        $this->update(['status' => 'expired']);
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status === 'pending';
+    }
+
+    public function isPaid(): bool
+    {
+        return $this->status === 'paid';
+    }
+}
+
+===== app\Models\SubscriptionPlan.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class SubscriptionPlan extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+
+    protected $casts = [
+        'price'     => 'decimal:2',
+        'is_free'   => 'boolean',
+        'is_active' => 'boolean',
+        'is_popular' => 'boolean',
+    ];
+
+    // ============================================================
+    // RELATIONS
+    // ============================================================
+
+    /**
+     * Satu plan bisa dipakai banyak subscription company.
+     * SubscriptionPlan → hasMany → CompanySubscription
+     */
+    public function subscriptions()
+    {
+        return $this->hasMany(CompanySubscription::class, 'plan_id');
+    }
+
+    /**
+     * Satu plan bisa punya banyak invoice (histori pembelian).
+     * SubscriptionPlan → hasMany → SubscriptionInvoice
+     */
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'plan_id');
+    }
+
+    /**
+     * Satu plan bisa punya banyak diskon/promo khusus.
+     * SubscriptionPlan → hasMany → SubscriptionDiscount
+     */
+    public function discounts()
+    {
+        return $this->hasMany(SubscriptionDiscount::class, 'plan_id');
+    }
+
+    // ============================================================
+    // SCOPES
+    // ============================================================
+
+    /** Hanya plan yang aktif ditawarkan */
+    public function scopeActive($query)
+    {
+        return $query->where('is_active', true);
+    }
+
+    /** Hanya plan berbayar (bukan trial) */
+    public function scopePaid($query)
+    {
+        return $query->where('is_free', false);
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    public function isTrial(): bool
+    {
+        return $this->is_free && $this->slug === 'trial';
+    }
+}
+
+===== app\Models\VaPayment.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class VaPayment extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = [
+        'amount'        => 'decimal:2',
+        'bank_response' => 'array',
+        'created_va_at' => 'datetime',
+        'expired_at'    => 'datetime',
+        'paid_at'       => 'datetime',
+    ];
+
+    // ============================================================
+    // RELATIONS
+    // ============================================================
+
+    public function invoice()
+    {
+        return $this->belongsTo(SubscriptionInvoice::class, 'invoice_id');
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class, 'company_id');
+    }
+
+    public function logs()
+    {
+        return $this->hasMany(VaPaymentLog::class, 'va_payment_id');
+    }
+
+    // ============================================================
+    // SCOPES
+    // ============================================================
+
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    public function scopePaid($query)
+    {
+        return $query->where('status', 'paid');
+    }
+
+    public function scopeExpired($query)
+    {
+        return $query->where('status', 'pending')
+            ->where('expired_at', '<', now());
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    /**
+     * Bangun virtualAccountNo sesuai format BCA SNAP — tidak dipakai
+     * di flow Midtrans, dibiarkan untuk kompatibilitas kalau nanti
+     * ada integrasi BCA SNAP langsung juga.
+     */
+    public function getVirtualAccountNo(): string
+    {
+        return $this->partner_service_id . $this->customer_no;
+    }
+
+    /**
+     * ── REVISI ───────────────────────────────────────────────────
+     * $paymentRequestId & $referenceNo dijadikan nullable karena Midtrans
+     * tidak selalu punya keduanya (beda dengan flow BCA SNAP yang selalu
+     * mengirim payment_request_id). Untuk Midtrans, isi $referenceNo
+     * dengan transaction_id dari notifikasi.
+     */
+    public function markAsPaid(?string $paymentRequestId = null, ?string $referenceNo = null): void
+    {
+        $this->update([
+            'status'             => 'paid',
+            'payment_request_id' => $paymentRequestId ?? $this->payment_request_id,
+            'bank_reference_no'  => $referenceNo ?? $this->bank_reference_no,
+            'paid_at'            => now(),
+        ]);
+    }
+
+    public function markAsExpired(): void
+    {
+        $this->update(['status' => 'expired']);
+    }
+
+    public function markAsCancelled(): void
+    {
+        $this->update(['status' => 'cancelled']);
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status === 'pending';
+    }
+
+    public function isPaid(): bool
+    {
+        return $this->status === 'paid';
+    }
+
+    public function isExpired(): bool
+    {
+        return $this->status === 'expired'
+            || ($this->expired_at && now()->gt($this->expired_at));
+    }
+}
+
+===== app\Models\VaPaymentLog.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class VaPaymentLog extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = [
+        'request_payload'  => 'array',
+        'response_payload' => 'array',
+        'is_success'       => 'boolean',
+        'received_at'      => 'datetime',
+    ];
+
+    public function vaPayment()
+    {
+        return $this->belongsTo(VaPayment::class, 'va_payment_id');
+    }
+
+    /**
+     * Catat 1 webhook masuk. event_type untuk Midtrans selalu 'payment'
+     * (kolomnya memang didesain untuk 3 event BCA SNAP, tapi 'payment'
+     * paling cocok dipakai buat notifikasi Midtrans juga).
+     */
+    public static function record(
+        ?VaPayment $vaPayment,
+        string $bank,
+        array $requestPayload,
+        ?array $responsePayload = null,
+        int $responseHttpCode = 200,
+        bool $isSuccess = true,
+        ?string $errorMessage = null,
+    ): self {
+        return static::create([
+            'va_payment_id'       => $vaPayment?->id,
+            'bank'                => $bank,
+            'event_type'          => 'payment',
+            'request_payload'     => $requestPayload,
+            'response_payload'    => $responsePayload,
+            'response_http_code'  => $responseHttpCode,
+            'is_success'          => $isSuccess,
+            'error_message'       => $errorMessage,
+            'received_at'         => now(),
+        ]);
+    }
+}
+
+===== app\Services\InvoiceService.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\Company;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionDiscount;
+use App\Models\SubscriptionInvoice;
+use App\Models\SubscriptionPlan;
+use Illuminate\Support\Facades\DB;
+
+class InvoiceService
+{
+    public function create(Company $company, SubscriptionPlan $plan, ?string $discountCode = null): SubscriptionInvoice
+    {
+        return DB::transaction(function () use ($company, $plan, $discountCode) {
+            $subtotal       = (float) $plan->price;
+            $discountAmount = 0;
+            $discount       = null;
+
+            if ($discountCode) {
+                $discount = SubscriptionDiscount::where('code', $discountCode)->first();
+
+                if (! $discount || ! $discount->isValid()) {
+                    throw new \Exception('Kode diskon tidak valid atau sudah tidak berlaku.');
+                }
+
+                if ($discount->plan_id && $discount->plan_id !== $plan->id) {
+                    throw new \Exception('Kode diskon tidak berlaku untuk paket ini.');
+                }
+
+                $discountAmount = $discount->calculateDiscount($subtotal);
+            }
+
+            $totalAmount = max(0, $subtotal - $discountAmount);
+
+            // 1 company = 1 baris company_subscriptions (upsert kalau belum ada)
+            $subscription = $company->subscriptions()->first() ?? CompanySubscription::create([
+                'company_id' => $company->id,
+                'plan_id'    => $plan->id,
+                'status'     => 'expired', // belum bayar apa-apa, aktif setelah lunas
+                'started_at' => now(),
+                'expires_at' => now(),
+            ]);
+
+            $invoice = SubscriptionInvoice::create([
+                'invoice_number'  => SubscriptionInvoice::generateNumber(),
+                'company_id'      => $company->id,
+                'subscription_id' => $subscription->id,
+                'plan_id'         => $plan->id,
+                'discount_id'     => $discount?->id,
+                'subtotal'        => $subtotal,
+                'discount_amount' => $discountAmount,
+                'total_amount'    => $totalAmount,
+                'status'          => 'pending',
+                'issued_at'       => now(),
+                'due_at'          => now()->addHours(24),
+            ]);
+
+            $discount?->incrementUsage();
+
+            return $invoice;
+        });
+    }
+
+    public function getPendingInvoice(Company $company): ?SubscriptionInvoice
+    {
+        return SubscriptionInvoice::where('company_id', $company->id)
+            ->pending()
+            ->with('vaPayment')
+            ->latest('issued_at')
+            ->first();
+    }
+
+    // public function getHistory(Company $company)
+    // {
+    //     return SubscriptionInvoice::where('company_id', $company->id)
+    //         ->with(['plan', 'vaPayment'])
+    //         ->latest('issued_at')
+    //         ->paginate(15);
+    // }
+
+    // kode 2
+    public function getHistory(Company $company, ?string $status = null)
+    {
+        $query = $company->invoices()
+            ->with(['plan', 'vaPayment'])
+            ->latest('issued_at');
+
+        if ($status && $status !== 'all') {
+            $query->where('status', $status);
+        }
+
+        return $query->paginate(15);
+    }
+
+    public function expireOverdueInvoices(): int
+    {
+        $count = 0;
+
+        SubscriptionInvoice::overdue()->get()->each(function (SubscriptionInvoice $invoice) use (&$count) {
+            $invoice->markAsExpired();
+            $invoice->vaPayment?->markAsExpired();
+            $count++;
+        });
+
+        return $count;
+    }
+}
+
+===== app\Services\Midtrans\CallbackService.php =====
+<?php
+
+namespace App\Services\Midtrans;
+
+use App\Models\SubscriptionInvoice;
+use Midtrans\Notification;
+
+class CallbackService extends Midtrans
+{
+    protected $notification;
+    protected ?SubscriptionInvoice $invoice = null;
+    protected $serverKey;
+
+    public function __construct()
+    {
+        parent::__construct();
+
+        $this->serverKey = config('midtrans.server_key');
+        $this->_handleNotification();
+    }
+
+    public function isSignatureKeyVerified(): bool
+    {
+        return $this->_createLocalSignatureKey() === $this->notification->signature_key;
+    }
+
+    public function isSuccess(): bool
+    {
+        $statusCode        = $this->notification->status_code;
+        $transactionStatus = $this->notification->transaction_status;
+        $fraudStatus       = !empty($this->notification->fraud_status)
+            ? ($this->notification->fraud_status == 'accept')
+            : true;
+
+        return ($statusCode == 200 && $fraudStatus
+            && in_array($transactionStatus, ['capture', 'settlement']));
+    }
+
+    public function isExpire(): bool
+    {
+        return $this->notification->transaction_status == 'expire';
+    }
+
+    public function isCancelled(): bool
+    {
+        return $this->notification->transaction_status == 'cancel'
+            || $this->notification->transaction_status == 'deny';
+    }
+
+    public function getNotification()
+    {
+        return $this->notification;
+    }
+
+    public function getInvoice(): ?SubscriptionInvoice
+    {
+        return $this->invoice;
+    }
+
+    protected function _createLocalSignatureKey(): string
+    {
+        $orderId     = $this->invoice->invoice_number ?? $this->notification->order_id;
+        $statusCode  = $this->notification->status_code;
+        $grossAmount = $this->notification->gross_amount; // string persis dari Midtrans
+        $serverKey   = $this->serverKey;
+
+        $input = $orderId . $statusCode . $grossAmount . $serverKey;
+
+        return openssl_digest($input, 'sha512');
+    }
+
+    protected function _handleNotification(): void
+    {
+        $notification = new Notification();
+
+        // order_id yang dikirim Midtrans = invoice_number kita
+        $invoice = SubscriptionInvoice::where('invoice_number', $notification->order_id)
+            ->with(['vaPayment', 'plan', 'company'])
+            ->first();
+
+        $this->notification = $notification;
+        $this->invoice       = $invoice;
+    }
+}
+
+===== app\Services\Midtrans\CreateVAService.php =====
+<?php
+
+namespace App\Services\Midtrans;
+
+use App\Models\SubscriptionInvoice;
+use App\Models\VaPayment;
+use Midtrans\CoreApi;
+
+class CreateVAService extends Midtrans
+{
+    protected SubscriptionInvoice $invoice;
+    protected string $bank; // 'bca' | 'mandiri'
+
+    public function __construct(SubscriptionInvoice $invoice, string $bank)
+    {
+        parent::__construct();
+
+        $this->invoice = $invoice;
+        $this->bank    = $bank;
+    }
+
+    /**
+     * Buat transaksi VA di Midtrans, lalu simpan/refresh baris di table va_payments.
+     */
+    public function getVA(): VaPayment
+    {
+        $params = $this->_buildParams();
+
+        // Charge ke Midtrans Core API
+        $response = CoreApi::charge($params);
+
+        return $this->_storeVaPayment($response);
+    }
+
+    protected function _buildParams(): array
+    {
+        $company = $this->invoice->company;
+
+        $customerDetails = [
+            'first_name' => $company->name,
+            'email'      => $company->email,
+        ];
+
+        $base = [
+            // order_id Midtrans = invoice_number (harus unik)
+            'transaction_details' => [
+                'order_id'     => $this->invoice->invoice_number,
+                'gross_amount' => (int) round($this->invoice->total_amount),
+            ],
+            'item_details' => [[
+                'id'       => 'SUB-' . $this->invoice->plan_id,
+                'price'    => (int) round($this->invoice->total_amount),
+                'quantity' => 1,
+                'name'     => 'Langganan ' . ($this->invoice->plan->name ?? '-'),
+            ]],
+            'customer_details' => $customerDetails,
+        ];
+
+        if ($this->bank === 'mandiri') {
+            // Mandiri Bill Payment di Midtrans pakai payment_type "echannel"
+            // (bukan bank_transfer). bill_key otomatis di-generate Midtrans.
+            return array_merge($base, [
+                'payment_type' => 'echannel',
+                'echannel'     => [
+                    'bill_info1' => 'Payment For:',
+                    'bill_info2' => 'Langganan ' . ($this->invoice->plan->name ?? '-'),
+                ],
+            ]);
+        }
+
+        // BCA / BNI / BRI / Permata pakai payment_type "bank_transfer"
+        return array_merge($base, [
+            'payment_type'  => 'bank_transfer',
+            'bank_transfer' => [
+                'bank' => $this->bank,
+            ],
+        ]);
+    }
+
+    protected function _storeVaPayment(object $response): VaPayment
+    {
+        $vaNumber = null;
+        $billKey  = null;
+        $bizCode  = null;
+
+        if ($this->bank === 'mandiri') {
+            $billKey  = $response->bill_key ?? null;
+            $bizCode  = $response->biller_code ?? null;
+            $vaNumber = $billKey; // ditampilkan sebagai "nomor VA" ke Flutter
+        } else {
+            $vaNumber = $response->va_numbers[0]->va_number ?? null;
+        }
+
+        return VaPayment::updateOrCreate(
+            ['invoice_id' => $this->invoice->id],
+            [
+                'company_id'         => $this->invoice->company_id,
+                'bank'               => $this->bank,
+                'va_number'          => $vaNumber,
+                'va_name'            => $this->invoice->company->name,
+                'amount'             => $this->invoice->total_amount,
+                'status'             => 'pending',
+                'partner_service_id' => null,
+                'customer_no'        => null,
+                'inquiry_request_id' => null,
+                'payment_request_id' => $bizCode,
+                'bank_reference_no'  => $response->transaction_id ?? null,
+                'created_va_at'      => now(),
+                'expired_at'         => $this->invoice->due_at,
+                'bank_response'      => json_encode($response),
+            ]
+        );
+    }
+}
+
+===== app\Services\Midtrans\Midtrans.php =====
+<?php
+
+namespace App\Services\Midtrans;
+
+use Midtrans\Config;
+
+class Midtrans
+{
+    protected $serverKey;
+    protected $isProduction;
+    protected $isSanitized;
+    protected $is3ds;
+
+    public function __construct()
+    {
+        $this->serverKey    = config('midtrans.server_key');
+        $this->isProduction = config('midtrans.is_production');
+        $this->isSanitized  = config('midtrans.is_sanitized');
+        $this->is3ds        = config('midtrans.is_3ds');
+
+        $this->_configureMidtrans();
+    }
+
+    public function _configureMidtrans()
+    {
+        Config::$serverKey    = $this->serverKey;
+        Config::$isProduction = $this->isProduction;
+        Config::$isSanitized  = $this->isSanitized;
+        Config::$is3ds        = $this->is3ds;
+    }
+}
+
+===== app\Services\Notifiers\ApprovalNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\Company;
+use App\Models\Leaves;
+use App\Models\OvertimeRequest;
+use App\Models\Permission;
+use App\Models\User;
+use App\Services\NotificationService;
+use App\Support\CompanySettings;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi pengajuan & persetujuan: izin, cuti, lembur.
+ *
+ *   submitted() → ke semua HR (kalau HR mengaktifkan "notifikasi langsung")
+ *   decided()   → ke karyawan yang mengajukan
+ *
+ * Semua dibungkus try/catch: gagal kirim notifikasi TIDAK PERNAH
+ * menggagalkan proses simpan / approve.
+ */
+class ApprovalNotifier
+{
+    public const KIND_PERMISSION = 'permission';
+    public const KIND_LEAVE      = 'leave';
+    public const KIND_OVERTIME   = 'overtime';
+
+    private const LABELS = [
+        self::KIND_PERMISSION => 'izin',
+        self::KIND_LEAVE      => 'cuti',
+        self::KIND_OVERTIME   => 'lembur',
+    ];
+
+    private const BULAN = [
+        1 => 'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'Mei',
+        'Jun',
+        'Jul',
+        'Agu',
+        'Sep',
+        'Okt',
+        'Nov',
+        'Des',
+    ];
+
+    public function __construct(private NotificationService $notif) {}
+
+    // ----------------------------------------------------------
+    // KE HR: ada pengajuan baru
+    // ----------------------------------------------------------
+
+    public function submitted(string $kind, Model $item): void
+    {
+        try {
+            $company = Company::find($item->company_id);
+
+            if (!$company || !CompanySettings::notif($company, 'hr_instant_approval.enabled', true)) {
+                return;
+            }
+
+            $employee = User::find($item->user_id, ['id', 'name']);
+            $label    = self::LABELS[$kind];
+
+            $this->notif->sendLater(
+                $this->notif->hrOf((int) $item->company_id),
+                "{$kind}.submitted",
+                '📝 Pengajuan ' . $label . ' baru',
+                ($employee?->name ?? 'Karyawan') . ' mengajukan ' . $this->detail($kind, $item),
+                [
+                    'category'  => 'approval',
+                    'action'    => "hr_{$kind}_detail",
+                    'reference' => $item,
+                    'data'      => [
+                        'kind'        => $kind,
+                        "{$kind}_id"  => $item->getKey(),
+                        'employee_id' => $item->user_id,
+                    ],
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::error('Notif pengajuan gagal', ['kind' => $kind, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ----------------------------------------------------------
+    // KE KARYAWAN: pengajuan disetujui / ditolak
+    // ----------------------------------------------------------
+
+    public function decided(string $kind, Model $item, bool $approved, ?string $note = null): void
+    {
+        try {
+            $label = self::LABELS[$kind];
+
+            $title = $approved
+                ? '✅ ' . ucfirst($label) . ' disetujui'
+                : '❌ ' . ucfirst($label) . ' ditolak';
+
+            $body = ucfirst($this->detail($kind, $item)) . ($approved ? ' telah disetujui HR.' : ' ditolak HR.');
+
+            if ($note) {
+                $body .= ($approved ? ' Catatan: ' : ' Alasan: ') . $note;
+            }
+
+            $this->notif->sendLater(
+                $item->user_id,
+                $kind . ($approved ? '.approved' : '.rejected'),
+                $title,
+                $body,
+                [
+                    'category'  => 'approval',
+                    'action'    => "{$kind}_detail",
+                    'reference' => $item,
+                    'data'      => [
+                        'kind'       => $kind,
+                        "{$kind}_id" => $item->getKey(),
+                        'approved'   => $approved ? 1 : 0,
+                    ],
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::error('Notif keputusan gagal', ['kind' => $kind, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ----------------------------------------------------------
+    // TEKS DETAIL
+    // ----------------------------------------------------------
+
+    private function tgl($date): string
+    {
+        $d = $date instanceof Carbon ? $date : Carbon::parse($date);
+
+        return $d->day . ' ' . self::BULAN[$d->month] . ' ' . $d->year;
+    }
+
+    private function range($start, $end): string
+    {
+        $s = $start instanceof Carbon ? $start : Carbon::parse($start);
+        $e = $end ? ($end instanceof Carbon ? $end : Carbon::parse($end)) : null;
+
+        if (!$e || $s->isSameDay($e)) {
+            return $this->tgl($s);
+        }
+
+        $days = (int) $s->diffInDays($e, true) + 1;
+
+        return $this->tgl($s) . ' – ' . $this->tgl($e) . " ({$days} hari)";
+    }
+
+    private function hm(?string $time): ?string
+    {
+        return $time ? substr($time, 0, 5) : null;
+    }
+
+    private function detail(string $kind, Model $item): string
+    {
+        if ($kind === self::KIND_PERMISSION && $item instanceof Permission) {
+            $text = strtolower($item->type_label) . ' ' . $this->range($item->date_permission, $item->end_date);
+
+            if ($item->start_time && $item->end_time) {
+                $text .= ' jam ' . $this->hm($item->start_time) . '–' . $this->hm($item->end_time);
+            } elseif ($item->end_time) {
+                $text .= ' s/d jam ' . $this->hm($item->end_time);
+            } elseif ($item->start_time) {
+                $text .= ' mulai jam ' . $this->hm($item->start_time);
+            }
+
+            return $text;
+        }
+
+        if ($kind === self::KIND_LEAVE && $item instanceof Leaves) {
+            return strtolower($item->type_label) . ' ' . $this->range($item->start_date, $item->end_date);
+        }
+
+        if ($kind === self::KIND_OVERTIME && $item instanceof OvertimeRequest) {
+            return 'lembur ' . $this->tgl($item->date)
+                . ' jam ' . $this->hm($item->start_time) . '–' . $this->hm($item->end_time)
+                . ' (' . $item->duration_label . ')';
+        }
+
+        return self::LABELS[$kind] ?? 'pengajuan';
+    }
+}
+
+===== app\Services\Notifiers\SubscriptionNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Models\User;
+use App\Services\NotificationService;
+use Carbon\Carbon;
+use Illuminate\Support\Collection;
+
+/**
+ * Notifikasi LANGGANAN (trial, invoice, pembayaran VA, masa aktif).
+ *
+ * Penerima: semua user aktif di company yang isBillingManager() = true
+ * (HR untuk company, dan role penanggung jawab billing untuk tipe lain
+ * sesuai config subscription.billing_roles).
+ */
+class SubscriptionNotifier
+{
+    private const HARI  = [0 => 'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    private const BULAN = [1 => 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+    public function __construct(private NotificationService $notif) {}
+
+    // ============================================================
+    // PENERIMA
+    // ============================================================
+
+    /** @return Collection<User> */
+    public function billingManagersOf(int $companyId): Collection
+    {
+        return User::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->get()
+            ->filter(fn(User $u) => $u->isBillingManager())
+            ->values();
+    }
+
+    // ============================================================
+    // FORMAT
+    // ============================================================
+
+    public static function tgl(?Carbon $d, bool $withTime = false): string
+    {
+        if (!$d) return '-';
+
+        $d = $d->copy()->timezone(config('app.timezone'));
+
+        $text = self::HARI[$d->dayOfWeek] . ', ' . $d->day . ' ' . self::BULAN[$d->month] . ' ' . $d->year;
+
+        return $withTime ? $text . ' ' . $d->format('H:i') . ' WIB' : $text;
+    }
+
+    public static function rupiah($amount): string
+    {
+        return 'Rp ' . number_format((float) $amount, 0, ',', '.');
+    }
+
+    // ============================================================
+    // ✅ PEMBAYARAN BERHASIL
+    // Dipanggil dari SubscriptionService::activateFromInvoice()
+    // (webhook Midtrans, cek VA manual, verifikasi superadmin).
+    // ============================================================
+
+    public function paymentSuccess(SubscriptionInvoice $invoice, CompanySubscription $subscription): void
+    {
+        $invoice->loadMissing(['plan', 'vaPayment']);
+
+        $users = $this->billingManagersOf($invoice->company_id);
+
+        if ($users->isEmpty()) return;
+
+        $bank = $invoice->vaPayment ? ' via VA ' . strtoupper($invoice->vaPayment->bank) : '';
+
+        $this->notif->sendLater(
+            $users,
+            'subscription.payment_success',
+            '✅ Pembayaran berhasil',
+            self::rupiah($invoice->total_amount) . $bank . ' untuk paket ' . ($invoice->plan->name ?? '-')
+                . ' sudah diterima. Langganan aktif sampai ' . self::tgl($subscription->expires_at) . '.',
+            [
+                'category'  => 'subscription',
+                'action'    => 'subscription_invoice',
+                'reference' => $invoice,
+                'data'      => [
+                    'key'            => 'paid:' . $invoice->id,
+                    'invoice_id'     => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
+                    'expires_at'     => $subscription->expires_at?->toDateString(),
+                ],
+            ],
+        );
+    }
+}
+
+===== app\Services\SubscriptionService.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\Company;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Models\SubscriptionPlan;
+use App\Services\Notifiers\SubscriptionNotifier;
+use Illuminate\Support\Facades\Log;
+
+class SubscriptionService
+{
+    public function startTrial(Company $company): CompanySubscription
+    {
+        $subscription = $company->subscriptions()->first();
+
+        if ($subscription && $subscription->has_used_trial) {
+            throw new \Exception('Perusahaan sudah pernah memakai trial.');
+        }
+
+        $trialPlan = SubscriptionPlan::where('is_free', true)
+            ->where('is_active', true)
+            ->firstOrFail();
+
+        $data = [
+            'plan_id'        => $trialPlan->id,
+            'status'         => 'trial',
+            'started_at'     => now(),
+            'expires_at'     => now()->addDays($trialPlan->duration_days ?: 7),
+            'has_used_trial' => true,
+        ];
+
+        if ($subscription) {
+            $subscription->update($data);
+            return $subscription->fresh();
+        }
+
+        return CompanySubscription::create(array_merge($data, ['company_id' => $company->id]));
+    }
+
+    public function getStatus(Company $company): array
+    {
+        $subscription = $company->subscriptions()->with('plan')->first();
+
+        if (! $subscription) {
+            return [
+                'status'         => 'expired',
+                'is_active'      => false,
+                'days_remaining' => 0,
+                'started_at'     => null,
+                'expires_at'     => null,
+                'plan'           => null,
+            ];
+        }
+
+        $subscription->syncStatus();
+
+        return [
+            'status'         => $subscription->status,
+            'is_active'      => $subscription->isActive(),
+            'days_remaining' => $subscription->daysRemaining(),
+            'started_at'     => $subscription->started_at->toIso8601String(),
+            'expires_at'     => $subscription->expires_at->toIso8601String(),
+            'plan'           => [
+                'name'          => $subscription->plan->name,
+                'slug'          => $subscription->plan->slug,
+                'duration_days' => $subscription->plan->duration_days,
+            ],
+        ];
+    }
+
+    /**
+     * Dipanggil setelah invoice dinyatakan lunas
+     * (webhook Midtrans, cek VA manual, verifikasi superadmin).
+     */
+    public function activateFromInvoice(SubscriptionInvoice $invoice): CompanySubscription
+    {
+        $company      = $invoice->company;
+        $plan         = $invoice->plan;
+        $subscription = $company->subscriptions()->first();
+
+        if (! $subscription) {
+            $subscription = CompanySubscription::create([
+                'company_id' => $company->id,
+                'plan_id'    => $plan->id,
+                'status'     => 'expired',
+                'started_at' => now(),
+                'expires_at' => now(),
+            ]);
+        }
+
+        $subscription->activate($plan, $invoice);
+
+        $fresh = $subscription->fresh();
+
+        // 🔔 Notifikasi "Pembayaran berhasil" ke penanggung jawab billing.
+        // Dibungkus try supaya kalau notifikasi gagal, aktivasi langganan tetap jalan.
+        try {
+            app(SubscriptionNotifier::class)->paymentSuccess($invoice->fresh(), $fresh);
+        } catch (\Throwable $e) {
+            Log::error('Notifikasi pembayaran gagal', [
+                'invoice_id' => $invoice->id,
+                'error'      => $e->getMessage(),
+            ]);
+        }
+
+        return $fresh;
+    }
+
+    /**
+     * Sinkronkan status semua langganan yang sudah lewat expires_at:
+     * trial/active → grace → expired. Dipakai oleh command subscriptions:expire.
+     *
+     * @return int jumlah langganan yang statusnya berubah
+     */
+    public function expireAll(): int
+    {
+        $count = 0;
+
+        CompanySubscription::whereIn('status', ['trial', 'active', 'grace'])
+            ->where('expires_at', '<=', now())
+            ->get()
+            ->each(function (CompanySubscription $sub) use (&$count) {
+                $before = $sub->status;
+
+                if ($sub->syncStatus()->status !== $before) {
+                    $count++;
+                }
+            });
+
+        return $count;
+    }
+}
+
+===== app\Services\VaPaymentService.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\SubscriptionInvoice;
+use App\Models\VaPayment;
+use App\Services\Midtrans\CreateVAService;
+use App\Services\Midtrans\Midtrans;
+use Midtrans\Transaction;
+
+class VaPaymentService
+{
+    public function createVa(SubscriptionInvoice $invoice, string $bank): VaPayment
+    {
+        $service = new CreateVAService($invoice, $bank);
+
+        return $service->getVA();
+    }
+
+    public function checkStatus(VaPayment $vaPayment): array
+    {
+        new Midtrans(); // inisialisasi config
+
+        $result = Transaction::status($vaPayment->invoice->invoice_number);
+
+        $transactionStatus = $result->transaction_status;
+        $fraudStatus       = $result->fraud_status ?? 'accept';
+
+        if (in_array($transactionStatus, ['capture', 'settlement']) && $fraudStatus === 'accept') {
+            $vaPayment->markAsPaid(
+                $vaPayment->payment_request_id,
+                $result->transaction_id ?? null,
+            );
+            $vaPayment->invoice->markAsPaid();
+
+            app(SubscriptionService::class)->activateFromInvoice($vaPayment->invoice);
+        } elseif ($transactionStatus === 'expire') {
+            $vaPayment->markAsExpired();
+            $vaPayment->invoice->markAsExpired();
+        } elseif (in_array($transactionStatus, ['cancel', 'deny'])) {
+            $vaPayment->markAsCancelled();
+            $vaPayment->invoice->update(['status' => 'cancelled']);
+        }
+
+        return (array) $result;
+    }
+}
+
+===== config\subscription.php =====
+<?php
+
+/**
+ * Role yang jadi "penanggung jawab billing" per tipe company —
+ * cuma role ini yang boleh: lihat detail VA/tagihan pending, mulai trial,
+ * dan pilih paket (perpanjang langganan).
+ *
+ * Tambahkan/ubah sesuai kebutuhan untuk tipe yang belum ada di sini.
+ * Tipe yang tidak terdaftar akan fallback ke 'default'.
+ */
+return [
+    'billing_roles' => [
+        'company'      => 'hr',
+        'pesantren'    => 'ustadz',
+        'school'       => 'teacher',
+        'hospital'     => 'doctor',
+
+        // Belum dikonfirmasi — sementara pakai default di bawah,
+        // sesuaikan kalau role penanggung jawab billing-nya beda.
+        // 'government'   => 'hr',
+        // 'factory'      => 'hr',
+        // 'retail'       => 'hr',
+        // 'restaurant'   => 'hr',
+        // 'training'     => 'hr',
+        // 'organization' => 'hr',
+        // 'transport'    => 'hr',
+        // 'remote'       => 'hr',
+        // 'sports'       => 'hr',
+    ],
+
+    // Dipakai kalau tipe company tidak ada di mapping atas
+    'default_billing_role' => 'hr',
+];
+
+===== ROUTE API LANGGANAN =====
+
+  GET|HEAD        api/company/employee/loans/{id}/payments ............................................. Api\Employee\EmployeeLoanController@paymentHistory
+  GET|HEAD        api/company/hr/loans/{id}/payments ................................................. Api\HrCompany\HrCompanyLoanController@paymentHistory
+  POST            api/company/hr/loans/{id}/payments .................................................. Api\HrCompany\HrCompanyLoanController@recordPayment
+  DELETE          api/company/hr/loans/{id}/payments/{paymentId} ...................................... Api\HrCompany\HrCompanyLoanController@deletePayment
+  POST            api/school/admin/student-bills/{bill}/payments ..................................... Api\School\Admin\StudentBillController@recordPayment
+  PATCH           api/system/companies/{company}/deactivate ....................................................... Api\System\CompanyController@deactivate
+  PATCH           api/system/companies/{company}/reactivate ....................................................... Api\System\CompanyController@reactivate
+  POST            api/v1/midtrans/callback .............................................. midtrans.callback ΓÇ║ 
+Api\Payment\MidtransCallbackController@handle
+  POST            api/v1/subscriptions/check-va ....................................... subscriptions.check-va ΓÇ║ 
+Api\Payment\SubscriptionController@checkVa
+  GET|HEAD        api/v1/subscriptions/invoices ...................................... subscriptions.invoices ΓÇ║ 
+Api\Payment\SubscriptionController@invoices
+  GET|HEAD        api/v1/subscriptions/invoices/{id} ...................... subscriptions.invoice-detail ΓÇ║ 
+Api\Payment\SubscriptionController@invoiceDetail
+  GET|HEAD        api/v1/subscriptions/plans ............................................... subscriptions.plans ΓÇ║ 
+Api\Payment\SubscriptionController@plans
+  POST            api/v1/subscriptions/select ........................................ subscriptions.select ΓÇ║ 
+Api\Payment\SubscriptionController@selectPlan
+  GET|HEAD        api/v1/subscriptions/status ............................................ subscriptions.status ΓÇ║ 
+Api\Payment\SubscriptionController@status
+  POST            api/v1/subscriptions/trial .......................................... subscriptions.trial ΓÇ║ 
+Api\Payment\SubscriptionController@startTrial
+  POST            api/webhook/bca/inquiry .................................................. webhook.bca.inquiry ΓÇ║ 
+Api\Payment\BcaWebhookController@inquiry
+  POST            api/webhook/bca/payment .................................................. webhook.bca.payment ΓÇ║ 
+Api\Payment\BcaWebhookController@payment
+
+

@@ -11,7 +11,7 @@ use Symfony\Component\HttpFoundation\Response;
  * Kunci akses API kalau langganan perusahaan sudah habis.
  *
  *   trial / active  → boleh
- *   grace (3 hari)  → masih boleh (aplikasi menampilkan peringatan)
+ *   grace (N hari, diatur di Pengaturan Sistem) → masih boleh (aplikasi menampilkan peringatan)
  *   expired / cancelled / belum pernah berlangganan → DIKUNCI (HTTP 402)
  *
  * Yang TIDAK pernah dikunci (tidak memakai middleware ini):
@@ -58,7 +58,7 @@ class CheckSubscription
                 : 'Perusahaan belum berlangganan. Silakan hubungi HR / admin perusahaan.';
         } else {
             $message = $isBilling
-                ? 'Langganan perusahaan sudah berakhir dan masa toleransi 3 hari sudah habis. Silakan perpanjang di menu Langganan.'
+                ? 'Langganan perusahaan sudah berakhir dan masa toleransi ' . CompanySubscription::graceDays() . ' hari sudah habis. Silakan perpanjang di menu Langganan.'
                 : 'Akses aplikasi dikunci karena langganan perusahaan sudah berakhir. Silakan hubungi HR / admin perusahaan.';
         }
 

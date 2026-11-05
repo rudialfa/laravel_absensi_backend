@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Api\School\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Extracurricular;
 use App\Models\Student;
 use App\Models\StudentAchievement;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class StudentAchievementController extends Controller
 {
@@ -32,7 +34,16 @@ class StudentAchievementController extends Controller
         ]);
 
         $student = Student::findOrFail($data['student_id']);
-        abort_if($student->company_id !== $request->user()->company_id, 403);
+        abort_if((int) $student->company_id !== (int) $request->user()->company_id, 403);
+
+        // Ekskul (kalau diisi) harus milik sekolah yang sama
+        if (!empty($data['extracurricular_id'])) {
+            abort_unless(
+                Extracurricular::where('id', $data['extracurricular_id'])->where('company_id', $student->company_id)->exists(),
+                422,
+                'Ekskul bukan milik sekolah ini'
+            );
+        }
 
         $certPath = null;
         if ($request->hasFile('certificate')) {
@@ -56,10 +67,10 @@ class StudentAchievementController extends Controller
 
     public function destroy(StudentAchievement $achievement)
     {
-        abort_if($achievement->company_id !== request()->user()->company_id, 403);
+        abort_if((int) $achievement->company_id !== (int) request()->user()->company_id, 403);
 
         if ($achievement->certificate_path) {
-            \Storage::disk('public')->delete($achievement->certificate_path);
+            Storage::disk('public')->delete($achievement->certificate_path);
         }
 
         $achievement->delete();

@@ -8,7 +8,7 @@
             <div class="section-header">
                 <h1>Staff Superadmin</h1>
                 <div class="section-header-button">
-                    <a href="{{ route('superadmin.staff.create') }}" class="btn btn-primary">Tambah Staff</a>
+                    <a href="{{ route('superadmin.staff.create') }}" class="btn btn-primary"><i class="fas fa-plus"></i> Tambah Staff</a>
                 </div>
                 <div class="section-header-breadcrumb">
                     <div class="breadcrumb-item active"><a href="{{ route('superadmin.dashboard') }}">Dashboard</a></div>
@@ -17,86 +17,110 @@
             </div>
 
             <div class="section-body">
-                <div class="row">
-                    <div class="col-12">
-                        @include('layouts.alert')
-                    </div>
-                </div>
+                @include('layouts.alert')
 
                 <h2 class="section-title">Staff Internal</h2>
-                <p class="section-lead">Akun internal yang punya akses penuh ke panel superadmin.</p>
+                <p class="section-lead">
+                    Akun dengan akses penuh ke panel superadmin · {{ $totalActive }} aktif dari {{ $totalAll }} akun.
+                </p>
 
-                <div class="row mt-4">
-                    <div class="col-12">
-                        <div class="card">
-                            <div class="card-header">
-                                <h4>Daftar Staff</h4>
-                            </div>
-                            <div class="card-body">
-
-                                <div class="float-right">
-                                    <form method="GET" action="{{ route('superadmin.staff.index') }}">
-                                        <div class="input-group">
-                                            <input type="text" class="form-control" placeholder="Cari nama"
-                                                name="name" value="{{ request('name') }}">
-                                            <div class="input-group-append">
-                                                <button class="btn btn-primary"><i class="fas fa-search"></i></button>
-                                            </div>
-                                        </div>
-                                    </form>
+                <div class="card">
+                    <div class="card-body pb-0">
+                        <form method="GET" action="{{ route('superadmin.staff.index') }}">
+                            <div class="form-row">
+                                <div class="col-md-6 mb-3">
+                                    <input type="text" name="search" value="{{ $search }}" class="form-control"
+                                        placeholder="Cari nama, email, atau no. HP">
                                 </div>
-                                <div class="clearfix mb-3"></div>
-
-                                <div class="table-responsive">
-                                    <table class="table-striped table">
-                                        <thead>
-                                            <tr>
-                                                <th>Nama</th>
-                                                <th>Email</th>
-                                                <th>Telepon</th>
-                                                <th>Action</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            @forelse($staff as $s)
-                                                <tr>
-                                                    <td>{{ $s->name }}</td>
-                                                    <td>{{ $s->email }}</td>
-                                                    <td>{{ $s->phone ?? '-' }}</td>
-                                                    <td>
-                                                        <div class="d-flex justify-content-center">
-                                                            <a href='{{ route('superadmin.staff.edit', $s->id) }}'
-                                                                class="btn btn-sm btn-info btn-icon">
-                                                                <i class="fas fa-edit"></i>
-                                                                Edit
-                                                            </a>
-
-                                                            <form action="{{ route('superadmin.staff.destroy', $s->id) }}"
-                                                                method="POST" class="ml-2"
-                                                                onsubmit="return confirm('Yakin ingin menghapus staff ini?');">
-                                                                @csrf
-                                                                @method('DELETE')
-                                                                <button class="btn btn-sm btn-danger btn-icon">
-                                                                    <i class="fas fa-times"></i> Hapus
-                                                                </button>
-                                                            </form>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            @empty
-                                                <tr>
-                                                    <td colspan="4" class="text-center">Belum ada staff</td>
-                                                </tr>
-                                            @endforelse
-                                        </tbody>
-                                    </table>
+                                <div class="col-md-4 mb-3">
+                                    <select name="status" class="form-control">
+                                        <option value="">Semua Status</option>
+                                        <option value="active" @selected(request('status') === 'active')>Aktif</option>
+                                        <option value="inactive" @selected(request('status') === 'inactive')>Nonaktif</option>
+                                    </select>
                                 </div>
-                                <div class="float-right">
-                                    {{ $staff->withQueryString()->links() }}
+                                <div class="col-md-2 mb-3">
+                                    <button class="btn btn-primary btn-block"><i class="fas fa-search"></i> Cari</button>
                                 </div>
                             </div>
+                        </form>
+                    </div>
+
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-striped mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Nama</th>
+                                        <th>No. HP</th>
+                                        <th>Aktivitas Terakhir</th>
+                                        <th>Status</th>
+                                        <th class="text-center" style="width:170px">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($staff as $s)
+                                        @php
+                                            $activity = $lastActivity[$s->id] ?? null;
+                                            $isSelf = $s->id === auth()->id();
+                                        @endphp
+                                        <tr>
+                                            <td>
+                                                <a href="{{ route('superadmin.staff.show', $s->id) }}" class="font-weight-bold">{{ $s->name }}</a>
+                                                @if ($isSelf)
+                                                    <span class="badge badge-primary">Anda</span>
+                                                @endif
+                                                <div class="text-small text-muted">{{ $s->email }}</div>
+                                            </td>
+                                            <td>{{ $s->phone ?: '-' }}</td>
+                                            <td>
+                                                @if ($activity)
+                                                    {{ \Carbon\Carbon::parse($activity->last_at)->diffForHumans() }}
+                                                    <div class="text-small text-muted">{{ number_format($activity->total) }} aksi tercatat</div>
+                                                @else
+                                                    <span class="text-muted">Belum ada</span>
+                                                @endif
+                                            </td>
+                                            <td>
+                                                <span class="badge badge-{{ $s->is_active ? 'success' : 'secondary' }}">
+                                                    {{ $s->is_active ? 'Aktif' : 'Nonaktif' }}
+                                                </span>
+                                            </td>
+                                            <td class="text-center">
+                                                <a href="{{ route('superadmin.staff.show', $s->id) }}" class="btn btn-sm btn-info" title="Detail">
+                                                    <i class="fas fa-eye"></i>
+                                                </a>
+                                                <a href="{{ route('superadmin.staff.edit', $s->id) }}" class="btn btn-sm btn-primary" title="Edit">
+                                                    <i class="fas fa-edit"></i>
+                                                </a>
+                                                @unless ($isSelf)
+                                                    <form action="{{ route('superadmin.staff.toggle-active', $s->id) }}" method="POST" class="d-inline"
+                                                        onsubmit="return confirm('{{ $s->is_active ? 'Nonaktifkan' : 'Aktifkan' }} staff {{ addslashes($s->name) }}?')">
+                                                        @csrf
+                                                        @method('PATCH')
+                                                        <button class="btn btn-sm {{ $s->is_active ? 'btn-warning' : 'btn-success' }}"
+                                                            title="{{ $s->is_active ? 'Nonaktifkan' : 'Aktifkan' }}">
+                                                            <i class="fas {{ $s->is_active ? 'fa-user-slash' : 'fa-user-check' }}"></i>
+                                                        </button>
+                                                    </form>
+                                                @endunless
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr>
+                                            <td colspan="5" class="text-center text-muted py-4">Tidak ada staff yang cocok</td>
+                                        </tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
                         </div>
                     </div>
+
+                    @if ($staff->hasPages())
+                        <div class="card-footer text-right">
+                            {{ $staff->links() }}
+                        </div>
+                    @endif
                 </div>
             </div>
         </section>

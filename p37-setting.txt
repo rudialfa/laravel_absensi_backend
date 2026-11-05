@@ -1,0 +1,1810 @@
+﻿===== .\app\Console\Commands\SendSubscriptionNotifications.php =====
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\AppNotification;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Services\NotificationService;
+use App\Services\Notifiers\SubscriptionNotifier;
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Notifikasi LANGGANAN terjadwal — dijalankan scheduler setiap 15 menit.
+ *
+ *   ⏳ Trial hampir habis          H-3, H-1, hari H          (jam 09:00)
+ *   📅 Langganan hampir habis      H-7, H-3, H-1, hari H     (jam 09:00)
+ *   ⚠️ Masa toleransi (grace)      setiap hari selama 3 hari (jam 09:00)
+ *   🔒 Langganan kedaluwarsa       sekali, saat masa toleransi habis
+ *   💳 Invoice belum dibayar       sekali, 6 jam sebelum batas bayar
+ *   ❌ Invoice kedaluwarsa          sekali, setelah batas bayar lewat
+ *
+ * ("✅ Pembayaran berhasil" dikirim langsung saat pembayaran masuk,
+ *  lewat SubscriptionService::activateFromInvoice.)
+ *
+ * Penerima: penanggung jawab billing company (User::isBillingManager()).
+ * Aman dijalankan berkali-kali: setiap notifikasi punya "key" unik supaya tidak dobel.
+ *
+ * TES:
+ *   php artisan subscriptions:notify --at="2026-11-05 09:00" --dry-run
+ */
+class SendSubscriptionNotifications extends Command
+{
+    protected $signature = 'subscriptions:notify
+                            {--at= : Simulasi waktu sekarang, contoh "2026-11-05 09:00"}
+                            {--dry-run : Tampilkan saja, jangan kirim}';
+
+    protected $description = 'Kirim notifikasi langganan (trial, masa aktif, masa toleransi, invoice)';
+
+    /** Jam kirim pengingat harian */
+    private const SEND_AT = '09:00';
+
+    /** Pengingat sebelum berakhir (dalam hari) */
+    private const TRIAL_DAYS  = [3, 1, 0];
+    private const ACTIVE_DAYS = [7, 3, 1, 0];
+
+    /** Pengingat invoice: X jam sebelum due_at */
+    private const INVOICE_HOURS_BEFORE = 6;
+
+    private bool $dry = false;
+    private int $total = 0;
+
+    private NotificationService $notif;
+    private SubscriptionNotifier $subs;
+
+    public function handle(NotificationService $notif, SubscriptionNotifier $subs): int
+    {
+        $this->notif = $notif;
+        $this->subs  = $subs;
+        $this->dry   = (bool) $this->option('dry-run');
+
+        if ($this->option('at')) {
+            Carbon::setTestNow(Carbon::parse($this->option('at'), config('app.timezone')));
+            $this->warn('Simulasi waktu: ' . now()->format('Y-m-d H:i'));
+        }
+
+        try {
+            $this->subscriptionReminders();
+        } catch (\Throwable $e) {
+            Log::error('subscriptions:notify langganan gagal', ['error' => $e->getMessage()]);
+            $this->error('[langganan] ' . $e->getMessage());
+        }
+
+        try {
+            $this->invoiceReminders();
+        } catch (\Throwable $e) {
+            Log::error('subscriptions:notify invoice gagal', ['error' => $e->getMessage()]);
+            $this->error('[invoice] ' . $e->getMessage());
+        }
+
+        $this->info(($this->dry ? '[DRY RUN] ' : '') . "Selesai. Total notifikasi: {$this->total}");
+
+        Carbon::setTestNow();
+
+        return self::SUCCESS;
+    }
+
+    // ==========================================================
+    // HELPER
+    // ==========================================================
+
+    private function alreadySent(int $userId, string $type, string $key): bool
+    {
+        return AppNotification::where('user_id', $userId)
+            ->where('type', $type)
+            ->where('data->key', $key)
+            ->exists();
+    }
+
+    /** Hitung selisih hari kalender (abaikan jam) dari hari ini ke $date */
+    private function daysUntil(Carbon $date): int
+    {
+        $today  = now()->startOfDay();
+        $target = $date->copy()->timezone(config('app.timezone'))->startOfDay();
+
+        return (int) $today->diffInDays($target, false);
+    }
+
+    private function deliver(int $companyId, string $type, string $key, string $title, string $body, array $options, string $logLabel): void
+    {
+        $users = $this->subs->billingManagersOf($companyId)
+            ->reject(fn($u) => $this->alreadySent($u->id, $type, $key))
+            ->pluck('id')
+            ->all();
+
+        if (!$users) return;
+
+        $this->total += count($users);
+        $this->line(($this->dry ? '[DRY] ' : '') . "[{$companyId}] {$logLabel} → " . count($users) . " penerima: {$title}");
+
+        if (!$this->dry) {
+            $options['category']    = 'subscription';
+            $options['data']        = array_merge($options['data'] ?? [], ['key' => $key]);
+            $this->notif->send($users, $type, $title, $body, $options);
+        }
+    }
+
+    // ==========================================================
+    // ⏳ TRIAL / 📅 LANGGANAN / ⚠️ GRACE / 🔒 EXPIRED
+    // ==========================================================
+
+    private function subscriptionReminders(): void
+    {
+        // Pengingat harian hanya dikirim mulai jam SEND_AT
+        if (now()->lt(Carbon::parse(now()->toDateString() . ' ' . self::SEND_AT))) {
+            return;
+        }
+
+        $subs = CompanySubscription::with('plan')
+            ->whereIn('status', ['trial', 'active', 'grace', 'expired'])
+            ->get();
+
+        foreach ($subs as $sub) {
+            // Lewati baris "placeholder": dibuat saat invoice pertama, belum pernah aktif.
+            if ($sub->status === 'expired' && !$sub->has_used_trial && !$sub->last_invoice_id) {
+                continue;
+            }
+
+            if (!$sub->expires_at) continue;
+
+            $isTrial    = $sub->status === 'trial' || ($sub->plan?->is_free ?? false);
+            $expiresAt  = $sub->expires_at;
+            $graceUntil = $expiresAt->copy()->addDays(CompanySubscription::GRACE_PERIOD_DAYS);
+            $expDate    = $expiresAt->toDateString();
+            $planName   = $sub->plan->name ?? 'Langganan';
+
+            // ------------------------------------------------------
+            // 1) MASIH AKTIF → pengingat H-x
+            // ------------------------------------------------------
+            if (now()->lt($expiresAt)) {
+                $daysLeft = $this->daysUntil($expiresAt);
+                $steps    = $isTrial ? self::TRIAL_DAYS : self::ACTIVE_DAYS;
+
+                if (!in_array($daysLeft, $steps, true)) continue;
+
+                $when = $daysLeft === 0 ? 'hari ini' : "{$daysLeft} hari lagi";
+
+                if ($isTrial) {
+                    $type  = 'subscription.trial_ending';
+                    $title = "⏳ Masa trial berakhir {$when}";
+                    $body  = 'Trial berakhir ' . SubscriptionNotifier::tgl($expiresAt, true)
+                        . '. Pilih paket berlangganan supaya absensi tetap berjalan.';
+                } else {
+                    $type  = 'subscription.expiring';
+                    $title = "📅 Langganan berakhir {$when}";
+                    $body  = "Paket {$planName} berakhir " . SubscriptionNotifier::tgl($expiresAt, true)
+                        . '. Perpanjang sekarang supaya tidak terputus.';
+                }
+
+                $this->deliver(
+                    $sub->company_id,
+                    $type,
+                    "ending:{$expDate}:{$daysLeft}",
+                    $title,
+                    $body,
+                    ['action' => 'subscription_status', 'data' => ['expires_at' => $expDate, 'days_left' => $daysLeft]],
+                    $isTrial ? "trial_ending H-{$daysLeft}" : "expiring H-{$daysLeft}"
+                );
+
+                continue;
+            }
+
+            // ------------------------------------------------------
+            // 2) MASA TOLERANSI → setiap hari
+            // ------------------------------------------------------
+            if (now()->lt($graceUntil)) {
+                if (!$this->dry && $sub->status !== 'grace') {
+                    $sub->syncStatus();
+                }
+
+                $graceLeft = max(0, $this->daysUntil($graceUntil));
+                $today     = now()->toDateString();
+
+                $this->deliver(
+                    $sub->company_id,
+                    'subscription.grace',
+                    "grace:{$expDate}:{$today}",
+                    $graceLeft > 0
+                        ? "⚠️ Masa toleransi: sisa {$graceLeft} hari"
+                        : '⚠️ Masa toleransi berakhir hari ini',
+                    ($isTrial ? 'Masa trial' : "Paket {$planName}") . ' sudah berakhir ' . SubscriptionNotifier::tgl($expiresAt)
+                        . '. Aplikasi akan dikunci ' . SubscriptionNotifier::tgl($graceUntil, true)
+                        . ' jika belum diperpanjang.',
+                    ['action' => 'subscription_status', 'data' => ['expires_at' => $expDate, 'grace_until' => $graceUntil->toDateString(), 'days_left' => $graceLeft]],
+                    "grace sisa {$graceLeft}"
+                );
+
+                continue;
+            }
+
+            // ------------------------------------------------------
+            // 3) SUDAH KEDALUWARSA → sekali saja
+            //    (hanya dalam 3 hari setelah dikunci, supaya data lama tidak ikut dikirimi)
+            // ------------------------------------------------------
+            if (now()->lt($graceUntil->copy()->addDays(3))) {
+                if (!$this->dry && $sub->status !== 'expired') {
+                    $sub->syncStatus();
+                }
+
+                $this->deliver(
+                    $sub->company_id,
+                    'subscription.expired',
+                    "expired:{$expDate}",
+                    '🔒 Langganan kedaluwarsa',
+                    'Fitur aplikasi sudah dikunci sejak ' . SubscriptionNotifier::tgl($graceUntil, true)
+                        . '. Perpanjang langganan untuk membuka kembali.',
+                    ['action' => 'subscription_plans', 'data' => ['expires_at' => $expDate]],
+                    'expired'
+                );
+            }
+        }
+    }
+
+    // ==========================================================
+    // 💳 INVOICE BELUM DIBAYAR / ❌ INVOICE KEDALUWARSA
+    // ==========================================================
+
+    private function invoiceReminders(): void
+    {
+        // 💳 Pending, batas bayar tinggal <= 6 jam
+        $dueSoon = SubscriptionInvoice::with(['plan', 'vaPayment'])
+            ->where('status', 'pending')
+            ->whereBetween('due_at', [now(), now()->addHours(self::INVOICE_HOURS_BEFORE)])
+            ->get();
+
+        foreach ($dueSoon as $inv) {
+            $va = $inv->vaPayment;
+
+            $body = $inv->invoice_number . ' sebesar ' . SubscriptionNotifier::rupiah($inv->total_amount)
+                . ($va ? ' via VA ' . strtoupper($va->bank) . ' ' . $va->va_number : '')
+                . '. Batas bayar ' . SubscriptionNotifier::tgl($inv->due_at, true) . '.';
+
+            $this->deliver(
+                $inv->company_id,
+                'subscription.invoice_unpaid',
+                "invoice_due:{$inv->id}",
+                '💳 Invoice belum dibayar',
+                $body,
+                [
+                    'action'    => 'subscription_invoice',
+                    'reference' => $inv,
+                    'data'      => ['invoice_id' => $inv->id, 'invoice_number' => $inv->invoice_number],
+                ],
+                "invoice_unpaid #{$inv->id}"
+            );
+        }
+
+        // ❌ Lewat batas bayar dalam 24 jam terakhir, belum dibayar
+        $expired = SubscriptionInvoice::with('plan')
+            ->whereIn('status', ['pending', 'expired'])
+            ->whereBetween('due_at', [now()->subDay(), now()])
+            ->get();
+
+        foreach ($expired as $inv) {
+            // Kalau sudah ada invoice yang lebih baru, tidak perlu diingatkan lagi
+            $hasNewer = SubscriptionInvoice::where('company_id', $inv->company_id)
+                ->where('id', '>', $inv->id)
+                ->exists();
+
+            if ($hasNewer) continue;
+
+            $this->deliver(
+                $inv->company_id,
+                'subscription.invoice_expired',
+                "invoice_expired:{$inv->id}",
+                '❌ Invoice kedaluwarsa',
+                $inv->invoice_number . ' (' . ($inv->plan->name ?? '-') . ') tidak dibayar sampai batas waktu. '
+                    . 'Silakan pilih paket lagi untuk membuat tagihan baru.',
+                [
+                    'action'    => 'subscription_plans',
+                    'reference' => $inv,
+                    'data'      => ['invoice_id' => $inv->id, 'invoice_number' => $inv->invoice_number],
+                ],
+                "invoice_expired #{$inv->id}"
+            );
+        }
+    }
+}
+
+===== .\app\Http\Controllers\Web\SuperAdmin\SuperAdminCompanySubscriptionController.php =====
+<?php
+
+namespace App\Http\Controllers\Web\SuperAdmin;
+
+use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
+use App\Models\Company;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionPlan;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+
+/**
+ * Langganan tenant (1 tenant = 1 baris company_subscriptions).
+ * Semua perubahan manual WAJIB disertai alasan & tercatat di Audit Log.
+ */
+class SuperAdminCompanySubscriptionController extends Controller
+{
+    public const STATUSES = [
+        'trial'     => 'Trial',
+        'active'    => 'Aktif',
+        'grace'     => 'Masa toleransi',
+        'expired'   => 'Kedaluwarsa',
+        'cancelled' => 'Dibatalkan',
+    ];
+
+    // =========================================================
+    // INDEX
+    // =========================================================
+    public function index(Request $request)
+    {
+        // Rapikan status yang sudah lewat masa aktif (kalau scheduler belum jalan)
+        $this->syncOverdue();
+
+        $query = CompanySubscription::with(['company:id,name,type,is_active', 'plan:id,name,is_free']);
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->filled('plan_id')) {
+            $query->where('plan_id', $request->plan_id);
+        }
+
+        if ($request->filled('type')) {
+            $query->whereHas('company', fn($q) => $q->where('type', $request->type));
+        }
+
+        if ($request->filled('expiring')) {
+            $days = (int) $request->expiring;
+            $query->whereIn('status', ['trial', 'active'])
+                ->whereBetween('expires_at', [now(), now()->addDays($days)]);
+        }
+
+        if ($request->filled('search')) {
+            $like = '%' . addcslashes(trim($request->search), '%_\\') . '%';
+            $query->whereHas('company', fn($q) => $q->where('name', 'like', $like)->orWhere('email', 'like', $like));
+        }
+
+        match ($request->input('sort', 'expires')) {
+            'newest'  => $query->latest(),
+            'expires_desc' => $query->orderByDesc('expires_at'),
+            default   => $query->orderBy('expires_at'),
+        };
+
+        $subscriptions = $query->paginate(20)->withQueryString();
+
+        $counts = CompanySubscription::select('status', DB::raw('count(*) as total'))
+            ->groupBy('status')
+            ->pluck('total', 'status');
+
+        return view('pages.superadmin.subscriptions.index', [
+            'subscriptions'  => $subscriptions,
+            'plans'          => SubscriptionPlan::orderBy('sort_order')->get(['id', 'name']),
+            'counts'         => $counts,
+            'statuses'       => self::STATUSES,
+            'typeLabels'     => SuperAdminTenantController::SUPPORTED_TYPES,
+            'withoutSubCount' => Company::doesntHave('subscriptions')->count(),
+        ]);
+    }
+
+    // =========================================================
+    // CREATE + STORE — buat langganan untuk tenant yang belum punya
+    // =========================================================
+    public function create(Request $request)
+    {
+        $companies = Company::doesntHave('subscriptions')->orderBy('name')->get(['id', 'name', 'type']);
+
+        if ($companies->isEmpty()) {
+            return redirect()
+                ->route('superadmin.subscriptions.index')
+                ->with('warning', 'Semua tenant sudah punya langganan. Untuk mengubah, buka detail langganannya.');
+        }
+
+        return view('pages.superadmin.subscriptions.create', [
+            'companies'  => $companies,
+            'plans'      => SubscriptionPlan::orderBy('sort_order')->get(),
+            'presetId'   => $request->input('company_id'),
+            'typeLabels' => SuperAdminTenantController::SUPPORTED_TYPES,
+        ]);
+    }
+
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'company_id'    => ['required', 'exists:companies,id', Rule::unique('company_subscriptions', 'company_id')],
+            'plan_id'       => 'required|exists:subscription_plans,id',
+            'started_at'    => 'required|date',
+            'duration_days' => 'required|integer|min:1|max:3650',
+            'reason'        => 'required|string|max:500',
+        ], [
+            'company_id.unique' => 'Tenant ini sudah punya langganan.',
+        ], [
+            'company_id'    => 'tenant',
+            'plan_id'       => 'paket',
+            'started_at'    => 'tanggal mulai',
+            'duration_days' => 'durasi',
+            'reason'        => 'alasan',
+        ]);
+
+        $plan    = SubscriptionPlan::findOrFail($data['plan_id']);
+        $start   = Carbon::parse($data['started_at'])->startOfDay();
+        $expires = $start->copy()->addDays((int) $data['duration_days']);
+
+        $subscription = new CompanySubscription();
+        $subscription->forceFill([
+            'company_id'     => $data['company_id'],
+            'plan_id'        => $plan->id,
+            'status'         => $plan->is_free ? 'trial' : 'active',
+            'started_at'     => $start,
+            'expires_at'     => $expires,
+            'has_used_trial' => (bool) $plan->is_free,
+        ])->save();
+
+        $subscription->syncStatus();
+
+        $this->log('create_subscription', $subscription, "Langganan {$plan->name} dibuat manual untuk tenant #{$subscription->company_id}", $data['reason'], [
+            'started_at' => $start->toDateTimeString(),
+            'expires_at' => $expires->toDateTimeString(),
+        ]);
+
+        return redirect()
+            ->route('superadmin.subscriptions.show', $subscription->id)
+            ->with('success', "Langganan dibuat, aktif sampai {$expires->format('d M Y')}.");
+    }
+
+    // =========================================================
+    // SHOW
+    // =========================================================
+    public function show($id)
+    {
+        $subscription = CompanySubscription::with(['company', 'plan', 'lastInvoice'])->findOrFail($id);
+        $subscription->syncStatus();
+
+        $invoices = $subscription->invoices()
+            ->with(['plan', 'discount', 'vaPayment'])
+            ->latest('issued_at')
+            ->paginate(10);
+
+        $history = AuditLog::with('user:id,name')
+            ->where('subject_type', CompanySubscription::class)
+            ->where('subject_id', $subscription->id)
+            ->latest()
+            ->limit(15)
+            ->get();
+
+        $paidTotal = $subscription->invoices()->where('status', 'paid')->sum('total_amount');
+
+        return view('pages.superadmin.subscriptions.show', [
+            'subscription' => $subscription,
+            'invoices'     => $invoices,
+            'history'      => $history,
+            'paidTotal'    => $paidTotal,
+            'plans'        => SubscriptionPlan::orderBy('sort_order')->get(),
+            'statuses'     => self::STATUSES,
+            'graceDays'    => CompanySubscription::GRACE_PERIOD_DAYS,
+            'canDelete'    => !$subscription->invoices()->exists(),
+            'typeLabels'   => SuperAdminTenantController::SUPPORTED_TYPES,
+        ]);
+    }
+
+    // =========================================================
+    // EDIT + UPDATE — atur tanggal & status secara langsung
+    // =========================================================
+    public function edit($id)
+    {
+        $subscription = CompanySubscription::with(['company', 'plan'])->findOrFail($id);
+
+        return view('pages.superadmin.subscriptions.edit', [
+            'subscription' => $subscription,
+            'plans'        => SubscriptionPlan::orderBy('sort_order')->get(),
+            'statuses'     => self::STATUSES,
+        ]);
+    }
+
+    public function update(Request $request, $id)
+    {
+        $subscription = CompanySubscription::findOrFail($id);
+
+        $data = $request->validate([
+            'plan_id'        => 'required|exists:subscription_plans,id',
+            'status'         => ['required', Rule::in(array_keys(self::STATUSES))],
+            'started_at'     => 'required|date',
+            'expires_at'     => 'required|date|after:started_at',
+            'has_used_trial' => 'nullable|boolean',
+            'reason'         => 'required|string|max:500',
+        ], [], [
+            'plan_id'    => 'paket',
+            'started_at' => 'tanggal mulai',
+            'expires_at' => 'tanggal berakhir',
+            'reason'     => 'alasan',
+        ]);
+
+        $before = $this->snapshot($subscription);
+
+        $subscription->forceFill([
+            'plan_id'        => $data['plan_id'],
+            'status'         => $data['status'],
+            'started_at'     => Carbon::parse($data['started_at']),
+            'expires_at'     => Carbon::parse($data['expires_at']),
+            'has_used_trial' => $request->boolean('has_used_trial'),
+        ])->save();
+
+        // Status trial/active dengan tanggal yang sudah lewat otomatis jadi grace/expired
+        $subscription->syncStatus();
+
+        $this->log('update_subscription', $subscription, "Langganan tenant #{$subscription->company_id} diubah manual", $data['reason'], [
+            'before' => $before,
+            'after'  => $this->snapshot($subscription->fresh()),
+        ]);
+
+        return redirect()
+            ->route('superadmin.subscriptions.show', $subscription->id)
+            ->with('success', 'Langganan berhasil diperbarui. Status sekarang: ' . (self::STATUSES[$subscription->status] ?? $subscription->status) . '.');
+    }
+
+    // =========================================================
+    // AKSI CEPAT
+    // =========================================================
+
+    /** Perpanjang N hari (dari tanggal berakhir kalau masih aktif, dari hari ini kalau sudah lewat) */
+    public function extend(Request $request, $id)
+    {
+        $subscription = CompanySubscription::with('plan')->findOrFail($id);
+
+        $data = $request->validate([
+            'extend_days' => 'required|integer|min:1|max:730',
+            'reason'      => 'required|string|max:500',
+        ], [], ['extend_days' => 'jumlah hari', 'reason' => 'alasan']);
+
+        $before = $this->snapshot($subscription);
+
+        $base = $subscription->expires_at && $subscription->expires_at->isFuture()
+            ? $subscription->expires_at->copy()
+            : now();
+
+        $subscription->expires_at = $base->addDays((int) $data['extend_days']);
+
+        // Yang sudah terkunci dibuka lagi; trial tetap trial kalau paketnya gratis
+        if (in_array($subscription->status, ['expired', 'grace', 'cancelled'], true)) {
+            $subscription->status = ($subscription->plan && $subscription->plan->is_free) ? 'trial' : 'active';
+        }
+
+        $subscription->save();
+
+        $this->log('extend_subscription', $subscription, "Langganan tenant #{$subscription->company_id} diperpanjang {$data['extend_days']} hari", $data['reason'], [
+            'before' => $before,
+            'after'  => $this->snapshot($subscription),
+        ]);
+
+        return back()->with('success', "Diperpanjang {$data['extend_days']} hari, aktif sampai {$subscription->expires_at->format('d M Y H:i')}.");
+    }
+
+    /** Ganti paket tanpa pembayaran */
+    public function changePlan(Request $request, $id)
+    {
+        $subscription = CompanySubscription::with('plan')->findOrFail($id);
+
+        $data = $request->validate([
+            'plan_id'      => 'required|exists:subscription_plans,id',
+            'reset_period' => 'nullable|boolean',
+            'reason'       => 'required|string|max:500',
+        ], [], ['plan_id' => 'paket', 'reason' => 'alasan']);
+
+        $newPlan = SubscriptionPlan::findOrFail($data['plan_id']);
+
+        if ((int) $newPlan->id === (int) $subscription->plan_id && !$request->boolean('reset_period')) {
+            return back()->with('warning', 'Paket yang dipilih sama dengan paket sekarang.');
+        }
+
+        $before = $this->snapshot($subscription);
+
+        $subscription->plan_id = $newPlan->id;
+
+        if ($request->boolean('reset_period')) {
+            $subscription->started_at = now();
+            $subscription->expires_at = now()->addDays($newPlan->duration_days);
+            $subscription->status     = $newPlan->is_free ? 'trial' : 'active';
+        } elseif ($subscription->status === 'trial' && !$newPlan->is_free) {
+            // Dari trial ke paket berbayar → status jadi aktif
+            $subscription->status = 'active';
+        }
+
+        if ($newPlan->is_free) {
+            $subscription->has_used_trial = true;
+        }
+
+        $subscription->save();
+        $subscription->syncStatus();
+
+        $this->log('change_subscription_plan', $subscription, "Paket tenant #{$subscription->company_id} diganti ke {$newPlan->name}", $data['reason'], [
+            'before'       => $before,
+            'after'        => $this->snapshot($subscription->fresh()),
+            'reset_period' => $request->boolean('reset_period'),
+        ]);
+
+        return back()->with('success', "Paket diganti ke {$newPlan->name}.");
+    }
+
+    /** Batalkan (akses langsung terkunci) */
+    public function cancel(Request $request, $id)
+    {
+        $subscription = CompanySubscription::findOrFail($id);
+
+        $data = $request->validate(['reason' => 'required|string|max:500'], [], ['reason' => 'alasan']);
+
+        if ($subscription->status === 'cancelled') {
+            return back()->with('warning', 'Langganan ini sudah dibatalkan.');
+        }
+
+        $before = $this->snapshot($subscription);
+        $subscription->forceFill(['status' => 'cancelled'])->save();
+
+        $this->log('cancel_subscription', $subscription, "Langganan tenant #{$subscription->company_id} dibatalkan", $data['reason'], [
+            'before' => $before,
+        ]);
+
+        return back()->with('success', 'Langganan dibatalkan. Seluruh pengguna tenant terkunci sampai langganan dibuka lagi.');
+    }
+
+    /** Buka lagi yang dibatalkan/kedaluwarsa tanpa mengubah tanggal (hanya kalau tanggal masih berlaku) */
+    public function reactivate(Request $request, $id)
+    {
+        $subscription = CompanySubscription::with('plan')->findOrFail($id);
+
+        if ($subscription->expires_at && $subscription->expires_at->isPast()) {
+            return back()->with('error', 'Masa aktif sudah lewat. Gunakan "Perpanjang" agar tanggal berakhir ikut diperbarui.');
+        }
+
+        $before = $this->snapshot($subscription);
+
+        $subscription->forceFill([
+            'status' => ($subscription->plan && $subscription->plan->is_free) ? 'trial' : 'active',
+        ])->save();
+
+        $this->log('reactivate_subscription', $subscription, "Langganan tenant #{$subscription->company_id} diaktifkan kembali", $request->input('reason'), [
+            'before' => $before,
+        ]);
+
+        return back()->with('success', 'Langganan diaktifkan kembali.');
+    }
+
+    /** Sinkronkan status 1 langganan sesuai tanggal (sama seperti scheduler) */
+    public function sync($id)
+    {
+        $subscription = CompanySubscription::findOrFail($id);
+        $before = $subscription->status;
+
+        $subscription->syncStatus();
+
+        return back()->with('success', $before === $subscription->status
+            ? 'Status sudah sesuai: ' . (self::STATUSES[$subscription->status] ?? $subscription->status) . '.'
+            : 'Status diperbarui dari ' . (self::STATUSES[$before] ?? $before) . ' ke ' . (self::STATUSES[$subscription->status] ?? $subscription->status) . '.');
+    }
+
+    // =========================================================
+    // DESTROY — hanya jika belum punya invoice
+    // =========================================================
+    public function destroy(Request $request, $id)
+    {
+        $subscription = CompanySubscription::with('company')->findOrFail($id);
+
+        $data = $request->validate(['reason' => 'required|string|max:500'], [], ['reason' => 'alasan']);
+
+        // FK invoice → subscription = cascade: menghapus langganan akan menghapus riwayat invoice
+        if ($subscription->invoices()->exists()) {
+            return back()->with('error', 'Langganan ini punya riwayat invoice, jadi tidak boleh dihapus (riwayat pembayaran ikut terhapus). Gunakan "Batalkan".');
+        }
+
+        $snapshot  = $this->snapshot($subscription);
+        $companyId = $subscription->company_id;
+
+        $subscription->delete();
+
+        AuditLog::record('delete_subscription', null, "Langganan tenant #{$companyId} dihapus. Alasan: {$data['reason']}", array_merge($snapshot, [
+            'company_id' => $companyId,
+            'reason'     => $data['reason'],
+        ]));
+
+        return redirect()
+            ->route('superadmin.tenants.show', $companyId)
+            ->with('success', 'Langganan dihapus. Tenant sekarang berstatus belum berlangganan (bisa mulai trial lagi dari aplikasi bila belum pernah trial).');
+    }
+
+    // =========================================================
+    // HELPER
+    // =========================================================
+
+    private function snapshot(CompanySubscription $s): array
+    {
+        return [
+            'plan_id'        => $s->plan_id,
+            'status'         => $s->status,
+            'started_at'     => optional($s->started_at)->toDateTimeString(),
+            'expires_at'     => optional($s->expires_at)->toDateTimeString(),
+            'has_used_trial' => (bool) $s->has_used_trial,
+        ];
+    }
+
+    private function log(string $action, CompanySubscription $subject, string $description, ?string $reason, array $meta = []): void
+    {
+        AuditLog::record(
+            $action,
+            $subject,
+            $reason ? "{$description}. Alasan: {$reason}" : $description,
+            array_merge($meta, ['reason' => $reason])
+        );
+    }
+
+    /** Status trial/active/grace yang tanggalnya sudah lewat → disinkronkan */
+    private function syncOverdue(): void
+    {
+        CompanySubscription::whereIn('status', ['trial', 'active', 'grace'])
+            ->where('expires_at', '<=', now())
+            ->limit(200)
+            ->get()
+            ->each->syncStatus();
+    }
+}
+
+===== .\app\Http\Kernel.php =====
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    /**
+     * The application's global HTTP middleware stack.
+     *
+     * These middleware are run during every request to your application.
+     *
+     * @var array<int, class-string|string>
+     */
+    protected $middleware = [
+        // \App\Http\Middleware\TrustHosts::class,
+        \App\Http\Middleware\TrustProxies::class,
+        \Illuminate\Http\Middleware\HandleCors::class,
+        \App\Http\Middleware\PreventRequestsDuringMaintenance::class,
+        \Illuminate\Foundation\Http\Middleware\ValidatePostSize::class,
+        \App\Http\Middleware\TrimStrings::class,
+        \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
+    ];
+
+    /**
+     * The application's route middleware groups.
+     *
+     * @var array<string, array<int, class-string|string>>
+     */
+    protected $middlewareGroups = [
+        'web' => [
+            \App\Http\Middleware\EncryptCookies::class,
+            \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
+            \Illuminate\Session\Middleware\StartSession::class,
+            \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+            \App\Http\Middleware\VerifyCsrfToken::class,
+            \Illuminate\Routing\Middleware\SubstituteBindings::class,
+        ],
+
+        'api' => [
+            \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
+            \Illuminate\Routing\Middleware\ThrottleRequests::class . ':api',
+            \Illuminate\Routing\Middleware\SubstituteBindings::class,
+        ],
+    ];
+
+    /**
+     * The application's middleware aliases.
+     *
+     * Aliases may be used instead of class names to conveniently assign middleware to routes and groups.
+     *
+     * @var array<string, class-string|string>
+     */
+    protected $middlewareAliases = [
+        'auth' => \App\Http\Middleware\Authenticate::class,
+        'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,
+        'auth.session' => \Illuminate\Session\Middleware\AuthenticateSession::class,
+        'cache.headers' => \Illuminate\Http\Middleware\SetCacheHeaders::class,
+        'can' => \Illuminate\Auth\Middleware\Authorize::class,
+        'guest' => \App\Http\Middleware\RedirectIfAuthenticated::class,
+        'password.confirm' => \Illuminate\Auth\Middleware\RequirePassword::class,
+        'precognitive' => \Illuminate\Foundation\Http\Middleware\HandlePrecognitiveRequests::class,
+        'signed' => \App\Http\Middleware\ValidateSignature::class,
+        'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+        'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
+        'role' => \App\Http\Middleware\RoleMiddleware::class,
+        'context' => \App\Http\Middleware\ContextMiddleware::class,
+        'verify.device' => \App\Http\Middleware\VerifyDeviceToken::class,
+
+        // BARU: kunci akses kalau langganan perusahaan habis (lewat masa toleransi 3 hari)
+        'subscription' => \App\Http\Middleware\CheckSubscription::class,
+
+        // BARU: tolak & logout akun yang sudah dinonaktifkan (dipakai panel superadmin)
+        'active' => \App\Http\Middleware\EnsureUserIsActive::class,
+    ];
+}
+
+===== .\app\Http\Middleware\Authenticate.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Auth\Middleware\Authenticate as Middleware;
+use Illuminate\Http\Request;
+
+class Authenticate extends Middleware
+{
+    /**
+     * Get the path the user should be redirected to when they are not authenticated.
+     */
+    protected function redirectTo(Request $request): ?string
+    {
+        return $request->expectsJson() ? null : route('login');
+    }
+}
+
+===== .\app\Http\Middleware\CheckSubscription.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use App\Models\CompanySubscription;
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+/**
+ * Kunci akses API kalau langganan perusahaan sudah habis.
+ *
+ *   trial / active  → boleh
+ *   grace (3 hari)  → masih boleh (aplikasi menampilkan peringatan)
+ *   expired / cancelled / belum pernah berlangganan → DIKUNCI (HTTP 402)
+ *
+ * Yang TIDAK pernah dikunci (tidak memakai middleware ini):
+ *   /auth/*, /v1/subscriptions/*, /notifications/*, /support-tickets/*,
+ *   /help-articles/*, /policies/*
+ *
+ * Status di database ikut dirapikan di sini (syncStatus), jadi kunci tetap
+ * jalan walaupun scheduler belum sempat berjalan.
+ */
+class CheckSubscription
+{
+    /** Role yang tidak pernah dikunci (pengelola aplikasi). */
+    private const EXEMPT_ROLES = ['superadmin', 'staff'];
+
+    public function handle(Request $request, Closure $next): Response
+    {
+        $user = $request->user();
+
+        if (! $user || ! $user->company_id || in_array($user->role, self::EXEMPT_ROLES, true)) {
+            return $next($request);
+        }
+
+        $subscription = CompanySubscription::where('company_id', $user->company_id)->first();
+
+        if ($subscription) {
+            $subscription->syncStatus();
+        }
+
+        $info = [
+            'active'     => $subscription ? $subscription->isActive() : false,
+            'status'     => $subscription?->status ?? 'none',
+            'expires_at' => $subscription?->expires_at?->toIso8601String(),
+        ];
+
+        if ($info['active']) {
+            return $next($request);
+        }
+
+        $isBilling = method_exists($user, 'isBillingManager') && $user->isBillingManager();
+
+        if ($info['status'] === 'none') {
+            $message = $isBilling
+                ? 'Perusahaan belum berlangganan. Silakan mulai trial atau pilih paket di menu Langganan.'
+                : 'Perusahaan belum berlangganan. Silakan hubungi HR / admin perusahaan.';
+        } else {
+            $message = $isBilling
+                ? 'Langganan perusahaan sudah berakhir dan masa toleransi 3 hari sudah habis. Silakan perpanjang di menu Langganan.'
+                : 'Akses aplikasi dikunci karena langganan perusahaan sudah berakhir. Silakan hubungi HR / admin perusahaan.';
+        }
+
+        return response()->json([
+            'status'  => false,
+            'success' => false,
+            'code'    => 'subscription_locked',
+            'message' => $message,
+            'data'    => [
+                'subscription_status' => $info['status'],
+                'expires_at'          => $info['expires_at'],
+                'is_billing_manager'  => $isBilling,
+            ],
+        ], 402);
+    }
+}
+
+===== .\app\Http\Middleware\ContextMiddleware.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class ContextMiddleware
+{
+
+
+    // kode 2
+    public function handle(Request $request, Closure $next, $type, $role = null): Response
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return $this->unauthorized($request);
+        }
+
+        // Context khusus system (superadmin) — tidak terikat company
+        if ($type === 'system') {
+            if ($user->company_id !== null || $user->role !== $role) {
+                return $this->wrongRole($request);
+            }
+            return $next($request);
+        }
+
+        // Cek company type (untuk company/pesantren/school)
+        if (!$user->company || $user->company->type !== $type) {
+            return $this->wrongContext($request);
+        }
+
+        // Sekolah/organisasi sedang dinonaktifkan — tolak walau token masih valid
+        if (!$user->company->is_active) {
+            return response()->json([
+                'message' => 'Organisasi Anda sedang dinonaktifkan. Hubungi admin pusat.',
+            ], 403);
+        }
+
+        // Jika ada role requirement
+        if ($role && $user->role !== $role) {
+            return $this->wrongRole($request);
+        }
+
+        return $next($request);
+    }
+
+    /**
+     * Handle unauthorized access
+     */
+    private function unauthorized(Request $request)
+    {
+        if ($request->expectsJson()) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        return redirect()->route('login.form')->with('error', 'Silakan login terlebih dahulu');
+    }
+
+    /**
+     * Handle wrong context
+     */
+    private function wrongContext(Request $request)
+    {
+        if ($request->expectsJson()) {
+            return response()->json(['message' => 'Wrong app context'], 403);
+        }
+
+        return redirect()->route('login.form')->with('error', 'Anda tidak memiliki akses ke halaman ini');
+    }
+
+    /**
+     * Handle wrong role
+     */
+    private function wrongRole(Request $request)
+    {
+        if ($request->expectsJson()) {
+            return response()->json(['message' => 'Wrong role'], 403);
+        }
+
+        return redirect()->route('login.form')->with('error', 'Role Anda tidak memiliki akses ke halaman ini');
+    }
+}
+
+===== .\app\Http\Middleware\EncryptCookies.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Cookie\Middleware\EncryptCookies as Middleware;
+
+class EncryptCookies extends Middleware
+{
+    /**
+     * The names of the cookies that should not be encrypted.
+     *
+     * @var array<int, string>
+     */
+    protected $except = [
+        //
+    ];
+}
+
+===== .\app\Http\Middleware\EnsureUserIsActive.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Symfony\Component\HttpFoundation\Response;
+
+/**
+ * Tolak akses (dan logout) kalau akun yang sedang login sudah dinonaktifkan.
+ * Dipakai di panel web: begitu staff dinonaktifkan, request berikutnya langsung keluar.
+ */
+class EnsureUserIsActive
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        $user = $request->user();
+
+        if ($user && !$user->is_active) {
+            if ($request->expectsJson()) {
+                return response()->json(['message' => 'Akun Anda telah dinonaktifkan.'], 403);
+            }
+
+            Auth::guard('web')->logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+
+            return redirect()
+                ->route('login.form')
+                ->withErrors(['email' => 'Akun Anda telah dinonaktifkan. Hubungi superadmin lain.']);
+        }
+
+        return $next($request);
+    }
+}
+
+===== .\app\Http\Middleware\PreventRequestsDuringMaintenance.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance as Middleware;
+
+class PreventRequestsDuringMaintenance extends Middleware
+{
+    /**
+     * The URIs that should be reachable while maintenance mode is enabled.
+     *
+     * @var array<int, string>
+     */
+    protected $except = [
+        //
+    ];
+}
+
+===== .\app\Http\Middleware\RedirectIfAuthenticated.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use App\Providers\RouteServiceProvider;
+use Closure;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Symfony\Component\HttpFoundation\Response;
+
+class RedirectIfAuthenticated
+{
+    /**
+     * Handle an incoming request.
+     *
+     * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
+     */
+    public function handle(Request $request, Closure $next, string ...$guards): Response
+    {
+        $guards = empty($guards) ? [null] : $guards;
+
+        foreach ($guards as $guard) {
+            if (Auth::guard($guard)->check()) {
+                return redirect(RouteServiceProvider::HOME);
+            }
+        }
+
+        return $next($request);
+    }
+}
+
+===== .\app\Http\Middleware\RoleMiddleware.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Support\Facades\Auth;
+
+class RoleMiddleware
+{
+ public function handle($request, Closure $next, $role)
+    {
+        if (!Auth::check()) {
+
+            // API request
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => 'Unauthenticated'
+                ], 401);
+            }
+
+            // WEB request
+            return redirect()->route('login.form');
+        }
+
+        // =========================
+        // 2. ROLE TIDAK SESUAI
+        // =========================
+        if (Auth::user()->role !== $role) {
+
+            // API request
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => 'Forbidden. Role tidak diizinkan.'
+                ], 403);
+            }
+
+            // WEB request
+            abort(403, 'Akses ditolak.');
+        }
+
+        return $next($request);
+    }
+}
+
+===== .\app\Http\Middleware\TrimStrings.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Foundation\Http\Middleware\TrimStrings as Middleware;
+
+class TrimStrings extends Middleware
+{
+    /**
+     * The names of the attributes that should not be trimmed.
+     *
+     * @var array<int, string>
+     */
+    protected $except = [
+        'current_password',
+        'password',
+        'password_confirmation',
+    ];
+}
+
+===== .\app\Http\Middleware\TrustHosts.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Http\Middleware\TrustHosts as Middleware;
+
+class TrustHosts extends Middleware
+{
+    /**
+     * Get the host patterns that should be trusted.
+     *
+     * @return array<int, string|null>
+     */
+    public function hosts(): array
+    {
+        return [
+            $this->allSubdomainsOfApplicationUrl(),
+        ];
+    }
+}
+
+===== .\app\Http\Middleware\TrustProxies.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Http\Middleware\TrustProxies as Middleware;
+use Illuminate\Http\Request;
+
+class TrustProxies extends Middleware
+{
+    /**
+     * The trusted proxies for this application.
+     *
+     * @var array<int, string>|string|null
+     */
+    protected $proxies = '*';
+
+    /**
+     * The headers that should be used to detect proxies.
+     *
+     * @var int
+     */
+    protected $headers =
+        Request::HEADER_X_FORWARDED_FOR |
+        Request::HEADER_X_FORWARDED_HOST |
+        Request::HEADER_X_FORWARDED_PORT |
+        Request::HEADER_X_FORWARDED_PROTO |
+        Request::HEADER_X_FORWARDED_AWS_ELB;
+}
+
+===== .\app\Http\Middleware\ValidateSignature.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Routing\Middleware\ValidateSignature as Middleware;
+
+class ValidateSignature extends Middleware
+{
+    /**
+     * The names of the query string parameters that should be ignored.
+     *
+     * @var array<int, string>
+     */
+    protected $except = [
+        // 'fbclid',
+        // 'utm_campaign',
+        // 'utm_content',
+        // 'utm_medium',
+        // 'utm_source',
+        // 'utm_term',
+    ];
+}
+
+===== .\app\Http\Middleware\VerifyCsrfToken.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken as Middleware;
+
+class VerifyCsrfToken extends Middleware
+{
+    /**
+     * The URIs that should be excluded from CSRF verification.
+     *
+     * @var array<int, string>
+     */
+    protected $except = [
+        'api/*',
+        'reset-password-form',
+    ];
+}
+
+===== .\app\Http\Middleware\VerifyDeviceToken.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use App\Models\AttendanceDevice;
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class VerifyDeviceToken
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        $token = $request->header('X-Device-Token');
+
+        if (!$token) {
+            return $this->unauthorized('Device token tidak ditemukan');
+        }
+
+        $device = AttendanceDevice::with('company:id,name,is_active')
+            ->where('device_token', $token)
+            ->where('is_active', true)
+            ->first();
+
+        if (!$device) {
+            return $this->unauthorized('Device token tidak valid atau device nonaktif');
+        }
+
+        // Sekolah yang disuspend superadmin tidak boleh tetap absen lewat kiosk.
+        // (Token kiosk bukan token Sanctum, jadi tidak ikut terhapus saat tenant disuspend.)
+        if (!$device->company || !$device->company->is_active) {
+            return $this->unauthorized('Akun sekolah sedang dinonaktifkan. Hubungi admin sekolah.');
+        }
+
+        // Cukup catat last_seen_at maksimal 1x per menit, supaya tidak menulis DB di setiap request kiosk
+        if (!$device->last_seen_at || $device->last_seen_at->lt(now()->subMinute())) {
+            $device->forceFill(['last_seen_at' => now()])->saveQuietly();
+        }
+
+        $request->attributes->set('attendanceDevice', $device);
+
+        return $next($request);
+    }
+
+    private function unauthorized(string $message)
+    {
+        return response()->json([
+            'status'  => false,
+            'message' => $message,
+            'data'    => null,
+        ], 401);
+    }
+}
+
+===== .\app\Models\CompanySubscription.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+
+class CompanySubscription extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'started_at'     => 'datetime',
+        'expires_at'     => 'datetime',
+        'has_used_trial' => 'boolean',
+    ];
+
+    // Masa tenggang setelah expires_at sebelum status jadi "expired"
+    public const GRACE_PERIOD_DAYS = 3;
+
+    // ============================================================
+    // RELATIONS
+    // ============================================================
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class, 'company_id');
+    }
+
+    public function plan()
+    {
+        return $this->belongsTo(SubscriptionPlan::class, 'plan_id');
+    }
+
+    public function lastInvoice()
+    {
+        return $this->belongsTo(SubscriptionInvoice::class, 'last_invoice_id');
+    }
+
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'subscription_id');
+    }
+
+    // ============================================================
+    // SCOPES
+    // ============================================================
+
+    /** Subscription yang masih "penuh aktif" (belum masuk grace) */
+    public function scopeActive($query)
+    {
+        return $query->whereIn('status', ['trial', 'active']);
+    }
+
+    /** Subscription yang sudah benar-benar dikunci (bukan grace) */
+    public function scopeLocked($query)
+    {
+        return $query->whereIn('status', ['expired', 'cancelled']);
+    }
+
+    public function scopeExpiringSoon($query, int $days = 3)
+    {
+        return $query
+            ->whereIn('status', ['trial', 'active'])
+            ->whereBetween('expires_at', [now(), now()->addDays($days)]);
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    /**
+     * Apakah subscription masih boleh akses fitur?
+     * trial/active → aktif selama belum lewat expires_at.
+     * grace        → tetap dianggap aktif sampai expires_at + GRACE_PERIOD_DAYS.
+     * INI yang dipakai untuk unlock/lock fitur (bukan scopeActive di atas,
+     * yang cuma buat query/reporting "subscription murni aktif").
+     */
+    public function isActive(): bool
+    {
+        if ($this->status === 'cancelled') {
+            return false;
+        }
+
+        if (in_array($this->status, ['trial', 'active'])) {
+            return Carbon::now()->lessThan($this->expires_at);
+        }
+
+        if ($this->status === 'grace') {
+            return Carbon::now()->lessThan(
+                $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            );
+        }
+
+        return false; // expired
+    }
+
+    public function isLocked(): bool
+    {
+        return ! $this->isActive();
+    }
+
+    public function isGrace(): bool
+    {
+        return $this->status === 'grace';
+    }
+
+    /**
+     * Sisa hari. Untuk trial/active → sampai expires_at.
+     * Untuk grace → sampai batas akhir masa tenggang (expires_at + GRACE_PERIOD_DAYS).
+     */
+    public function daysRemaining(): int
+    {
+        if (in_array($this->status, ['expired', 'cancelled'])) {
+            return 0;
+        }
+
+        $target = $this->status === 'grace'
+            ? $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            : $this->expires_at;
+
+        return max(0, (int) Carbon::now()->diffInDays($target, false));
+    }
+
+    /**
+     * Sinkronkan status di DB berdasarkan expires_at saat ini:
+     * trial/active yang lewat expires_at → grace → (lewat grace period) → expired.
+     * Dipanggil setiap kali status dibaca (self-healing), jadi tidak
+     * bergantung 100% ke scheduler harian.
+     */
+    public function syncStatus(): self
+    {
+        if (in_array($this->status, ['expired', 'cancelled'])) {
+            return $this;
+        }
+
+        if (Carbon::now()->greaterThanOrEqualTo($this->expires_at)) {
+            $graceUntil = $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS);
+            $newStatus  = Carbon::now()->lessThan($graceUntil) ? 'grace' : 'expired';
+
+            if ($newStatus !== $this->status) {
+                $this->update(['status' => $newStatus]);
+            }
+        }
+
+        return $this;
+    }
+
+    /** Tandai expired (dipanggil scheduler command) */
+    public function markAsExpired(): void
+    {
+        $this->update(['status' => 'expired']);
+    }
+
+    /**
+     * Aktifkan setelah pembayaran berhasil.
+     * Jika masih aktif (termasuk grace), perpanjang dari expires_at lama —
+     * bukan dari hari ini, supaya tidak rugi sisa hari yang belum kepakai.
+     */
+    public function activate(SubscriptionPlan $plan, SubscriptionInvoice $invoice): void
+    {
+        $base = $this->isActive()
+            ? $this->expires_at->copy()
+            : Carbon::now();
+
+        $this->update([
+            'plan_id'         => $plan->id,
+            'status'          => 'active',
+            'started_at'      => $this->started_at ?? Carbon::now(),
+            'expires_at'      => $base->addDays($plan->duration_days),
+            'last_invoice_id' => $invoice->id,
+        ]);
+    }
+}
+
+===== .\app\Models\SystemSetting.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class SystemSetting extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    public static function get(string $key, $default = null)
+    {
+        return static::where('key', $key)->value('value') ?? $default;
+    }
+
+    public static function set(string $key, $value): void
+    {
+        static::updateOrCreate(['key' => $key], ['value' => $value]);
+    }
+}
+
+===== .\app\Providers\AppServiceProvider.php =====
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Pagination\Paginator;
+use Illuminate\Support\Facades\View; // ← INI YANG KURANG
+use Illuminate\Support\ServiceProvider;
+use App\View\Composers\SuperAdminGlobalDataComposer;;
+
+class AppServiceProvider extends ServiceProvider
+{
+    /**
+     * Register any application services.
+     */
+    public function register(): void
+    {
+        //
+    }
+
+    /**
+     * Bootstrap any application services.
+     */
+    public function boot(): void
+    {
+        Paginator::useBootstrapFive();
+
+        View::composer('pages.superadmin.*', \App\View\Composers\SuperAdminGlobalDataComposer::class);
+    }
+}
+
+===== .\bootstrap\app.php =====
+<?php
+
+/*
+|--------------------------------------------------------------------------
+| Create The Application
+|--------------------------------------------------------------------------
+|
+| The first thing we will do is create a new Laravel application instance
+| which serves as the "glue" for all the components of Laravel, and is
+| the IoC container for the system binding all of the various parts.
+|
+*/
+
+$app = new Illuminate\Foundation\Application(
+    $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__)
+);
+
+/*
+|--------------------------------------------------------------------------
+| Bind Important Interfaces
+|--------------------------------------------------------------------------
+|
+| Next, we need to bind some important interfaces into the container so
+| we will be able to resolve them when needed. The kernels serve the
+| incoming requests to this application from both the web and CLI.
+|
+*/
+
+$app->singleton(
+    Illuminate\Contracts\Http\Kernel::class,
+    App\Http\Kernel::class
+);
+
+$app->singleton(
+    Illuminate\Contracts\Console\Kernel::class,
+    App\Console\Kernel::class
+);
+
+$app->singleton(
+    Illuminate\Contracts\Debug\ExceptionHandler::class,
+    App\Exceptions\Handler::class
+);
+
+/*
+|--------------------------------------------------------------------------
+| Return The Application
+|--------------------------------------------------------------------------
+|
+| This script returns the application instance. The instance is given to
+| the calling script so we can separate the building of the instances
+| from the actual running of the application and sending responses.
+|
+*/
+
+return $app;
+
+===== .\resources\views\pages\superadmin\subscriptions\edit.blade.php =====
+@extends('layouts.app')
+
+@section('title', 'Edit Langganan')
+
+@section('main')
+    @php
+        $s = $subscription;
+        $fmt = fn($v) => $v ? \Carbon\Carbon::parse($v)->format('Y-m-d\TH:i') : '';
+    @endphp
+
+    <div class="main-content">
+        <section class="section">
+            <div class="section-header">
+                <div class="section-header-back">
+                    <a href="{{ route('superadmin.subscriptions.show', $s->id) }}" class="btn btn-icon"><i
+                            class="fas fa-arrow-left"></i></a>
+                </div>
+                <h1>Edit Langganan</h1>
+                <div class="section-header-breadcrumb">
+                    <div class="breadcrumb-item active"><a href="{{ route('superadmin.dashboard') }}">Dashboard</a></div>
+                    <div class="breadcrumb-item"><a href="{{ route('superadmin.subscriptions.index') }}">Langganan</a></div>
+                    <div class="breadcrumb-item"><a
+                            href="{{ route('superadmin.subscriptions.show', $s->id) }}">{{ $s->company->name ?? '-' }}</a>
+                    </div>
+                    <div class="breadcrumb-item">Edit</div>
+                </div>
+            </div>
+
+            <div class="section-body">
+                @include('layouts.alert')
+
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    Halaman ini mengubah data langganan <strong>{{ $s->company->name ?? '' }}</strong> secara langsung,
+                    tanpa invoice.
+                    Untuk kasus biasa, lebih aman memakai tombol <b>Perpanjang</b> atau <b>Ganti Paket</b> di halaman
+                    detail.
+                </div>
+
+                <form method="POST" action="{{ route('superadmin.subscriptions.update', $s->id) }}">
+                    @csrf
+                    @method('PUT')
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Paket <span class="text-danger">*</span></label>
+                                    <select name="plan_id" class="form-control @error('plan_id') is-invalid @enderror"
+                                        required>
+                                        @foreach ($plans as $plan)
+                                            <option value="{{ $plan->id }}" @selected((string) old('plan_id', $s->plan_id) === (string) $plan->id)>
+                                                {{ $plan->name }} ({{ $plan->duration_days }}
+                                                hari){{ $plan->is_active ? '' : ' — nonaktif' }}
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                    @error('plan_id')
+                                        <div class="invalid-feedback">{{ $message }}</div>
+                                    @enderror
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Status <span class="text-danger">*</span></label>
+                                    <select name="status" class="form-control @error('status') is-invalid @enderror"
+                                        required>
+                                        @foreach ($statuses as $value => $label)
+                                            <option value="{{ $value }}" @selected(old('status', $s->status) === $value)>
+                                                {{ $label }}</option>
+                                        @endforeach
+                                    </select>
+                                    <small class="text-muted">Trial/Aktif dengan tanggal berakhir yang sudah lewat otomatis
+                                        menjadi Toleransi/Kedaluwarsa.</small>
+                                    @error('status')
+                                        <div class="invalid-feedback d-block">{{ $message }}</div>
+                                    @enderror
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Mulai <span class="text-danger">*</span></label>
+                                    <input type="datetime-local" name="started_at"
+                                        value="{{ old('started_at', $fmt($s->started_at)) }}"
+                                        class="form-control @error('started_at') is-invalid @enderror" required>
+                                    @error('started_at')
+                                        <div class="invalid-feedback">{{ $message }}</div>
+                                    @enderror
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Berakhir <span class="text-danger">*</span></label>
+                                    <input type="datetime-local" name="expires_at"
+                                        value="{{ old('expires_at', $fmt($s->expires_at)) }}"
+                                        class="form-control @error('expires_at') is-invalid @enderror" required>
+                                    <small class="text-muted">Setelah tanggal ini ada toleransi
+                                        {{ \App\Models\CompanySubscription::GRACE_PERIOD_DAYS }} hari sebelum
+                                        terkunci.</small>
+                                    @error('expires_at')
+                                        <div class="invalid-feedback d-block">{{ $message }}</div>
+                                    @enderror
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <div class="custom-control custom-checkbox">
+                                    <input type="hidden" name="has_used_trial" value="0">
+                                    <input type="checkbox" name="has_used_trial" value="1" class="custom-control-input"
+                                        id="has_used_trial" @checked(old('has_used_trial', $s->has_used_trial))>
+                                    <label class="custom-control-label" for="has_used_trial">Sudah pernah memakai
+                                        trial</label>
+                                </div>
+                                <small class="text-muted">Hilangkan centang untuk mengizinkan tenant memulai trial lagi dari
+                                    aplikasi.</small>
+                            </div>
+
+                            <div class="form-group mb-0">
+                                <label>Alasan perubahan <span class="text-danger">*</span></label>
+                                <textarea name="reason" class="form-control @error('reason') is-invalid @enderror" rows="2" maxlength="500"
+                                    required>{{ old('reason') }}</textarea>
+                                @error('reason')
+                                    <div class="invalid-feedback">{{ $message }}</div>
+                                @enderror
+                            </div>
+                        </div>
+                        <div class="card-footer text-right">
+                            <a href="{{ route('superadmin.subscriptions.show', $s->id) }}"
+                                class="btn btn-secondary">Batal</a>
+                            <button type="submit" class="btn btn-primary ml-1"><i class="fas fa-save"></i> Simpan
+                                Perubahan</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </section>
+    </div>
+@endsection
+
+===== PEMAKAIAN SETTING & GRACE =====
+.\app\Console\Commands\SendSubscriptionNotifications.php:154: $graceUntil = $expiresAt->copy()->addDays(CompanySubscription::GRACE_PERIOD_DAYS);
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminCompanySubscriptionController.php:179: 'graceDays'    => CompanySubscription::GRACE_PERIOD_DAYS,
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:7: use App\Models\SystemSetting;
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:17: 'app_name',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:18: 'support_email',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:19: 'trial_duration_days',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:20: 'grace_period_days',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:21: 'maintenance_mode',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:27: return [$key => SystemSetting::get($key)];
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:36: 'app_name'             => 'nullable|string|max:255',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:37: 'support_email'        => 'nullable|email|max:255',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:38: 'trial_duration_days'  => 'nullable|integer|min:0',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:39: 'grace_period_days'    => 'nullable|integer|min:0',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:40: 'maintenance_mode'     => 'nullable|boolean',
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:43: $data['maintenance_mode'] = $request->boolean('maintenance_mode');
+.\app\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController.php:46: SystemSetting::set($key, $value);
+.\app\Models\CompanySubscription.php:22: public const GRACE_PERIOD_DAYS = 3;
+.\app\Models\CompanySubscription.php:78: * grace        → tetap dianggap aktif sampai expires_at + GRACE_PERIOD_DAYS.
+.\app\Models\CompanySubscription.php:94: $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+.\app\Models\CompanySubscription.php:113: * Untuk grace → sampai batas akhir masa tenggang (expires_at + GRACE_PERIOD_DAYS).
+.\app\Models\CompanySubscription.php:122: ? $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+.\app\Models\CompanySubscription.php:141: $graceUntil = $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS);
+.\app\Models\SystemSetting.php:8: class SystemSetting extends Model
+.\resources\views\pages\superadmin\settings\show.blade.php:37: <input type="text" name="app_name" value="{{ old('app_name', $settings['app_name']) }}"
+.\resources\views\pages\superadmin\settings\show.blade.php:43: <input type="email" name="support_email"
+.\resources\views\pages\superadmin\settings\show.blade.php:44: value="{{ old('support_email', $settings['support_email']) }}" class="form-control">
+.\resources\views\pages\superadmin\settings\show.blade.php:50: <input type="number" name="trial_duration_days"
+.\resources\views\pages\superadmin\settings\show.blade.php:51: value="{{ old('trial_duration_days', $settings['trial_duration_days'] ?? 7) }}"
+.\resources\views\pages\superadmin\settings\show.blade.php:56: <input type="number" name="grace_period_days"
+.\resources\views\pages\superadmin\settings\show.blade.php:57: value="{{ old('grace_period_days', $settings['grace_period_days'] ?? 3) }}"
+.\resources\views\pages\superadmin\settings\show.blade.php:64: <input type="checkbox" name="maintenance_mode" value="1"
+.\resources\views\pages\superadmin\settings\show.blade.php:65: class="custom-control-input" id="maintenance_mode" @checked(old('maintenance_mode', $settings['maintenance_mode']))>
+.\resources\views\pages\superadmin\settings\show.blade.php:66: <label class="custom-control-label" for="maintenance_mode">Aktifkan Mode
+.\resources\views\pages\superadmin\subscriptions\edit.blade.php:94: {{ \App\Models\CompanySubscription::GRACE_PERIOD_DAYS }} hari sebelum
+.\config\app.php:19: 'name' => env('APP_NAME', 'Laravel'),
+.\config\cache.php:109: 'prefix' => env('CACHE_PREFIX', Str::slug(env('APP_NAME', 'laravel'), '_').'_cache_'),
+.\config\database.php:128: 'prefix' => env('REDIS_PREFIX', Str::slug(env('APP_NAME', 'laravel'), '_').'_database_'),
+.\config\session.php:131: Str::slug(env('APP_NAME', 'laravel'), '_') . '_session'

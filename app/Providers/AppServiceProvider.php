@@ -2,10 +2,11 @@
 
 namespace App\Providers;
 
+use App\Models\SystemSetting;
+use App\View\Composers\SuperAdminGlobalDataComposer;
 use Illuminate\Pagination\Paginator;
-use Illuminate\Support\Facades\View; // ← INI YANG KURANG
+use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
-use App\View\Composers\SuperAdminGlobalDataComposer;;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -24,6 +25,12 @@ class AppServiceProvider extends ServiceProvider
     {
         Paginator::useBootstrapFive();
 
-        View::composer('pages.superadmin.*', \App\View\Composers\SuperAdminGlobalDataComposer::class);
+        View::composer('pages.superadmin.*', SuperAdminGlobalDataComposer::class);
+
+        // Nama aplikasi dari Pengaturan Sistem (kalau diisi) → dipakai config('app.name'),
+        // judul halaman, email, dll. Nilai .env APP_NAME tetap jadi cadangan.
+        if ($name = SystemSetting::get('app_name')) {
+            config(['app.name' => $name]);
+        }
     }
 }

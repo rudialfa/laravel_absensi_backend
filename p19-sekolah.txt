@@ -1,0 +1,5576 @@
+﻿
+===== app\Enums\School\AttendanceStatus.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum AttendanceStatus: string
+{
+    case Hadir     = 'hadir';
+    case Terlambat = 'terlambat';
+    case Izin      = 'izin';
+    case Sakit     = 'sakit';
+    case Alpa      = 'alpa';
+
+    /**
+     * Label yang enak dibaca untuk ditampilkan di UI (dashboard admin/guru/wali).
+     */
+    public function label(): string
+    {
+        return match ($this) {
+            self::Hadir     => 'Hadir',
+            self::Terlambat => 'Terlambat',
+            self::Izin      => 'Izin',
+            self::Sakit     => 'Sakit',
+            self::Alpa      => 'Alpa (Tanpa Keterangan)',
+        };
+    }
+
+    /**
+     * Status yang dianggap "masuk" untuk keperluan rekap kehadiran
+     * (misal hitung persentase kehadiran bulanan).
+     */
+    public function isPresent(): bool
+    {
+        return in_array($this, [self::Hadir, self::Terlambat]);
+    }
+
+    /**
+     * Dipakai di rule validasi: 'status' => ['required', Rule::enum(AttendanceStatus::class)]
+     */
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\ClassTeacherRole.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum ClassTeacherRole: string
+{
+    case WaliKelas = 'wali_kelas';
+    case GuruMapel = 'guru_mapel';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::WaliKelas => 'Wali Kelas',
+            self::GuruMapel => 'Guru Mata Pelajaran',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\Gender.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum Gender: string
+{
+    case Laki  = 'L';
+    case Perempuan = 'P';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Laki      => 'Laki-laki',
+            self::Perempuan => 'Perempuan',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\GuardianRelationship.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum GuardianRelationship: string
+{
+    case Ayah    = 'ayah';
+    case Ibu     = 'ibu';
+    case WaliLain = 'wali_lain';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Ayah     => 'Ayah',
+            self::Ibu      => 'Ibu',
+            self::WaliLain => 'Wali Lainnya',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\PermissionStatus.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum PermissionStatus: string
+{
+    case Pending  = 'pending';
+    case Approved = 'approved';
+    case Rejected = 'rejected';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Pending  => 'Menunggu Persetujuan',
+            self::Approved => 'Disetujui',
+            self::Rejected => 'Ditolak',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\PermissionType.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum PermissionType: string
+{
+    case Izin  = 'izin';
+    case Sakit = 'sakit';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Izin  => 'Izin',
+            self::Sakit => 'Sakit',
+        };
+    }
+
+    /**
+     * Konversi ke AttendanceStatus yang setara — dipakai saat izin
+     * di-approve dan perlu dicatat ke student_attendances.
+     */
+    public function toAttendanceStatus(): AttendanceStatus
+    {
+        return match ($this) {
+            self::Izin  => AttendanceStatus::Izin,
+            self::Sakit => AttendanceStatus::Sakit,
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\SchoolRole.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum SchoolRole: string
+{
+    case Admin = 'admin';
+    case Guru  = 'guru';
+    case Wali  = 'wali';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Admin => 'Admin Sekolah',
+            self::Guru  => 'Guru',
+            self::Wali  => 'Wali / Orang Tua',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AcademicEventController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\AcademicEvent;
+use Illuminate\Http\Request;
+
+class AcademicEventController extends Controller
+{
+    /**
+     * GET /api/school/admin/academic-events?month=&year=&jenis=
+     */
+    public function index(Request $request)
+    {
+        $data = $request->validate([
+            'month' => 'nullable|integer|min:1|max:12',
+            'year'  => 'nullable|integer|min:2000',
+            'jenis' => 'nullable|in:libur,ujian,kegiatan,penting',
+        ]);
+
+        $events = AcademicEvent::where('company_id', $request->user()->company_id)
+            ->with(['classRoom:id,name', 'createdBy:id,name'])
+            ->when($data['jenis'] ?? null, fn($q, $j) => $q->where('jenis', $j))
+            ->when(
+                ($data['month'] ?? null) && ($data['year'] ?? null),
+                fn($q) => $q->whereYear('tanggal_mulai', $data['year'])
+                    ->whereMonth('tanggal_mulai', $data['month'])
+            )
+            ->orderBy('tanggal_mulai')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data kalender akademik berhasil diambil',
+            'data'    => $events,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/academic-events
+     */
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'title'            => 'required|string|max:150',
+            'description'      => 'nullable|string',
+            'jenis'            => 'required|in:libur,ujian,kegiatan,penting',
+            'tanggal_mulai'    => 'required|date',
+            'tanggal_selesai'  => 'required|date|after_or_equal:tanggal_mulai',
+            'class_id'         => 'nullable|exists:class_rooms,id',
+            'academic_year'    => 'required|string|max:20',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+        $data['created_by'] = $request->user()->id;
+
+        $event = AcademicEvent::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Event kalender berhasil dibuat',
+            'data'    => $event->load(['classRoom:id,name', 'createdBy:id,name']),
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/academic-events/{academicEvent}
+     */
+    public function show(AcademicEvent $academicEvent)
+    {
+        $this->authorize('view', $academicEvent);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail event berhasil diambil',
+            'data'    => $academicEvent->load(['classRoom:id,name', 'createdBy:id,name']),
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/academic-events/{academicEvent}
+     */
+    public function update(Request $request, AcademicEvent $academicEvent)
+    {
+        $this->authorize('update', $academicEvent);
+
+        $data = $request->validate([
+            'title'            => 'sometimes|string|max:150',
+            'description'      => 'nullable|string',
+            'jenis'            => 'sometimes|in:libur,ujian,kegiatan,penting',
+            'tanggal_mulai'    => 'sometimes|date',
+            'tanggal_selesai'  => 'sometimes|date|after_or_equal:tanggal_mulai',
+            'class_id'         => 'nullable|exists:class_rooms,id',
+        ]);
+
+        $academicEvent->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Event kalender berhasil diperbarui',
+            'data'    => $academicEvent->load(['classRoom:id,name', 'createdBy:id,name']),
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/academic-events/{academicEvent}
+     */
+    public function destroy(AcademicEvent $academicEvent)
+    {
+        $this->authorize('delete', $academicEvent);
+
+        $academicEvent->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Event kalender dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AdminBoardingPermissionController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\BoardingPermission;
+use Illuminate\Http\Request;
+
+class AdminBoardingPermissionController extends Controller
+{
+    /**
+     * GET /api/school/admin/boarding-permissions?status=
+     */
+    public function index(Request $request)
+    {
+        $permissions = BoardingPermission::where('company_id', $request->user()->company_id)
+            ->with(['student:id,name,class_id', 'student.classRoom:id,name', 'submittedBy:id,name', 'reviewedBy:id,name'])
+            ->when($request->query('status'), fn($q, $status) => $q->where('status', $status))
+            ->latest('tanggal_keluar')
+            ->paginate(20);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data izin keluar/pulang berhasil diambil',
+            'data'    => $permissions,
+        ]);
+    }
+
+    /**
+     * PATCH /api/school/admin/boarding-permissions/{permission}/review
+     */
+    public function review(Request $request, BoardingPermission $permission)
+    {
+        $this->authorize('review', $permission);
+
+        abort_unless($permission->status === 'pending', 422, 'Pengajuan ini sudah pernah direview');
+
+        $data = $request->validate([
+            'status'          => 'required|in:approved,rejected',
+            'catatan_review'  => 'nullable|string',
+        ]);
+
+        $permission->update([
+            'status'         => $data['status'],
+            'catatan_review' => $data['catatan_review'] ?? null,
+            'reviewed_by'    => $request->user()->id,
+            'reviewed_at'    => now(),
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => $data['status'] === 'approved'
+                ? 'Izin disetujui'
+                : 'Izin ditolak',
+            'data'    => $permission->fresh()->load(['student:id,name', 'submittedBy:id,name', 'reviewedBy:id,name']),
+        ]);
+    }
+
+    /**
+     * PATCH /api/school/admin/boarding-permissions/{permission}/checkin
+     * Tandai santri sudah kembali ke pondok — cuma bisa untuk izin yang
+     * statusnya sudah 'approved'.
+     */
+    public function checkin(Request $request, BoardingPermission $permission)
+    {
+        $this->authorize('review', $permission);
+
+        abort_unless($permission->status === 'approved', 422, 'Izin ini belum disetujui atau sudah selesai');
+
+        $data = $request->validate([
+            'tanggal_kembali_aktual' => 'nullable|date',
+        ]);
+
+        $permission->update([
+            'status'                 => 'sudah_kembali',
+            'tanggal_kembali_aktual' => $data['tanggal_kembali_aktual'] ?? now()->toDateString(),
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Santri berhasil ditandai sudah kembali',
+            'data'    => $permission,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AdminDashboardController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\AcademicEvent;
+use App\Models\ClassRoom;
+use App\Models\StudentAttendance;
+use App\Models\StudentBill;
+use App\Models\StudentPermission;
+use App\Models\User;
+use Illuminate\Http\Request;
+
+class AdminDashboardController extends Controller
+{
+    /**
+     * GET /api/school/admin/dashboard/summary
+     * Ringkasan untuk beranda/profil Admin.
+     */
+    public function summary(Request $request)
+    {
+        $companyId = $request->user()->company_id;
+        $today = now()->toDateString();
+
+        $totalGuru = User::where('company_id', $companyId)->where('role', 'guru')->count();
+        $totalWali = User::where('company_id', $companyId)->where('role', 'wali')->count();
+        $totalKelas = ClassRoom::where('company_id', $companyId)->where('is_active', true)->count();
+        $totalMurid = \App\Models\Student::where('company_id', $companyId)->where('is_active', true)->count();
+
+        $attendanceToday = StudentAttendance::where('company_id', $companyId)->where('date', $today)->get();
+        $hadirToday = $attendanceToday->whereIn('status', ['hadir', 'terlambat'])->count();
+        $attendancePercentage = $totalMurid > 0 ? round(($hadirToday / $totalMurid) * 100, 1) : 0;
+
+        // FIX: student_permissions tidak punya kolom company_id sendiri —
+        // company_id ada di tabel students. Filter lewat relasi student()
+        // pakai whereHas, bukan where('company_id', ...) langsung.
+        $pendingPermissions = StudentPermission::where('status', 'pending')
+            ->whereHas('student', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            })
+            ->count();
+
+        $unpaidBillsTotal = StudentBill::where('company_id', $companyId)
+            ->where('status', '!=', 'lunas')
+            ->get()
+            ->sum(fn($b) => $b->remaining_amount);
+
+        $upcomingEvents = AcademicEvent::where('company_id', $companyId)
+            ->where('tanggal_mulai', '>=', $today)
+            ->orderBy('tanggal_mulai')
+            ->limit(5)
+            ->get(['id', 'title', 'jenis', 'tanggal_mulai']);
+
+        // TODO: modul Pengumuman (Announcement) belum dibuat — nanti aktifkan
+        // lagi query ini setelah model & tabel `announcements` tersedia.
+        $recentAnnouncements = [];
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Ringkasan dashboard berhasil diambil',
+            'data'    => [
+                'total_guru'                => $totalGuru,
+                'total_wali'                 => $totalWali,
+                'total_kelas'                => $totalKelas,
+                'total_murid'                => $totalMurid,
+                'kehadiran_hari_ini_persen'  => $attendancePercentage,
+                'izin_pending'               => $pendingPermissions,
+                'total_piutang'              => $unpaidBillsTotal,
+                'event_mendatang'            => $upcomingEvents,
+                'pengumuman_terbaru'         => $recentAnnouncements,
+            ],
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AdminGradeController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Grade;
+use Illuminate\Http\Request;
+
+class AdminGradeController extends Controller
+{
+    /**
+     * GET /api/school/admin/grades-report?class_id=&subject_id=&semester=&academic_year=
+     * Rekap rata-rata nilai per murid, per mapel.
+     */
+    public function report(Request $request)
+    {
+        $data = $request->validate([
+            'class_id'      => 'required|exists:class_rooms,id',
+            'subject_id'    => 'nullable|exists:subjects,id',
+            'semester'      => 'required|in:ganjil,genap',
+            'academic_year' => 'required|string',
+        ]);
+
+        $grades = Grade::where('class_id', $data['class_id'])
+            ->where('semester', $data['semester'])
+            ->where('academic_year', $data['academic_year'])
+            ->when($data['subject_id'] ?? null, fn($q, $id) => $q->where('subject_id', $id))
+            ->with(['student:id,name', 'subject:id,name'])
+            ->get();
+
+        // Kelompokkan & rata-ratakan per murid+mapel+jenis
+        $grouped = $grades->groupBy(fn($g) => $g->student_id . '-' . $g->subject_id)
+            ->map(function ($items) {
+                $first = $items->first();
+                $tugas = $items->where('jenis', 'tugas');
+                $ujian = $items->where('jenis', 'ujian');
+
+                return [
+                    'student_id'      => $first->student_id,
+                    'student_name'    => $first->student->name,
+                    'subject_id'      => $first->subject_id,
+                    'subject_name'    => $first->subject->name,
+                    'rata_tugas'      => round($tugas->avg('nilai') ?? 0, 2),
+                    'rata_ujian'      => round($ujian->avg('nilai') ?? 0, 2),
+                    'rata_keseluruhan' => round($items->avg('nilai'), 2),
+                    'total_penilaian' => $items->count(),
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Rekap nilai berhasil diambil',
+            'data'    => $grouped,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AdminMutabaahController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\MutabaahRecord;
+use Illuminate\Http\Request;
+
+class AdminMutabaahController extends Controller
+{
+    /**
+     * GET /api/school/admin/mutabaah-report?class_id=&from=&to=
+     */
+    public function report(Request $request)
+    {
+        $data = $request->validate([
+            'class_id' => 'nullable|exists:class_rooms,id',
+            'from'     => 'nullable|date',
+            'to'       => 'nullable|date|after_or_equal:from',
+        ]);
+
+        $records = MutabaahRecord::where('company_id', $request->user()->company_id)
+            ->with(['student:id,name,class_id', 'student.classRoom:id,name', 'recordedBy:id,name'])
+            ->when($data['class_id'] ?? null, fn($q, $id) => $q->whereHas('student', fn($q2) => $q2->where('class_id', $id)))
+            ->when($data['from'] ?? null, fn($q, $from) => $q->whereDate('tanggal', '>=', $from))
+            ->when($data['to'] ?? null, fn($q, $to) => $q->whereDate('tanggal', '<=', $to))
+            ->latest('tanggal')
+            ->paginate(30);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Rekap mutabaah berhasil diambil',
+            'data'    => $records,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AdminTahfidzController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\TahfidzSetoran;
+use Illuminate\Http\Request;
+
+class AdminTahfidzController extends Controller
+{
+    /**
+     * GET /api/school/admin/tahfidz-report?class_id=&from=&to=
+     * Rekap perkembangan tahfidz seluruh sekolah — filter opsional.
+     */
+    public function report(Request $request)
+    {
+        $data = $request->validate([
+            'class_id' => 'nullable|exists:class_rooms,id',
+            'from'     => 'nullable|date',
+            'to'       => 'nullable|date|after_or_equal:from',
+        ]);
+
+        $setorans = TahfidzSetoran::where('company_id', $request->user()->company_id)
+            ->with(['student:id,name,class_id', 'student.classRoom:id,name', 'guru:id,name'])
+            ->when($data['class_id'] ?? null, fn($q, $id) => $q->whereHas('student', fn($q2) => $q2->where('class_id', $id)))
+            ->when($data['from'] ?? null, fn($q, $from) => $q->whereDate('tanggal', '>=', $from))
+            ->when($data['to'] ?? null, fn($q, $to) => $q->whereDate('tanggal', '<=', $to))
+            ->latest('tanggal')
+            ->paginate(30);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Rekap tahfidz berhasil diambil',
+            'data'    => $setorans,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AdminUksController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\HealthRecord;
+use App\Models\Student;
+use App\Models\UksVisit;
+use Illuminate\Http\Request;
+
+class AdminUksController extends Controller
+{
+    public function listHealthRecords(Request $request)
+    {
+        $records = HealthRecord::where('company_id', $request->user()->company_id)
+            ->with('student:id,name,class_id')
+            ->get();
+
+        return response()->json(['status' => true, 'message' => 'Data kesehatan berhasil diambil', 'data' => $records]);
+    }
+
+    public function saveHealthRecord(Request $request)
+    {
+        $data = $request->validate([
+            'student_id'               => 'required|exists:students,id',
+            'blood_type'                => 'nullable|string|max:5',
+            'height_cm'                 => 'nullable|numeric',
+            'weight_kg'                 => 'nullable|numeric',
+            'allergies'                 => 'nullable|string',
+            'chronic_conditions'        => 'nullable|string',
+            'emergency_contact_name'    => 'nullable|string|max:100',
+            'emergency_contact_phone'   => 'nullable|string|max:30',
+        ]);
+
+        $student = Student::findOrFail($data['student_id']);
+        abort_if($student->company_id !== $request->user()->company_id, 403);
+
+        $record = HealthRecord::updateOrCreate(
+            ['student_id' => $data['student_id']],
+            [
+                'company_id'   => $student->company_id,
+                'blood_type'   => $data['blood_type'] ?? null,
+                'height_cm'    => $data['height_cm'] ?? null,
+                'weight_kg'    => $data['weight_kg'] ?? null,
+                'allergies'    => $data['allergies'] ?? null,
+                'chronic_conditions' => $data['chronic_conditions'] ?? null,
+                'emergency_contact_name'  => $data['emergency_contact_name'] ?? null,
+                'emergency_contact_phone' => $data['emergency_contact_phone'] ?? null,
+                'recorded_at'  => now()->toDateString(),
+                'recorded_by'  => $request->user()->id,
+            ]
+        );
+
+        return response()->json(['status' => true, 'message' => 'Data kesehatan berhasil disimpan', 'data' => $record], 201);
+    }
+
+    public function listVisits(Request $request)
+    {
+        $visits = UksVisit::where('company_id', $request->user()->company_id)
+            ->with('student:id,name,class_id')
+            ->latest('visited_at')
+            ->paginate(30);
+
+        return response()->json(['status' => true, 'message' => 'Data kunjungan UKS berhasil diambil', 'data' => $visits]);
+    }
+
+    public function recordVisit(Request $request)
+    {
+        $data = $request->validate([
+            'student_id' => 'required|exists:students,id',
+            'complaint'  => 'required|string',
+            'treatment'  => 'nullable|string',
+            'outcome'    => 'required|in:kembali_kelas,pulang,dirujuk',
+            'notes'      => 'nullable|string',
+        ]);
+
+        $student = Student::findOrFail($data['student_id']);
+        abort_if($student->company_id !== $request->user()->company_id, 403);
+
+        $visit = UksVisit::create([
+            'company_id'  => $student->company_id,
+            'student_id'  => $data['student_id'],
+            'complaint'   => $data['complaint'],
+            'treatment'   => $data['treatment'] ?? null,
+            'outcome'     => $data['outcome'],
+            'notes'       => $data['notes'] ?? null,
+            'visited_at'  => now(),
+            'recorded_by' => $request->user()->id,
+        ]);
+
+        return response()->json(['status' => true, 'message' => 'Kunjungan UKS berhasil dicatat', 'data' => $visit->load('student:id,name')], 201);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\AttendanceDeviceController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\StoreAttendanceDeviceRequest;
+use App\Models\AttendanceDevice;
+use App\Models\StudentAttendance;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+
+class AttendanceDeviceController extends Controller
+{
+    /**
+     * GET /api/school/admin/devices
+     */
+    public function index(Request $request)
+    {
+        $devices = AttendanceDevice::where('company_id', $request->user()->company_id)
+            ->with('classRoom:id,name')
+            ->orderByDesc('last_seen_at')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data device berhasil diambil',
+            'data'    => $devices,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/devices
+     */
+    public function store(StoreAttendanceDeviceRequest $request)
+    {
+        $data = $request->validated();
+        $data['company_id'] = $request->user()->company_id;
+        $data['registered_by'] = $request->user()->id;
+        $data['device_token'] = Str::random(config('school.device_token_length', 64));
+
+        $device = AttendanceDevice::create($data);
+
+        // Token cuma ditampilkan sekali saat create — device harus disimpan
+        // manual di gadget-nya, karena $hidden menyembunyikannya di response lain
+        return response()->json([
+            'status'  => true,
+            'message' => 'Device berhasil didaftarkan',
+            'data'    => [
+                'device'       => $device,
+                'device_token' => $device->device_token,
+            ],
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/devices/{device}
+     */
+    public function show(AttendanceDevice $device)
+    {
+        $this->authorize('view', $device);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail device berhasil diambil',
+            'data'    => $device->load('classRoom:id,name'),
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/devices/{device}
+     */
+    public function update(Request $request, AttendanceDevice $device)
+    {
+        $this->authorize('update', $device);
+
+        $data = $request->validate([
+            'class_id'  => 'nullable|exists:class_rooms,id',
+            'name'      => 'sometimes|string|max:100',
+            'is_active' => 'sometimes|boolean',
+        ]);
+
+        $device->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Device berhasil diperbarui',
+            'data'    => $device->load('classRoom:id,name'),
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/devices/{device}
+     */
+    public function destroy(AttendanceDevice $device)
+    {
+        $this->authorize('delete', $device);
+
+        $device->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Device dihapus',
+            'data'    => null,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/devices/{device}/regenerate-token
+     * Generate ulang token — dipakai kalau device hilang/diganti.
+     */
+    public function regenerateToken(AttendanceDevice $device)
+    {
+        $this->authorize('update', $device);
+
+        $newToken = Str::random(config('school.device_token_length', 64));
+        $device->update(['device_token' => $newToken]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Token berhasil di-generate ulang',
+            'data'    => [
+                'device_token' => $newToken,
+            ],
+        ]);
+    }
+
+    /**
+     * GET /api/school/admin/attendance-report?from=&to=&class_id=
+     * Rekap absen seluruh sekolah — filter by date range & class.
+     */
+    public function report(Request $request)
+    {
+        $data = $request->validate([
+            'from'      => 'required|date',
+            'to'        => 'required|date|after_or_equal:from',
+            'class_id'  => 'nullable|exists:class_rooms,id',
+        ]);
+
+        $report = StudentAttendance::where('company_id', $request->user()->company_id)
+            ->whereBetween('date', [$data['from'], $data['to']])
+            ->when($data['class_id'] ?? null, fn($q, $classId) => $q->where('class_id', $classId))
+            ->selectRaw('status, count(*) as total')
+            ->groupBy('status')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Rekap absensi berhasil diambil',
+            'data'    => $report,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\BillTypeController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\BillType;
+use Illuminate\Http\Request;
+
+class BillTypeController extends Controller
+{
+    public function index(Request $request)
+    {
+        $types = BillType::where('company_id', $request->user()->company_id)
+            ->orderBy('name')
+            ->get();
+
+        return response()->json(['status' => true, 'message' => 'Data jenis tagihan berhasil diambil', 'data' => $types]);
+    }
+
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'name'            => 'required|string|max:100',
+            'periode'         => 'required|in:bulanan,sekali',
+            'default_amount'  => 'required|numeric|min:0',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+        $type = BillType::create($data);
+
+        return response()->json(['status' => true, 'message' => 'Jenis tagihan berhasil dibuat', 'data' => $type], 201);
+    }
+
+    public function show(BillType $billType)
+    {
+        $this->authorize('view', $billType);
+        return response()->json(['status' => true, 'message' => 'Detail jenis tagihan berhasil diambil', 'data' => $billType]);
+    }
+
+    public function update(Request $request, BillType $billType)
+    {
+        $this->authorize('update', $billType);
+
+        $data = $request->validate([
+            'name'           => 'sometimes|string|max:100',
+            'periode'        => 'sometimes|in:bulanan,sekali',
+            'default_amount' => 'sometimes|numeric|min:0',
+            'is_active'      => 'sometimes|boolean',
+        ]);
+
+        $billType->update($data);
+
+        return response()->json(['status' => true, 'message' => 'Jenis tagihan berhasil diperbarui', 'data' => $billType]);
+    }
+
+    public function destroy(BillType $billType)
+    {
+        $this->authorize('delete', $billType);
+        $billType->delete();
+        return response()->json(['status' => true, 'message' => 'Jenis tagihan dihapus', 'data' => null]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\ClassPromotionController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\ClassPromotion;
+use App\Models\ClassRoom;
+use App\Models\Student;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class ClassPromotionController extends Controller
+{
+    /**
+     * GET /api/school/admin/class-promotions/preview?class_id=
+     * Daftar murid di 1 kelas, buat direview admin sebelum diproses.
+     */
+    public function preview(Request $request)
+    {
+        $data = $request->validate([
+            'class_id' => 'required|exists:class_rooms,id',
+        ]);
+
+        $class = ClassRoom::findOrFail($data['class_id']);
+
+        abort_if($class->company_id !== $request->user()->company_id, 403);
+
+        $students = Student::where('class_id', $class->id)
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'name', 'nis']);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Daftar murid berhasil diambil',
+            'data'    => [
+                'class' => $class,
+                'students' => $students,
+            ],
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/class-promotions/process
+     * Proses kenaikan kelas untuk banyak murid sekaligus dalam 1 transaksi.
+     *
+     * Body:
+     * {
+     *   "from_class_id": 1,
+     *   "to_academic_year": "2027/2028",
+     *   "promotions": [
+     *     {"student_id": 1, "status": "naik", "to_class_id": 5},
+     *     {"student_id": 2, "status": "tinggal"},
+     *     {"student_id": 3, "status": "lulus"}
+     *   ]
+     * }
+     */
+    public function process(Request $request)
+    {
+        $data = $request->validate([
+            'from_class_id'    => 'required|exists:class_rooms,id',
+            'to_academic_year' => 'required|string',
+            'promotions'                    => 'required|array|min:1',
+            'promotions.*.student_id'       => 'required|exists:students,id',
+            'promotions.*.status'           => 'required|in:naik,tinggal,lulus',
+            'promotions.*.to_class_id'      => 'required_if:promotions.*.status,naik|nullable|exists:class_rooms,id',
+        ]);
+
+        $fromClass = ClassRoom::findOrFail($data['from_class_id']);
+        abort_if($fromClass->company_id !== $request->user()->company_id, 403);
+
+        $results = DB::transaction(function () use ($data, $fromClass, $request) {
+            $saved = [];
+
+            foreach ($data['promotions'] as $item) {
+                $student = Student::findOrFail($item['student_id']);
+
+                abort_if($student->class_id !== $fromClass->id, 422, "Murid {$student->name} bukan bagian dari kelas asal");
+
+                $toClassId = $item['status'] === 'naik' ? $item['to_class_id'] : null;
+
+                $promotion = ClassPromotion::create([
+                    'company_id'         => $fromClass->company_id,
+                    'student_id'         => $student->id,
+                    'from_class_id'      => $fromClass->id,
+                    'to_class_id'        => $toClassId,
+                    'status'             => $item['status'],
+                    'from_academic_year' => $fromClass->academic_year,
+                    'to_academic_year'   => $data['to_academic_year'],
+                    'processed_by'       => $request->user()->id,
+                ]);
+
+                // Update kelas murid sesuai hasil kenaikan.
+                // 'tinggal' -> class_id tetap sama (ulang di kelas yang sama).
+                // 'lulus'   -> class_id null + is_active false (keluar dari sistem aktif).
+                // 'naik'    -> pindah ke to_class_id.
+                if ($item['status'] === 'naik') {
+                    $student->update(['class_id' => $toClassId]);
+                } elseif ($item['status'] === 'lulus') {
+                    $student->update(['class_id' => null, 'is_active' => false]);
+                }
+                // 'tinggal' -> tidak ada perubahan pada students, murid tetap di kelas yang sama
+
+                $saved[] = $promotion->load(['student:id,name', 'toClass:id,name']);
+            }
+
+            return $saved;
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kenaikan kelas berhasil diproses untuk ' . count($results) . ' murid',
+            'data'    => $results,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/class-promotions/history?academic_year=
+     */
+    public function history(Request $request)
+    {
+        $promotions = ClassPromotion::where('company_id', $request->user()->company_id)
+            ->when($request->query('academic_year'), fn($q, $y) => $q->where('to_academic_year', $y))
+            ->with(['student:id,name', 'fromClass:id,name', 'toClass:id,name'])
+            ->latest()
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Riwayat kenaikan kelas berhasil diambil',
+            'data'    => $promotions,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\ClassRoomController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\StoreClassRoomRequest;
+use App\Models\ClassRoom;
+use Illuminate\Http\Request;
+
+class ClassRoomController extends Controller
+{
+    /**
+     * GET /api/school/admin/classes
+     */
+    public function index(Request $request)
+    {
+        $classes = ClassRoom::where('company_id', $request->user()->company_id)
+            ->with('homeroomTeacher:id,name')
+            ->withCount('students')
+            ->orderBy('grade_level')
+            ->orderBy('name')
+            ->paginate(20);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data kelas berhasil diambil',
+            'data'    => $classes,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/classes
+     */
+    public function store(StoreClassRoomRequest $request)
+    {
+        $data = $request->validated();
+        $data['company_id'] = $request->user()->company_id;
+
+        $class = ClassRoom::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kelas berhasil dibuat',
+            'data'    => $class,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/classes/{class}
+     */
+    public function show(ClassRoom $class)
+    {
+        $this->authorize('view', $class);
+
+        $class->load(['homeroomTeacher:id,name', 'teachers:id,name', 'students']);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail kelas berhasil diambil',
+            'data'    => $class,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/classes/{class}
+     */
+    public function update(StoreClassRoomRequest $request, ClassRoom $class)
+    {
+        $this->authorize('update', $class);
+
+        $class->update($request->validated());
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kelas berhasil diperbarui',
+            'data'    => $class,
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/classes/{class}
+     */
+    public function destroy(ClassRoom $class)
+    {
+        $this->authorize('delete', $class);
+
+        $class->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kelas dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\CurriculumController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Curriculum;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class CurriculumController extends Controller
+{
+    /**
+     * GET /api/school/admin/curriculums
+     */
+    public function index(Request $request)
+    {
+        $curriculums = Curriculum::where('company_id', $request->user()->company_id)
+            ->withCount('curriculumSubjects')
+            ->orderByDesc('academic_year')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data kurikulum berhasil diambil',
+            'data'    => $curriculums,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/curriculums
+     */
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'name'          => 'required|string|max:150',
+            'academic_year' => 'required|string|max:20',
+            'description'   => 'nullable|string',
+            'is_active'     => 'boolean',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+
+        // Kalau kurikulum baru ini diset aktif, nonaktifkan kurikulum lain
+        // di tahun ajaran yang sama — supaya tidak ada 2 kurikulum aktif
+        // bareng untuk 1 tahun ajaran (bikin ambigu pas dipakai di Jadwal).
+        if ($data['is_active'] ?? true) {
+            Curriculum::where('company_id', $data['company_id'])
+                ->where('academic_year', $data['academic_year'])
+                ->update(['is_active' => false]);
+        }
+
+        $curriculum = Curriculum::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kurikulum berhasil dibuat',
+            'data'    => $curriculum,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/curriculums/{curriculum}
+     */
+    public function show(Curriculum $curriculum)
+    {
+        $this->authorize('view', $curriculum);
+
+        $curriculum->load('curriculumSubjects.subject');
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail kurikulum berhasil diambil',
+            'data'    => $curriculum,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/curriculums/{curriculum}
+     */
+    public function update(Request $request, Curriculum $curriculum)
+    {
+        $this->authorize('update', $curriculum);
+
+        $data = $request->validate([
+            'name'          => 'sometimes|string|max:150',
+            'academic_year' => 'sometimes|string|max:20',
+            'description'   => 'nullable|string',
+            'is_active'     => 'sometimes|boolean',
+        ]);
+
+        if (($data['is_active'] ?? false) === true) {
+            Curriculum::where('company_id', $curriculum->company_id)
+                ->where('academic_year', $data['academic_year'] ?? $curriculum->academic_year)
+                ->where('id', '!=', $curriculum->id)
+                ->update(['is_active' => false]);
+        }
+
+        $curriculum->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kurikulum berhasil diperbarui',
+            'data'    => $curriculum,
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/curriculums/{curriculum}
+     */
+    public function destroy(Curriculum $curriculum)
+    {
+        $this->authorize('delete', $curriculum);
+
+        $curriculum->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kurikulum dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\CurriculumSubjectController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Curriculum;
+use App\Models\CurriculumSubject;
+use Illuminate\Http\Request;
+
+class CurriculumSubjectController extends Controller
+{
+    /**
+     * GET /api/school/admin/curriculums/{curriculum}/subjects?grade_level=
+     */
+    public function index(Request $request, Curriculum $curriculum)
+    {
+        $this->authorize('view', $curriculum);
+
+        $items = $curriculum->curriculumSubjects()
+            ->with('subject')
+            ->when($request->query('grade_level'), fn($q, $g) => $q->where('grade_level', $g))
+            ->orderBy('grade_level')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data mapel kurikulum berhasil diambil',
+            'data'    => $items,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/curriculums/{curriculum}/subjects
+     * Tambahkan 1 mapel ke kurikulum untuk 1 tingkat kelas.
+     */
+    public function attach(Request $request, Curriculum $curriculum)
+    {
+        $this->authorize('update', $curriculum);
+
+        $data = $request->validate([
+            'subject_id'      => 'required|exists:subjects,id',
+            'grade_level'     => 'required|integer|min:1|max:6',
+            'jam_per_minggu'  => 'required|integer|min:1|max:20',
+        ]);
+
+        $exists = CurriculumSubject::where('curricula_id', $curriculum->id)
+            ->where('subject_id', $data['subject_id'])
+            ->where('grade_level', $data['grade_level'])
+            ->exists();
+
+        abort_if($exists, 422, 'Mapel ini sudah terdaftar untuk kelas tersebut di kurikulum ini');
+
+        $data['curricula_id'] = $curriculum->id;
+
+        $item = CurriculumSubject::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Mapel berhasil ditambahkan ke kurikulum',
+            'data'    => $item->load('subject'),
+        ], 201);
+    }
+
+    /**
+     * DELETE /api/school/admin/curriculums/{curriculum}/subjects/{curriculumSubject}
+     */
+    public function detach(Curriculum $curriculum, CurriculumSubject $curriculumSubject)
+    {
+        $this->authorize('update', $curriculum);
+
+        abort_if($curriculumSubject->curricula_id !== $curriculum->id, 404);
+
+        $curriculumSubject->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Mapel berhasil dihapus dari kurikulum',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\DormitoryController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Dormitory;
+use Illuminate\Http\Request;
+
+class DormitoryController extends Controller
+{
+    /**
+     * GET /api/school/admin/dormitories
+     */
+    public function index(Request $request)
+    {
+        $dormitories = Dormitory::where('company_id', $request->user()->company_id)
+            ->with('pengasuh:id,name')
+            ->withCount('rooms')
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data asrama berhasil diambil',
+            'data'    => $dormitories,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/dormitories
+     */
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'name'         => 'required|string|max:100',
+            'gender'       => 'required|in:L,P',
+            'pengasuh_id'  => 'nullable|exists:users,id',
+            'address'      => 'nullable|string',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+
+        $dormitory = Dormitory::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Asrama berhasil dibuat',
+            'data'    => $dormitory,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/dormitories/{dormitory}
+     */
+    public function show(Dormitory $dormitory)
+    {
+        $this->authorize('view', $dormitory);
+
+        $dormitory->load(['pengasuh:id,name', 'rooms' => function ($q) {
+            $q->withCount('activeAssignments');
+        }]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail asrama berhasil diambil',
+            'data'    => $dormitory,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/dormitories/{dormitory}
+     */
+    public function update(Request $request, Dormitory $dormitory)
+    {
+        $this->authorize('update', $dormitory);
+
+        $data = $request->validate([
+            'name'         => 'sometimes|string|max:100',
+            'gender'       => 'sometimes|in:L,P',
+            'pengasuh_id'  => 'nullable|exists:users,id',
+            'address'      => 'nullable|string',
+            'is_active'    => 'sometimes|boolean',
+        ]);
+
+        $dormitory->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Asrama berhasil diperbarui',
+            'data'    => $dormitory,
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/dormitories/{dormitory}
+     */
+    public function destroy(Dormitory $dormitory)
+    {
+        $this->authorize('delete', $dormitory);
+
+        $dormitory->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Asrama dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\DormitoryRoomController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Dormitory;
+use App\Models\DormitoryRoom;
+use Illuminate\Http\Request;
+
+class DormitoryRoomController extends Controller
+{
+    /**
+     * GET /api/school/admin/dormitories/{dormitory}/rooms
+     */
+    public function index(Dormitory $dormitory)
+    {
+        $this->authorize('view', $dormitory);
+
+        $rooms = $dormitory->rooms()
+            ->withCount('activeAssignments')
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data kamar berhasil diambil',
+            'data'    => $rooms,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/dormitories/{dormitory}/rooms
+     */
+    public function store(Request $request, Dormitory $dormitory)
+    {
+        $this->authorize('manageRooms', $dormitory);
+
+        $data = $request->validate([
+            'name'     => 'required|string|max:100',
+            'capacity' => 'required|integer|min:1|max:50',
+        ]);
+
+        $data['dormitory_id'] = $dormitory->id;
+
+        $room = DormitoryRoom::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kamar berhasil dibuat',
+            'data'    => $room,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/rooms/{room}
+     */
+    public function show(DormitoryRoom $room)
+    {
+        $this->authorize('view', $room);
+
+        $room->load(['dormitory:id,name', 'activeAssignments.student:id,name,nis']);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail kamar berhasil diambil',
+            'data'    => $room,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/rooms/{room}
+     */
+    public function update(Request $request, DormitoryRoom $room)
+    {
+        $this->authorize('update', $room);
+
+        $data = $request->validate([
+            'name'      => 'sometimes|string|max:100',
+            'capacity'  => 'sometimes|integer|min:1|max:50',
+            'is_active' => 'sometimes|boolean',
+        ]);
+
+        $room->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kamar berhasil diperbarui',
+            'data'    => $room,
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/rooms/{room}
+     */
+    public function destroy(DormitoryRoom $room)
+    {
+        $this->authorize('delete', $room);
+
+        abort_if(
+            $room->activeAssignments()->exists(),
+            422,
+            'Kamar masih memiliki penghuni aktif, pindahkan santri terlebih dahulu'
+        );
+
+        $room->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Kamar dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\ExtracurricularController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Extracurricular;
+use App\Models\ExtracurricularMember;
+use App\Models\Student;
+use Illuminate\Http\Request;
+
+class ExtracurricularController extends Controller
+{
+    public function index(Request $request)
+    {
+        $items = Extracurricular::where('company_id', $request->user()->company_id)
+            ->with('pembina:id,name')
+            ->withCount('activeMembers')
+            ->orderBy('name')
+            ->get();
+
+        return response()->json(['status' => true, 'message' => 'Data ekstrakurikuler berhasil diambil', 'data' => $items]);
+    }
+
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'name'         => 'required|string|max:100',
+            'description'  => 'nullable|string',
+            'pembina_id'   => 'nullable|exists:users,id',
+            'hari'         => 'nullable|in:senin,selasa,rabu,kamis,jumat,sabtu',
+            'jam_mulai'    => 'nullable|date_format:H:i',
+            'jam_selesai'  => 'nullable|date_format:H:i|after:jam_mulai',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+        $item = Extracurricular::create($data);
+
+        return response()->json(['status' => true, 'message' => 'Ekstrakurikuler berhasil dibuat', 'data' => $item], 201);
+    }
+
+    public function show(Extracurricular $extracurricular)
+    {
+        $this->authorize('view', $extracurricular);
+        $extracurricular->load(['pembina:id,name', 'activeMembers.student:id,name,class_id']);
+
+        return response()->json(['status' => true, 'message' => 'Detail ekstrakurikuler berhasil diambil', 'data' => $extracurricular]);
+    }
+
+    public function update(Request $request, Extracurricular $extracurricular)
+    {
+        $this->authorize('manage', $extracurricular);
+
+        $data = $request->validate([
+            'name'         => 'sometimes|string|max:100',
+            'description'  => 'nullable|string',
+            'pembina_id'   => 'nullable|exists:users,id',
+            'hari'         => 'nullable|in:senin,selasa,rabu,kamis,jumat,sabtu',
+            'jam_mulai'    => 'nullable|date_format:H:i',
+            'jam_selesai'  => 'nullable|date_format:H:i|after:jam_mulai',
+            'is_active'    => 'sometimes|boolean',
+        ]);
+
+        $extracurricular->update($data);
+
+        return response()->json(['status' => true, 'message' => 'Ekstrakurikuler berhasil diperbarui', 'data' => $extracurricular]);
+    }
+
+    public function destroy(Extracurricular $extracurricular)
+    {
+        $this->authorize('manage', $extracurricular);
+        $extracurricular->delete();
+
+        return response()->json(['status' => true, 'message' => 'Ekstrakurikuler dihapus', 'data' => null]);
+    }
+
+    public function addMember(Request $request, Extracurricular $extracurricular)
+    {
+        $this->authorize('manage', $extracurricular);
+
+        $data = $request->validate(['student_id' => 'required|exists:students,id']);
+
+        $student = Student::findOrFail($data['student_id']);
+        abort_if($student->company_id !== $extracurricular->company_id, 403);
+
+        $member = ExtracurricularMember::updateOrCreate(
+            ['extracurricular_id' => $extracurricular->id, 'student_id' => $data['student_id']],
+            ['joined_at' => now()->toDateString(), 'is_active' => true]
+        );
+
+        return response()->json(['status' => true, 'message' => 'Murid berhasil ditambahkan', 'data' => $member->load('student:id,name')], 201);
+    }
+
+    public function removeMember(Extracurricular $extracurricular, Student $student)
+    {
+        $this->authorize('manage', $extracurricular);
+
+        ExtracurricularMember::where('extracurricular_id', $extracurricular->id)
+            ->where('student_id', $student->id)
+            ->update(['is_active' => false]);
+
+        return response()->json(['status' => true, 'message' => 'Murid dikeluarkan dari ekstrakurikuler', 'data' => null]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\FinanceReportController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\StudentBill;
+use Illuminate\Http\Request;
+
+class FinanceReportController extends Controller
+{
+    /**
+     * GET /api/school/admin/finance-report?bill_type_id=&period_month=&period_year=
+     * Rekap total tertagih, total terbayar, total piutang.
+     */
+    public function index(Request $request)
+    {
+        $data = $request->validate([
+            'bill_type_id'  => 'nullable|exists:bill_types,id',
+            'period_month'  => 'nullable|integer',
+            'period_year'   => 'nullable|integer',
+        ]);
+
+        $bills = StudentBill::where('company_id', $request->user()->company_id)
+            ->when($data['bill_type_id'] ?? null, fn($q, $id) => $q->where('bill_type_id', $id))
+            ->when($data['period_month'] ?? null, fn($q, $m) => $q->where('period_month', $m))
+            ->when($data['period_year'] ?? null, fn($q, $y) => $q->where('period_year', $y))
+            ->with('payments')
+            ->get();
+
+        $totalTertagih = $bills->sum('amount');
+        $totalTerbayar = $bills->sum(fn($b) => $b->total_paid);
+        $totalPiutang = $totalTertagih - $totalTerbayar;
+
+        $piutangList = $bills->where('status', '!=', 'lunas')
+            ->load('student:id,name')
+            ->map(fn($b) => [
+                'student_name' => $b->student->name,
+                'title' => $b->title,
+                'sisa' => $b->remaining_amount,
+                'due_date' => $b->due_date,
+            ])
+            ->values();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Rekap keuangan berhasil diambil',
+            'data'    => [
+                'total_tertagih' => $totalTertagih,
+                'total_terbayar' => $totalTerbayar,
+                'total_piutang'  => $totalPiutang,
+                'daftar_piutang' => $piutangList,
+            ],
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\LessonScheduleController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\ClassRoom;
+use App\Models\LessonSchedule;
+use Illuminate\Http\Request;
+
+class LessonScheduleController extends Controller
+{
+    /**
+     * GET /api/school/admin/lesson-schedules?class_id=&hari=&academic_year=
+     */
+    public function index(Request $request)
+    {
+        $schedules = LessonSchedule::where('company_id', $request->user()->company_id)
+            ->with(['classRoom:id,name', 'subject:id,name', 'teacher:id,name'])
+            ->when($request->query('class_id'), fn($q, $id) => $q->where('class_id', $id))
+            ->when($request->query('hari'), fn($q, $h) => $q->where('hari', $h))
+            ->when($request->query('academic_year'), fn($q, $y) => $q->where('academic_year', $y))
+            ->orderBy('hari')
+            ->orderBy('jam_mulai')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data jadwal berhasil diambil',
+            'data'    => $schedules,
+        ]);
+    }
+
+    /**
+     * GET /api/school/admin/classes/{class}/lesson-schedules
+     * Jadwal 1 kelas, dikelompokkan per hari — cocok buat tampilan
+     * "jadwal mingguan" 1 kelas.
+     */
+    public function byClass(ClassRoom $class)
+    {
+        $this->authorize('view', $class);
+
+        $schedules = LessonSchedule::where('class_id', $class->id)
+            ->with(['subject:id,name', 'teacher:id,name'])
+            ->orderBy('hari')
+            ->orderBy('jam_mulai')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Jadwal kelas berhasil diambil',
+            'data'    => $schedules,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/lesson-schedules
+     */
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'class_id'      => 'required|exists:class_rooms,id',
+            'subject_id'    => 'required|exists:subjects,id',
+            'teacher_id'    => 'required|exists:users,id',
+            'hari'          => 'required|in:senin,selasa,rabu,kamis,jumat,sabtu',
+            'jam_mulai'     => 'required|date_format:H:i',
+            'jam_selesai'   => 'required|date_format:H:i|after:jam_mulai',
+            'academic_year' => 'required|string|max:20',
+        ]);
+
+        $companyId = $request->user()->company_id;
+
+        // Cek bentrok: kelas yang sama tidak boleh punya 2 jadwal yang
+        // waktunya overlap di hari yang sama.
+        $classConflict = LessonSchedule::where('class_id', $data['class_id'])
+            ->where('hari', $data['hari'])
+            ->where('academic_year', $data['academic_year'])
+            ->where(function ($q) use ($data) {
+                $q->whereBetween('jam_mulai', [$data['jam_mulai'], $data['jam_selesai']])
+                    ->orWhereBetween('jam_selesai', [$data['jam_mulai'], $data['jam_selesai']])
+                    ->orWhere(function ($q2) use ($data) {
+                        $q2->where('jam_mulai', '<=', $data['jam_mulai'])
+                            ->where('jam_selesai', '>=', $data['jam_selesai']);
+                    });
+            })
+            ->exists();
+
+        abort_if($classConflict, 422, 'Jadwal kelas ini bentrok dengan jadwal lain di jam tersebut');
+
+        // Cek bentrok guru — guru yang sama tidak boleh ngajar 2 kelas
+        // bersamaan di hari & jam yang overlap.
+        $teacherConflict = LessonSchedule::where('teacher_id', $data['teacher_id'])
+            ->where('hari', $data['hari'])
+            ->where('academic_year', $data['academic_year'])
+            ->where(function ($q) use ($data) {
+                $q->whereBetween('jam_mulai', [$data['jam_mulai'], $data['jam_selesai']])
+                    ->orWhereBetween('jam_selesai', [$data['jam_mulai'], $data['jam_selesai']])
+                    ->orWhere(function ($q2) use ($data) {
+                        $q2->where('jam_mulai', '<=', $data['jam_mulai'])
+                            ->where('jam_selesai', '>=', $data['jam_selesai']);
+                    });
+            })
+            ->exists();
+
+        abort_if($teacherConflict, 422, 'Guru ini sudah punya jadwal lain di jam tersebut');
+
+        $data['company_id'] = $companyId;
+
+        $schedule = LessonSchedule::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Jadwal berhasil dibuat',
+            'data'    => $schedule->load(['classRoom:id,name', 'subject:id,name', 'teacher:id,name']),
+        ], 201);
+    }
+
+    /**
+     * PUT /api/school/admin/lesson-schedules/{lessonSchedule}
+     */
+    public function update(Request $request, LessonSchedule $lessonSchedule)
+    {
+        $this->authorize('update', $lessonSchedule);
+
+        $data = $request->validate([
+            'class_id'      => 'sometimes|exists:class_rooms,id',
+            'subject_id'    => 'sometimes|exists:subjects,id',
+            'teacher_id'    => 'sometimes|exists:users,id',
+            'hari'          => 'sometimes|in:senin,selasa,rabu,kamis,jumat,sabtu',
+            'jam_mulai'     => 'sometimes|date_format:H:i',
+            'jam_selesai'   => 'sometimes|date_format:H:i|after:jam_mulai',
+        ]);
+
+        $lessonSchedule->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Jadwal berhasil diperbarui',
+            'data'    => $lessonSchedule->load(['classRoom:id,name', 'subject:id,name', 'teacher:id,name']),
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/lesson-schedules/{lessonSchedule}
+     */
+    public function destroy(LessonSchedule $lessonSchedule)
+    {
+        $this->authorize('delete', $lessonSchedule);
+
+        $lessonSchedule->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Jadwal dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\PpdbApplicantController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\PpdbApplicant;
+use App\Models\PpdbTestScore;
+use App\Models\Student;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class PpdbApplicantController extends Controller
+{
+    /**
+     * GET /api/school/admin/ppdb-applicants?status=&period_id=
+     */
+    public function index(Request $request)
+    {
+        $applicants = PpdbApplicant::where('company_id', $request->user()->company_id)
+            ->with('testScores')
+            ->when($request->query('status'), fn($q, $s) => $q->where('status', $s))
+            ->when($request->query('period_id'), fn($q, $id) => $q->where('ppdb_period_id', $id))
+            ->latest()
+            ->get();
+
+        return response()->json(['status' => true, 'message' => 'Data pendaftar berhasil diambil', 'data' => $applicants]);
+    }
+
+    /**
+     * POST /api/school/admin/ppdb-applicants/{applicant}/test-scores
+     */
+    public function recordTestScore(Request $request, PpdbApplicant $applicant)
+    {
+        $this->authorize('manage', $applicant);
+
+        $data = $request->validate([
+            'jenis'     => 'required|in:akademik,baca_quran,hafalan,wawancara',
+            'score'     => 'nullable|numeric|min:0|max:100',
+            'notes'     => 'nullable|string',
+            'test_date' => 'required|date',
+        ]);
+
+        $score = PpdbTestScore::updateOrCreate(
+            ['ppdb_applicant_id' => $applicant->id, 'jenis' => $data['jenis']],
+            [
+                'score'      => $data['score'] ?? null,
+                'notes'      => $data['notes'] ?? null,
+                'test_date'  => $data['test_date'],
+                'tested_by'  => $request->user()->id,
+            ]
+        );
+
+        if ($applicant->status === 'pending') {
+            $applicant->update(['status' => 'tes']);
+        }
+
+        return response()->json(['status' => true, 'message' => 'Nilai tes berhasil dicatat', 'data' => $score]);
+    }
+
+    /**
+     * PATCH /api/school/admin/ppdb-applicants/{applicant}/announce
+     * Umumkan hasil kelulusan.
+     */
+    public function announce(Request $request, PpdbApplicant $applicant)
+    {
+        $this->authorize('manage', $applicant);
+
+        $data = $request->validate([
+            'status' => 'required|in:lulus,tidak_lulus',
+            'notes'  => 'nullable|string',
+        ]);
+
+        $applicant->update(['status' => $data['status'], 'notes' => $data['notes'] ?? $applicant->notes]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => $data['status'] === 'lulus' ? 'Pendaftar dinyatakan lulus' : 'Pendaftar dinyatakan tidak lulus',
+            'data'    => $applicant,
+        ]);
+    }
+
+    /**
+     * PATCH /api/school/admin/ppdb-applicants/{applicant}/daftar-ulang
+     */
+    public function daftarUlang(PpdbApplicant $applicant)
+    {
+        $this->authorize('manage', $applicant);
+
+        abort_unless($applicant->status === 'lulus', 422, 'Pendaftar harus lulus dulu sebelum daftar ulang');
+
+        $applicant->update(['status' => 'daftar_ulang']);
+
+        return response()->json(['status' => true, 'message' => 'Status daftar ulang tercatat', 'data' => $applicant]);
+    }
+
+    /**
+     * POST /api/school/admin/ppdb-applicants/{applicant}/convert
+     * Konversi jadi siswa aktif — bikin baris baru di tabel students.
+     */
+    public function convertToStudent(Request $request, PpdbApplicant $applicant)
+    {
+        $this->authorize('manage', $applicant);
+
+        abort_unless($applicant->status === 'daftar_ulang', 422, 'Pendaftar harus daftar ulang dulu sebelum dikonversi');
+        abort_if($applicant->student_id, 422, 'Pendaftar ini sudah dikonversi sebelumnya');
+
+        $data = $request->validate([
+            'class_id' => 'required|exists:class_rooms,id',
+            'nis'      => 'nullable|string|max:30',
+        ]);
+
+        $student = DB::transaction(function () use ($applicant, $data) {
+            $student = Student::create([
+                'company_id'   => $applicant->company_id,
+                'class_id'     => $data['class_id'],
+                'name'         => $applicant->full_name,
+                'gender'       => $applicant->gender,
+                'birth_date'   => $applicant->birth_date,
+                'nis'          => $data['nis'] ?? null,
+                'is_boarding'  => $applicant->wants_boarding,
+                'is_active'    => true,
+            ]);
+
+            $applicant->update(['status' => 'aktif', 'student_id' => $student->id]);
+
+            return $student;
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Pendaftar berhasil dikonversi jadi siswa aktif',
+            'data'    => $student,
+        ], 201);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\PpdbPeriodController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\PpdbPeriod;
+use Illuminate\Http\Request;
+
+class PpdbPeriodController extends Controller
+{
+    public function index(Request $request)
+    {
+        $periods = PpdbPeriod::where('company_id', $request->user()->company_id)
+            ->withCount('applicants')
+            ->latest()
+            ->get();
+
+        return response()->json(['status' => true, 'message' => 'Data periode PPDB berhasil diambil', 'data' => $periods]);
+    }
+
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'name'                => 'required|string|max:150',
+            'academic_year'       => 'required|string|max:20',
+            'registration_start'  => 'required|date',
+            'registration_end'    => 'required|date|after_or_equal:registration_start',
+            'quota'               => 'nullable|integer|min:1',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+
+        // Nonaktifkan periode aktif lain — 1 sekolah cuma boleh 1 periode aktif
+        PpdbPeriod::where('company_id', $data['company_id'])->update(['is_active' => false]);
+        $data['is_active'] = true;
+
+        $period = PpdbPeriod::create($data);
+
+        return response()->json(['status' => true, 'message' => 'Periode PPDB berhasil dibuat', 'data' => $period], 201);
+    }
+
+    public function show(PpdbPeriod $ppdbPeriod)
+    {
+        $this->authorize('view', $ppdbPeriod);
+        return response()->json(['status' => true, 'message' => 'Detail periode berhasil diambil', 'data' => $ppdbPeriod]);
+    }
+
+    public function update(Request $request, PpdbPeriod $ppdbPeriod)
+    {
+        $this->authorize('update', $ppdbPeriod);
+
+        $data = $request->validate([
+            'name'                => 'sometimes|string|max:150',
+            'registration_start'  => 'sometimes|date',
+            'registration_end'    => 'sometimes|date|after_or_equal:registration_start',
+            'quota'               => 'nullable|integer|min:1',
+            'is_active'           => 'sometimes|boolean',
+        ]);
+
+        $ppdbPeriod->update($data);
+
+        return response()->json(['status' => true, 'message' => 'Periode PPDB berhasil diperbarui', 'data' => $ppdbPeriod]);
+    }
+
+    public function destroy(PpdbPeriod $ppdbPeriod)
+    {
+        $this->authorize('update', $ppdbPeriod);
+        $ppdbPeriod->delete();
+        return response()->json(['status' => true, 'message' => 'Periode PPDB dihapus', 'data' => null]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\RoomAssignmentController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\DormitoryRoom;
+use App\Models\RoomAssignment;
+use App\Models\Student;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class RoomAssignmentController extends Controller
+{
+    /**
+     * POST /api/school/admin/rooms/{room}/assign
+     * Tempatkan santri ke kamar ini (santri belum punya penempatan aktif).
+     */
+    public function assign(Request $request, DormitoryRoom $room)
+    {
+        $this->authorize('manageAssignments', $room);
+
+        $data = $request->validate([
+            'student_id'  => 'required|exists:students,id',
+            'moved_in_at' => 'nullable|date',
+            'notes'       => 'nullable|string',
+        ]);
+
+        $student = Student::findOrFail($data['student_id']);
+
+        abort_if(
+            $student->company_id !== $room->dormitory->company_id,
+            403,
+            'Santri ini bukan dari sekolah yang sama dengan asrama'
+        );
+
+        abort_if(
+            !$student->is_boarding,
+            422,
+            'Santri ini tidak berstatus boarding'
+        );
+
+        abort_if(
+            $student->activeRoomAssignment,
+            422,
+            'Santri ini sudah punya penempatan kamar aktif, gunakan fitur pindah kamar'
+        );
+
+        abort_if(
+            $room->available_slots <= 0,
+            422,
+            'Kamar ini sudah penuh'
+        );
+
+        $assignment = RoomAssignment::create([
+            'student_id'  => $student->id,
+            'room_id'     => $room->id,
+            'moved_in_at' => $data['moved_in_at'] ?? now()->toDateString(),
+            'assigned_by' => $request->user()->id,
+            'notes'       => $data['notes'] ?? null,
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Santri berhasil ditempatkan di kamar',
+            'data'    => $assignment->load(['student:id,name,nis', 'room:id,name']),
+        ], 201);
+    }
+
+    /**
+     * POST /api/school/admin/students/{student}/move-room
+     * Pindahkan santri dari kamar sekarang ke kamar baru — keluarkan
+     * dari kamar lama & tempatkan ke kamar baru dalam 1 transaksi.
+     */
+    public function moveRoom(Request $request, Student $student)
+    {
+        $data = $request->validate([
+            'new_room_id' => 'required|exists:dormitory_rooms,id',
+            'notes'       => 'nullable|string',
+        ]);
+
+        $newRoom = DormitoryRoom::findOrFail($data['new_room_id']);
+        $this->authorize('manageAssignments', $newRoom);
+
+        abort_if(
+            $student->company_id !== $newRoom->dormitory->company_id,
+            403,
+            'Santri ini bukan dari sekolah yang sama dengan asrama tujuan'
+        );
+
+        $current = $student->activeRoomAssignment;
+
+        abort_if(!$current, 422, 'Santri ini belum punya penempatan kamar aktif');
+
+        abort_if(
+            $current->room_id === $newRoom->id,
+            422,
+            'Santri sudah berada di kamar ini'
+        );
+
+        abort_if(
+            $newRoom->available_slots <= 0,
+            422,
+            'Kamar tujuan sudah penuh'
+        );
+
+        $newAssignment = DB::transaction(function () use ($current, $newRoom, $student, $request, $data) {
+            $current->update(['moved_out_at' => now()->toDateString()]);
+
+            return RoomAssignment::create([
+                'student_id'  => $student->id,
+                'room_id'     => $newRoom->id,
+                'moved_in_at' => now()->toDateString(),
+                'assigned_by' => $request->user()->id,
+                'notes'       => $data['notes'] ?? null,
+            ]);
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Santri berhasil dipindahkan kamar',
+            'data'    => $newAssignment->load(['student:id,name,nis', 'room:id,name']),
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/assignments/{assignment}/checkout
+     * Keluarkan santri dari asrama (tanpa pindah ke kamar lain) —
+     * misal santri keluar dari program boarding sepenuhnya.
+     */
+    public function checkout(Request $request, RoomAssignment $assignment)
+    {
+        $this->authorize('manageAssignments', $assignment->room);
+
+        abort_if($assignment->moved_out_at, 422, 'Penempatan ini sudah selesai sebelumnya');
+
+        $data = $request->validate([
+            'moved_out_at' => 'nullable|date',
+        ]);
+
+        $assignment->update([
+            'moved_out_at' => $data['moved_out_at'] ?? now()->toDateString(),
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Santri berhasil dikeluarkan dari kamar',
+            'data'    => $assignment,
+        ]);
+    }
+
+    /**
+     * GET /api/school/admin/dormitories/{dormitory}/occupants
+     * Daftar semua penghuni aktif di 1 asrama (lintas kamar).
+     */
+    public function occupants(\App\Models\Dormitory $dormitory)
+    {
+        $this->authorize('view', $dormitory);
+
+        $occupants = RoomAssignment::active()
+            ->whereHas('room', fn($q) => $q->where('dormitory_id', $dormitory->id))
+            ->with(['student:id,name,nis,class_id', 'student.classRoom:id,name', 'room:id,name'])
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data penghuni asrama berhasil diambil',
+            'data'    => $occupants,
+        ]);
+    }
+
+    /**
+     * GET /api/school/admin/students/boarding-unassigned
+     * Santri boarding yang belum ditempatkan di kamar manapun —
+     * membantu admin melihat siapa yang masih perlu ditempatkan.
+     */
+    public function unassignedBoardingStudents(Request $request)
+    {
+        $students = Student::where('company_id', $request->user()->company_id)
+            ->where('is_boarding', true)
+            ->where('is_active', true)
+            ->whereDoesntHave('roomAssignments', fn($q) => $q->whereNull('moved_out_at'))
+            ->orderBy('name')
+            ->get(['id', 'name', 'nis', 'class_id']);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data santri belum ditempatkan berhasil diambil',
+            'data'    => $students,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StaffController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\StoreStaffRequest;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+class StaffController extends Controller
+{
+    /**
+     * GET /api/school/admin/staff?role=&search=&page=
+     * Daftar guru/wali di sekolah ini. Filter opsional ?role=guru atau ?role=wali
+     */
+    public function index(Request $request)
+    {
+        $staff = User::where('company_id', $request->user()->company_id)
+            ->whereIn('role', ['guru', 'wali'])
+            ->when($request->query('role'), fn($q, $role) => $q->where('role', $role))
+            ->when($request->query('search'), function ($q, $search) {
+                $q->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+            })
+            ->orderBy('name')
+            ->paginate(20);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data staff berhasil diambil',
+            'data'    => $staff,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/staff
+     * Buat akun baru untuk guru atau wali.
+     * Password sementara di-generate otomatis kalau tidak dikirim,
+     * supaya admin bisa langsung kasih tau ke guru/wali secara manual.
+     */
+    public function store(StoreStaffRequest $request)
+    {
+        $data = $request->validated();
+        $plainPassword = $data['password'] ?? Str::random(8);
+
+        $staff = User::create([
+            'name'       => $data['name'],
+            'email'      => $data['email'],
+            'phone'      => $data['phone'] ?? null,
+            'role'       => $data['role'],
+            'password'   => Hash::make($plainPassword),
+            'company_id' => $request->user()->company_id,
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Akun berhasil dibuat',
+            'data'    => [
+                'user'               => $staff,
+                'generated_password' => $data['password'] ? null : $plainPassword,
+            ],
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/staff/{staff}
+     */
+    public function show(Request $request, User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail staff berhasil diambil',
+            'data'    => $staff,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/staff/{staff}
+     */
+    public function update(Request $request, User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        $data = $request->validate([
+            'name'  => 'sometimes|string|max:150',
+            'email' => 'sometimes|email|unique:users,email,' . $staff->id,
+            'phone' => 'nullable|string|max:20',
+        ]);
+
+        $staff->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data staff berhasil diperbarui',
+            'data'    => $staff,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/staff/{staff}/reset-password
+     * Reset password guru/wali — dipakai kalau lupa password dan
+     * gak lewat alur forgot-password email biasa.
+     */
+    public function resetPassword(User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        $newPassword = Str::random(8);
+
+        $staff->update(['password' => Hash::make($newPassword)]);
+        $staff->tokens()->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Password berhasil direset',
+            'data'    => [
+                'generated_password' => $newPassword,
+            ],
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/staff/{staff}
+     * Nonaktifkan akun (bukan hapus permanen) — cegah kehilangan histori
+     * data yang sudah terhubung (absen yang di-record guru ini, dst).
+     */
+    public function destroy(User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        $staff->tokens()->delete();
+        $staff->update(['is_active' => false]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Akun dinonaktifkan',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StudentAchievementController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Student;
+use App\Models\StudentAchievement;
+use Illuminate\Http\Request;
+
+class StudentAchievementController extends Controller
+{
+    public function index(Request $request)
+    {
+        $items = StudentAchievement::where('company_id', $request->user()->company_id)
+            ->with(['student:id,name', 'extracurricular:id,name'])
+            ->latest('achieved_at')
+            ->get();
+
+        return response()->json(['status' => true, 'message' => 'Data prestasi berhasil diambil', 'data' => $items]);
+    }
+
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'student_id'          => 'required|exists:students,id',
+            'extracurricular_id'  => 'nullable|exists:extracurriculars,id',
+            'title'               => 'required|string|max:150',
+            'level'               => 'required|in:sekolah,kecamatan,kabupaten,provinsi,nasional,internasional',
+            'rank'                => 'nullable|string|max:50',
+            'achieved_at'         => 'required|date',
+            'certificate'         => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:5120',
+        ]);
+
+        $student = Student::findOrFail($data['student_id']);
+        abort_if($student->company_id !== $request->user()->company_id, 403);
+
+        $certPath = null;
+        if ($request->hasFile('certificate')) {
+            $certPath = $request->file('certificate')->store('achievements/' . $student->company_id, 'public');
+        }
+
+        $achievement = StudentAchievement::create([
+            'company_id'          => $student->company_id,
+            'student_id'          => $data['student_id'],
+            'extracurricular_id'  => $data['extracurricular_id'] ?? null,
+            'title'               => $data['title'],
+            'level'               => $data['level'],
+            'rank'                => $data['rank'] ?? null,
+            'achieved_at'         => $data['achieved_at'],
+            'certificate_path'    => $certPath,
+            'recorded_by'         => $request->user()->id,
+        ]);
+
+        return response()->json(['status' => true, 'message' => 'Prestasi berhasil dicatat', 'data' => $achievement->load('student:id,name')], 201);
+    }
+
+    public function destroy(StudentAchievement $achievement)
+    {
+        abort_if($achievement->company_id !== request()->user()->company_id, 403);
+
+        if ($achievement->certificate_path) {
+            \Storage::disk('public')->delete($achievement->certificate_path);
+        }
+
+        $achievement->delete();
+
+        return response()->json(['status' => true, 'message' => 'Prestasi dihapus', 'data' => null]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StudentBillController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\BillPayment;
+use App\Models\BillType;
+use App\Models\Student;
+use App\Models\StudentBill;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class StudentBillController extends Controller
+{
+    /**
+     * GET /api/school/admin/student-bills?class_id=&status=&bill_type_id=
+     */
+    public function index(Request $request)
+    {
+        $bills = StudentBill::where('company_id', $request->user()->company_id)
+            ->with(['student:id,name,class_id', 'student.classRoom:id,name', 'billType:id,name'])
+            ->when($request->query('class_id'), fn($q, $id) => $q->whereHas('student', fn($q2) => $q2->where('class_id', $id)))
+            ->when($request->query('status'), fn($q, $s) => $q->where('status', $s))
+            ->when($request->query('bill_type_id'), fn($q, $id) => $q->where('bill_type_id', $id))
+            ->latest('due_date')
+            ->paginate(30);
+
+        return response()->json(['status' => true, 'message' => 'Data tagihan berhasil diambil', 'data' => $bills]);
+    }
+
+    /**
+     * POST /api/school/admin/student-bills/generate
+     * Generate tagihan untuk banyak siswa sekaligus — misal SPP bulan
+     * ini untuk seluruh siswa aktif (atau 1 kelas tertentu).
+     *
+     * Body:
+     * {
+     *   "bill_type_id": 1,
+     *   "title": "SPP Januari 2027",
+     *   "amount": 150000,
+     *   "due_date": "2027-01-10",
+     *   "period_month": 1, "period_year": 2027,
+     *   "class_id": null,  // null = semua kelas
+     *   "student_ids": null // atau spesifik siswa tertentu, override class_id
+     * }
+     */
+    public function generate(Request $request)
+    {
+        $data = $request->validate([
+            'bill_type_id'   => 'required|exists:bill_types,id',
+            'title'          => 'required|string|max:150',
+            'amount'         => 'required|numeric|min:0',
+            'due_date'       => 'required|date',
+            'period_month'   => 'nullable|integer|min:1|max:12',
+            'period_year'    => 'nullable|integer|min:2000',
+            'class_id'       => 'nullable|exists:class_rooms,id',
+            'student_ids'    => 'nullable|array',
+            'student_ids.*'  => 'exists:students,id',
+        ]);
+
+        $companyId = $request->user()->company_id;
+
+        $billType = BillType::findOrFail($data['bill_type_id']);
+        abort_if($billType->company_id !== $companyId, 403);
+
+        $studentsQuery = Student::where('company_id', $companyId)->where('is_active', true);
+
+        if (!empty($data['student_ids'])) {
+            $studentsQuery->whereIn('id', $data['student_ids']);
+        } elseif (!empty($data['class_id'])) {
+            $studentsQuery->where('class_id', $data['class_id']);
+        }
+
+        $students = $studentsQuery->get();
+
+        $created = DB::transaction(function () use ($students, $data, $companyId, $request) {
+            $result = [];
+            foreach ($students as $student) {
+                // firstOrCreate mencegah dobel kalau periode bulan/tahun sama
+                $bill = StudentBill::firstOrCreate(
+                    [
+                        'student_id'    => $student->id,
+                        'bill_type_id'  => $data['bill_type_id'],
+                        'period_month'  => $data['period_month'] ?? null,
+                        'period_year'   => $data['period_year'] ?? null,
+                    ],
+                    [
+                        'company_id'  => $companyId,
+                        'title'       => $data['title'],
+                        'amount'      => $data['amount'],
+                        'due_date'    => $data['due_date'],
+                        'created_by'  => $request->user()->id,
+                    ]
+                );
+                $result[] = $bill;
+            }
+            return $result;
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Tagihan berhasil dibuat untuk ' . count($created) . ' siswa',
+            'data'    => $created,
+        ], 201);
+    }
+
+    /**
+     * POST /api/school/admin/student-bills/{bill}/payments
+     */
+    public function recordPayment(Request $request, StudentBill $bill)
+    {
+        $this->authorize('manage', $bill);
+
+        $data = $request->validate([
+            'amount'  => 'required|numeric|min:1',
+            'method'  => 'required|in:cash,transfer',
+            'paid_at' => 'required|date',
+            'notes'   => 'nullable|string',
+        ]);
+
+        abort_if($bill->status === 'lunas', 422, 'Tagihan ini sudah lunas');
+        abort_if($data['amount'] > $bill->remaining_amount, 422, 'Jumlah bayar melebihi sisa tagihan (' . $bill->remaining_amount . ')');
+
+        $payment = DB::transaction(function () use ($data, $bill, $request) {
+            $receiptNumber = 'KWT-' . now()->year . '-' . str_pad((string) (BillPayment::count() + 1), 6, '0', STR_PAD_LEFT);
+
+            $payment = BillPayment::create([
+                'student_bill_id' => $bill->id,
+                'amount'          => $data['amount'],
+                'method'          => $data['method'],
+                'paid_at'         => $data['paid_at'],
+                'receipt_number'  => $receiptNumber,
+                'notes'           => $data['notes'] ?? null,
+                'recorded_by'     => $request->user()->id,
+            ]);
+
+            $bill->refreshStatus();
+
+            return $payment;
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Pembayaran berhasil dicatat',
+            'data'    => $payment->load('recordedBy:id,name'),
+        ], 201);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StudentController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\StoreStudentRequest;
+use App\Http\Requests\School\UpdateStudentRequest;
+use App\Models\Student;
+use App\Models\User;
+use Illuminate\Http\Request;
+
+class StudentController extends Controller
+{
+    /**
+     * GET /api/school/admin/students?class_id=&search=&page=
+     */
+    public function index(Request $request)
+    {
+        $students = Student::where('company_id', $request->user()->company_id)
+            ->with('classRoom:id,name')
+            ->when($request->query('class_id'), fn($q, $classId) => $q->where('class_id', $classId))
+            ->when($request->query('search'), function ($q, $search) {
+                $q->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('nis', 'like', "%{$search}%");
+                });
+            })
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->paginate(20);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data murid berhasil diambil',
+            'data'    => $students,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/students
+     */
+    public function store(StoreStudentRequest $request)
+    {
+        $data = $request->validated();
+        $data['company_id'] = $request->user()->company_id;
+
+        $student = Student::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Murid berhasil ditambahkan',
+            'data'    => $student,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/students/{student}
+     */
+    public function show(Student $student)
+    {
+        $this->authorize('view', $student);
+
+        $student->load(['classRoom:id,name', 'guardians:id,name,phone,email']);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail murid berhasil diambil',
+            'data'    => $student,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/students/{student}
+     */
+    public function update(UpdateStudentRequest $request, Student $student)
+    {
+        $this->authorize('update', $student);
+
+        $student->update($request->validated());
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data murid berhasil diperbarui',
+            'data'    => $student,
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/students/{student}
+     */
+    public function destroy(Student $student)
+    {
+        $this->authorize('delete', $student);
+
+        // Soft delete — histori absen murid ini tetap perlu dipertahankan untuk laporan lama
+        $student->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Murid dihapus',
+            'data'    => null,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/students/{student}/guardians
+     * Hubungkan akun wali (role=wali) ke murid ini.
+     */
+    public function attachGuardian(Request $request, Student $student)
+    {
+        $this->authorize('update', $student);
+
+        $data = $request->validate([
+            'user_id'                => 'required|exists:users,id',
+            'relationship'           => 'required|in:ayah,ibu,wali_lain',
+            'is_primary'             => 'boolean',
+            'can_submit_permission'  => 'boolean',
+        ]);
+
+        $guardianUser = User::findOrFail($data['user_id']);
+        abort_if($guardianUser->role !== 'wali', 422, 'User yang dipilih bukan berrole wali');
+        abort_if($guardianUser->company_id !== $student->company_id, 422, 'Wali harus dari sekolah yang sama');
+
+        $student->guardians()->syncWithoutDetaching([
+            $data['user_id'] => [
+                'relationship'          => $data['relationship'],
+                'is_primary'            => $data['is_primary'] ?? false,
+                'can_submit_permission' => $data['can_submit_permission'] ?? true,
+            ],
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Wali berhasil dihubungkan ke murid',
+            'data'    => $student->load('guardians:id,name,phone,email'),
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/students/{student}/guardians/{user}
+     */
+    public function detachGuardian(Student $student, User $user)
+    {
+        $this->authorize('update', $student);
+
+        $student->guardians()->detach($user->id);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Wali berhasil dilepas dari murid',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StudentMutationController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Student;
+use App\Models\StudentMutation;
+use Illuminate\Http\Request;
+
+class StudentMutationController extends Controller
+{
+    /**
+     * GET /api/school/admin/student-mutations?type=&student_id=
+     */
+    public function index(Request $request)
+    {
+        $mutations = StudentMutation::where('company_id', $request->user()->company_id)
+            ->with(['student:id,name', 'processedBy:id,name'])
+            ->when($request->query('type'), fn($q, $t) => $q->where('type', $t))
+            ->when($request->query('student_id'), fn($q, $id) => $q->where('student_id', $id))
+            ->latest('effective_date')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data mutasi siswa berhasil diambil',
+            'data'    => $mutations,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/student-mutations/masuk (multipart)
+     * Catat riwayat pendidikan siswa yang sudah dibuat lewat
+     * StudentController biasa — dipakai buat dokumentasi asal sekolah,
+     * TIDAK membuat siswa baru (siswa harus sudah ada dulu).
+     */
+    public function recordMasuk(Request $request)
+    {
+        $data = $request->validate([
+            'student_id'     => 'required|exists:students,id',
+            'origin_school'  => 'required|string|max:150',
+            'reason'         => 'nullable|string',
+            'effective_date' => 'required|date',
+            'letter_number'  => 'nullable|string|max:100',
+            'document'       => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:5120',
+        ]);
+
+        $student = Student::findOrFail($data['student_id']);
+        abort_if($student->company_id !== $request->user()->company_id, 403);
+
+        $documentPath = null;
+        if ($request->hasFile('document')) {
+            $documentPath = $request->file('document')->store('mutations/' . $student->company_id, 'public');
+        }
+
+        $mutation = StudentMutation::create([
+            'company_id'     => $student->company_id,
+            'student_id'     => $student->id,
+            'type'           => 'masuk',
+            'origin_school'  => $data['origin_school'],
+            'reason'         => $data['reason'] ?? null,
+            'effective_date' => $data['effective_date'],
+            'letter_number'  => $data['letter_number'] ?? null,
+            'document_path'  => $documentPath,
+            'processed_by'   => $request->user()->id,
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Riwayat mutasi masuk berhasil dicatat',
+            'data'    => $mutation->load('student:id,name'),
+        ], 201);
+    }
+
+    /**
+     * POST /api/school/admin/student-mutations/keluar (multipart)
+     * Catat mutasi keluar — sekaligus nonaktifkan siswa dari sistem
+     * (is_active = false, class_id = null), sama seperti alur "lulus"
+     * di ClassPromotionController.
+     */
+    public function recordKeluar(Request $request)
+    {
+        $data = $request->validate([
+            'student_id'          => 'required|exists:students,id',
+            'destination_school'  => 'required|string|max:150',
+            'reason'              => 'nullable|string',
+            'effective_date'      => 'required|date',
+            'letter_number'       => 'nullable|string|max:100',
+            'document'            => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:5120',
+        ]);
+
+        $student = Student::findOrFail($data['student_id']);
+        abort_if($student->company_id !== $request->user()->company_id, 403);
+
+        $documentPath = null;
+        if ($request->hasFile('document')) {
+            $documentPath = $request->file('document')->store('mutations/' . $student->company_id, 'public');
+        }
+
+        $mutation = StudentMutation::create([
+            'company_id'          => $student->company_id,
+            'student_id'          => $student->id,
+            'type'                => 'keluar',
+            'destination_school'  => $data['destination_school'],
+            'reason'              => $data['reason'] ?? null,
+            'effective_date'      => $data['effective_date'],
+            'letter_number'       => $data['letter_number'] ?? null,
+            'document_path'       => $documentPath,
+            'processed_by'        => $request->user()->id,
+        ]);
+
+        $student->update(['is_active' => false, 'class_id' => null]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Mutasi keluar berhasil dicatat, siswa dinonaktifkan',
+            'data'    => $mutation->load('student:id,name'),
+        ], 201);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StudentPermissionController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\StudentAttendance;
+use App\Models\StudentPermission;
+use Illuminate\Http\Request;
+
+class StudentPermissionController extends Controller
+{
+    /**
+     * GET /api/school/admin/permissions?status=&page=
+     */
+    public function index(Request $request)
+    {
+        $permissions = StudentPermission::whereHas(
+            'student',
+            fn($q) => $q->where('company_id', $request->user()->company_id)
+        )
+            ->with(['student:id,name,class_id', 'submittedBy:id,name'])
+            ->when($request->query('status'), fn($q, $status) => $q->where('status', $status))
+            ->latest('date_permission')
+            ->paginate(20);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data pengajuan izin berhasil diambil',
+            'data'    => $permissions,
+        ]);
+    }
+
+    /**
+     * PATCH /api/school/admin/permissions/{permission}/review
+     */
+    public function review(Request $request, StudentPermission $permission)
+    {
+        $this->authorize('review', $permission);
+
+        $data = $request->validate([
+            'status' => 'required|in:approved,rejected',
+        ]);
+
+        $permission->update([
+            'status'      => $data['status'],
+            'reviewed_by' => $request->user()->id,
+            'reviewed_at' => now(),
+        ]);
+
+        // Kalau disetujui, otomatis catat di student_attendances hari itu
+        if ($data['status'] === 'approved') {
+            StudentAttendance::updateOrCreate(
+                [
+                    'student_id' => $permission->student_id,
+                    'date'       => $permission->date_permission,
+                ],
+                [
+                    'company_id'  => $permission->student->company_id,
+                    'class_id'    => $permission->student->class_id,
+                    'status'      => $permission->type,
+                    'recorded_by' => $request->user()->id,
+                    'notes'       => 'Otomatis dari pengajuan izin #' . $permission->id,
+                ]
+            );
+        }
+
+        return response()->json([
+            'status'  => true,
+            'message' => $data['status'] === 'approved'
+                ? 'Pengajuan izin disetujui'
+                : 'Pengajuan izin ditolak',
+            'data'    => $permission->fresh()->load(['student:id,name,class_id', 'submittedBy:id,name']),
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\SubjectController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Subject;
+use Illuminate\Http\Request;
+
+class SubjectController extends Controller
+{
+    /**
+     * GET /api/school/admin/subjects
+     */
+    public function index(Request $request)
+    {
+        $subjects = Subject::where('company_id', $request->user()->company_id)
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data mata pelajaran berhasil diambil',
+            'data'    => $subjects,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/subjects
+     */
+    public function store(Request $request)
+    {
+        $data = $request->validate([
+            'name'             => 'required|string|max:100',
+            'code'             => 'nullable|string|max:20',
+            'kelompok'         => 'required|in:wajib,muatan_lokal',
+            'grade_level_min'  => 'nullable|integer|min:1|max:6',
+            'grade_level_max'  => 'nullable|integer|min:1|max:6|gte:grade_level_min',
+        ]);
+
+        $data['company_id'] = $request->user()->company_id;
+
+        $subject = Subject::create($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Mata pelajaran berhasil dibuat',
+            'data'    => $subject,
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/subjects/{subject}
+     */
+    public function show(Subject $subject)
+    {
+        $this->authorize('view', $subject);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail mata pelajaran berhasil diambil',
+            'data'    => $subject,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/subjects/{subject}
+     */
+    public function update(Request $request, Subject $subject)
+    {
+        $this->authorize('update', $subject);
+
+        $data = $request->validate([
+            'name'             => 'sometimes|string|max:100',
+            'code'             => 'nullable|string|max:20',
+            'kelompok'         => 'sometimes|in:wajib,muatan_lokal',
+            'grade_level_min'  => 'nullable|integer|min:1|max:6',
+            'grade_level_max'  => 'nullable|integer|min:1|max:6|gte:grade_level_min',
+            'is_active'        => 'sometimes|boolean',
+        ]);
+
+        $subject->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Mata pelajaran berhasil diperbarui',
+            'data'    => $subject,
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/subjects/{subject}
+     */
+    public function destroy(Subject $subject)
+    {
+        $this->authorize('delete', $subject);
+
+        $subject->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Mata pelajaran dihapus',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\TeacherAssignmentController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\AttachTeacherRequest;
+use App\Models\ClassRoom;
+use App\Models\User;
+
+class TeacherAssignmentController extends Controller
+{
+    /**
+     * POST /api/school/admin/classes/{class}/teachers
+     * Hubungkan guru ke kelas, sebagai wali_kelas atau guru_mapel.
+     */
+    public function attach(AttachTeacherRequest $request, ClassRoom $class)
+    {
+        $this->authorize('update', $class);
+
+        $data = $request->validated();
+
+        $class->classTeachers()->create([
+            'user_id'        => $data['user_id'],
+            'role_in_class'  => $data['role_in_class'],
+            'subject'        => $data['subject'] ?? null,
+        ]);
+
+        // Kalau ditandai sebagai wali_kelas, sinkronkan juga ke kolom homeroom_teacher_id
+        if ($data['role_in_class'] === 'wali_kelas') {
+            $class->update(['homeroom_teacher_id' => $data['user_id']]);
+        }
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Guru berhasil dihubungkan ke kelas',
+            'data'    => $class->fresh()->load(['homeroomTeacher:id,name', 'teachers:id,name']),
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/classes/{class}/teachers/{user}
+     */
+    public function detach(ClassRoom $class, User $user)
+    {
+        $this->authorize('update', $class);
+
+        $class->classTeachers()->where('user_id', $user->id)->delete();
+
+        if ($class->homeroom_teacher_id === $user->id) {
+            $class->update(['homeroom_teacher_id' => null]);
+        }
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Guru berhasil dilepas dari kelas',
+            'data'    => $class->fresh()->load(['homeroomTeacher:id,name', 'teachers:id,name']),
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Kiosk\KioskAttendanceController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Kiosk;
+
+use App\Enums\School\AttendanceStatus;
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\StoreKioskAttendanceRequest;
+use App\Models\ClassRoom;
+use App\Models\StudentAttendance;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+
+class KioskAttendanceController extends Controller
+{
+    /**
+     * GET /api/kiosk/classes
+     * Daftar kelas di sekolah pada device ini, buat dropdown
+     * pemilihan kelas di kiosk (device umum yang tidak terikat 1 kelas).
+     */
+    public function classes(Request $request)
+    {
+        $device = $request->attributes->get('attendanceDevice');
+
+        $classes = ClassRoom::where('company_id', $device->company_id)
+            ->where('is_active', true)
+            ->orderBy('grade_level')
+            ->orderBy('name')
+            ->get(['id', 'name', 'grade_level']);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data kelas berhasil diambil',
+            'data'    => $classes,
+        ]);
+    }
+
+    /**
+     * GET /api/kiosk/classes/{class}/students
+     */
+    public function students(Request $request, ClassRoom $class)
+    {
+        $device = $request->attributes->get('attendanceDevice');
+
+        abort_if(
+            $class->company_id !== $device->company_id,
+            403,
+            'Kelas ini bukan milik sekolah yang sama dengan device'
+        );
+
+        $today = now()->toDateString();
+
+        $students = $class->students()
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->get()
+            ->map(function ($student) use ($today) {
+                $existing = StudentAttendance::where('student_id', $student->id)
+                    ->where('date', $today)
+                    ->first();
+
+                return [
+                    'id'               => $student->id,
+                    'name'             => $student->name,
+                    'nis'              => $student->nis,
+                    'photo_url'        => $student->photo_url,
+                    'already_recorded' => (bool) $existing,
+                    'current_status'   => $existing?->status,
+                ];
+            });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data murid berhasil diambil',
+            'data'    => $students,
+        ]);
+    }
+
+    /**
+     * POST /api/kiosk/attendance
+     */
+    public function store(StoreKioskAttendanceRequest $request)
+    {
+        $device = $request->attributes->get('attendanceDevice');
+
+        $data = $request->validated();
+
+        abort_if(
+            $data['class_id'] != $device->class_id && $device->class_id !== null,
+            403,
+            'Device ini didedikasikan untuk kelas lain'
+        );
+
+        $status = AttendanceStatus::from($data['status']);
+        $lateThreshold = config('school.late_threshold', '07:15:00');
+
+        if ($status === AttendanceStatus::Hadir && now()->format('H:i:s') > $lateThreshold) {
+            $status = AttendanceStatus::Terlambat;
+        }
+
+        $photoPath = null;
+        if ($request->hasFile('photo')) {
+            $filename = $data['student_id'] . '_' . now()->format('Y-m-d_His') . '.' . $request->file('photo')->extension();
+            $photoPath = $request->file('photo')->storeAs('', $filename, 'attendance_photos');
+        }
+
+        $existing = StudentAttendance::where('student_id', $data['student_id'])
+            ->where('date', now()->toDateString())
+            ->first();
+
+        if ($existing && $existing->photo_evidence && $photoPath) {
+            Storage::disk('attendance_photos')->delete($existing->photo_evidence);
+        }
+
+        $attendance = StudentAttendance::updateOrCreate(
+            [
+                'student_id' => $data['student_id'],
+                'date'       => now()->toDateString(),
+            ],
+            [
+                'company_id'      => $device->company_id,
+                'class_id'        => $data['class_id'],
+                'status'          => $status,
+                'check_in_time'   => now()->toTimeString(),
+                'photo_evidence'  => $photoPath ?? $existing?->photo_evidence,
+                'device_id'       => $device->id,
+            ]
+        );
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Absen berhasil disimpan',
+            'data'    => $attendance,
+        ], 201);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Kiosk\KioskAuthController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Kiosk;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+
+class KioskAuthController extends Controller
+{
+    /**
+     * GET /api/kiosk/ping
+     */
+    public function ping(Request $request)
+    {
+        $device = $request->attributes->get('attendanceDevice');
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Device aktif',
+            'data'    => [
+                'device_name'   => $device->name,
+                'default_class' => $device->classRoom?->only(['id', 'name']),
+                'company_id'    => $device->company_id,
+            ],
+        ]);
+    }
+}
+
+===== app\Http\Middleware\VerifyDeviceToken.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use App\Models\AttendanceDevice;
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class VerifyDeviceToken
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        $token = $request->header('X-Device-Token');
+
+        if (!$token) {
+            return $this->unauthorized('Device token tidak ditemukan');
+        }
+
+        $device = AttendanceDevice::where('device_token', $token)
+            ->where('is_active', true)
+            ->first();
+
+        if (!$device) {
+            return $this->unauthorized('Device token tidak valid atau device nonaktif');
+        }
+
+        $device->update(['last_seen_at' => now()]);
+
+        $request->attributes->set('attendanceDevice', $device);
+
+        return $next($request);
+    }
+
+    private function unauthorized(string $message)
+    {
+        return response()->json([
+            'status'  => false,
+            'message' => $message,
+            'data'    => null,
+        ], 401);
+    }
+}
+
+===== app\Models\AcademicEvent.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class AcademicEvent extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'tanggal_mulai'   => 'date',
+        'tanggal_selesai' => 'date',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    public function createdBy()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+}
+
+===== app\Models\Assignment.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Assignment extends Model
+{
+    use HasFactory;
+
+
+    protected $guarded = [];
+
+    protected $casts = ['deadline' => 'datetime'];
+    protected $appends = ['file_url'];
+
+    public function getFileUrlAttribute(): ?string
+    {
+        if (!$this->file_path) return null;
+        return Storage::disk('public')->url($this->file_path);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+    public function subject()
+    {
+        return $this->belongsTo(Subject::class);
+    }
+    public function teacher()
+    {
+        return $this->belongsTo(User::class, 'teacher_id');
+    }
+    public function submissions()
+    {
+        return $this->hasMany(AssignmentSubmission::class);
+    }
+}
+
+===== app\Models\AssignmentSubmission.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class AssignmentSubmission extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = [
+        'submitted_at' => 'datetime',
+        'graded_at'    => 'datetime',
+        'nilai'        => 'decimal:2',
+    ];
+
+    protected $appends = ['file_url'];
+
+    public function getFileUrlAttribute(): ?string
+    {
+        if (!$this->file_path) return null;
+        return Storage::disk('public')->url($this->file_path);
+    }
+
+    public function assignment()
+    {
+        return $this->belongsTo(Assignment::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function submittedBy()
+    {
+        return $this->belongsTo(User::class, 'submitted_by');
+    }
+    public function gradedBy()
+    {
+        return $this->belongsTo(User::class, 'graded_by');
+    }
+}
+
+===== app\Models\AttendanceDevice.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class AttendanceDevice extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'is_active'     => 'boolean',
+        'last_seen_at'  => 'datetime',
+    ];
+
+    // Token device tidak boleh ikut ter-serialize ke response API sembarangan
+    protected $hidden = [
+        'device_token',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // Kelas yang jadi "rumah" device ini — nullable kalau device umum
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    // Admin yang mendaftarkan device ini
+    public function registeredBy()
+    {
+        return $this->belongsTo(User::class, 'registered_by');
+    }
+
+    // Riwayat absen yang masuk lewat device ini
+    public function attendances()
+    {
+        return $this->hasMany(StudentAttendance::class, 'device_id');
+    }
+}
+
+===== app\Models\BillPayment.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class BillPayment extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'paid_at' => 'date',
+        'amount'  => 'decimal:2',
+    ];
+
+    public function studentBill()
+    {
+        return $this->belongsTo(StudentBill::class);
+    }
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+}
+
+===== app\Models\BillType.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class BillType extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = ['is_active' => 'boolean'];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function bills()
+    {
+        return $this->hasMany(StudentBill::class);
+    }
+}
+
+===== app\Models\BoardingPermission.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class BoardingPermission extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'tanggal_keluar'          => 'date',
+        'tanggal_kembali_rencana' => 'date',
+        'tanggal_kembali_aktual'  => 'date',
+        'reviewed_at'             => 'datetime',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    public function submittedBy()
+    {
+        return $this->belongsTo(User::class, 'submitted_by');
+    }
+
+    public function reviewedBy()
+    {
+        return $this->belongsTo(User::class, 'reviewed_by');
+    }
+}
+
+===== app\Models\ClassPromotion.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class ClassPromotion extends Model
+{
+    use HasFactory;
+
+
+    protected $guarded = [];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    public function fromClass()
+    {
+        return $this->belongsTo(ClassRoom::class, 'from_class_id');
+    }
+
+    public function toClass()
+    {
+        return $this->belongsTo(ClassRoom::class, 'to_class_id');
+    }
+
+    public function processedBy()
+    {
+        return $this->belongsTo(User::class, 'processed_by');
+    }
+}
+
+===== app\Models\ClassRoom.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class ClassRoom extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    // Nama tabel bukan "class_rooms" (default tebakan Laravel dari nama model),
+    // tapi "classes" sesuai migration. Model dinamai ClassRoom karena "Class"
+    // adalah reserved word di PHP.
+
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    // Sekolah pemilik kelas ini
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // Wali kelas (satu guru penanggung jawab utama)
+    public function homeroomTeacher()
+    {
+        return $this->belongsTo(User::class, 'homeroom_teacher_id');
+    }
+
+    // Semua murid di kelas ini
+    public function students()
+    {
+        return $this->hasMany(Student::class, 'class_id');
+    }
+
+    // Histori absen yang tercatat di kelas ini
+    public function studentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class, 'class_id');
+    }
+
+    // Baris pivot guru-kelas (dengan role_in_class & subject)
+    public function classTeachers()
+    {
+        return $this->hasMany(ClassTeacher::class, 'class_id');
+    }
+
+    // Semua guru yang mengajar di kelas ini (wali kelas + guru mapel)
+    public function teachers()
+    {
+        return $this->belongsToMany(User::class, 'class_teachers', 'class_id', 'user_id')
+            ->withPivot(['role_in_class', 'subject'])
+            ->withTimestamps();
+    }
+
+    // Kiosk/device yang didedikasikan untuk kelas ini
+    public function attendanceDevices()
+    {
+        return $this->hasMany(AttendanceDevice::class, 'class_id');
+    }
+}
+
+===== app\Models\ClassTeacher.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class ClassTeacher extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    // User dengan role = 'guru'
+    public function teacher()
+    {
+        return $this->belongsTo(User::class, 'user_id');
+    }
+}
+
+===== app\Models\Curriculum.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Curriculum extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // FK di curriculum_subjects namanya 'curricula_id', bukan default 'curriculum_id'
+    public function curriculumSubjects()
+    {
+        return $this->hasMany(CurriculumSubject::class, 'curricula_id');
+    }
+
+    /**
+     * Semua mapel untuk 1 tingkat kelas tertentu di kurikulum ini,
+     * lengkap dengan jam per minggunya.
+     */
+    public function subjectsForGrade(int $gradeLevel)
+    {
+        return $this->curriculumSubjects()
+            ->where('grade_level', $gradeLevel)
+            ->with('subject');
+    }
+}
+
+===== app\Models\CurriculumSubject.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class CurriculumSubject extends Model
+{
+    use HasFactory;
+
+
+    protected $guarded = [];
+
+    // FK ke curricula namanya 'curricula_id', bukan default 'curriculum_id'
+    public function curriculum()
+    {
+        return $this->belongsTo(Curriculum::class, 'curricula_id');
+    }
+
+    public function subject()
+    {
+        return $this->belongsTo(Subject::class);
+    }
+}
+
+===== app\Models\Dormitory.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Dormitory extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // Pengasuh/penanggung jawab asrama (user biasa, role apapun)
+    public function pengasuh()
+    {
+        return $this->belongsTo(User::class, 'pengasuh_id');
+    }
+
+    // Semua kamar di asrama ini
+    public function rooms()
+    {
+        return $this->hasMany(DormitoryRoom::class);
+    }
+
+    // Semua santri yang saat ini menghuni asrama ini (lewat kamar-kamarnya,
+    // hanya penempatan yang masih aktif / belum keluar)
+    public function students()
+    {
+        return $this->hasManyThrough(
+            Student::class,
+            DormitoryRoom::class,
+            'dormitory_id',  // FK di dormitory_rooms -> dormitories
+            'id',            // FK di students -> id (lewat room_assignments, lihat accessor di bawah)
+            'id',
+            'id'
+        );
+    }
+}
+
+===== app\Models\DormitoryRoom.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class DormitoryRoom extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function dormitory()
+    {
+        return $this->belongsTo(Dormitory::class);
+    }
+
+    // Seluruh histori penempatan di kamar ini (termasuk yang sudah keluar)
+    public function assignments()
+    {
+        return $this->hasMany(RoomAssignment::class, 'room_id');
+    }
+
+    // Penempatan yang masih aktif saat ini (belum ada moved_out_at)
+    public function activeAssignments()
+    {
+        return $this->hasMany(RoomAssignment::class, 'room_id')
+            ->whereNull('moved_out_at');
+    }
+
+    // Jumlah penghuni aktif sekarang — dipakai untuk cek kapasitas
+    public function getOccupancyCountAttribute(): int
+    {
+        return $this->activeAssignments()->count();
+    }
+
+    // Sisa slot yang masih bisa diisi
+    public function getAvailableSlotsAttribute(): int
+    {
+        return max(0, $this->capacity - $this->occupancy_count);
+    }
+}
+
+===== app\Models\Extracurricular.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Extracurricular extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = ['is_active' => 'boolean'];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function pembina()
+    {
+        return $this->belongsTo(User::class, 'pembina_id');
+    }
+    public function members()
+    {
+        return $this->hasMany(ExtracurricularMember::class);
+    }
+    public function activeMembers()
+    {
+        return $this->hasMany(ExtracurricularMember::class)->where('is_active', true);
+    }
+    public function attendances()
+    {
+        return $this->hasMany(ExtracurricularAttendance::class);
+    }
+}
+
+===== app\Models\ExtracurricularAttendance.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class ExtracurricularAttendance extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = ['tanggal' => 'date'];
+
+    public function extracurricular()
+    {
+        return $this->belongsTo(Extracurricular::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+}
+
+===== app\Models\ExtracurricularMember.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class ExtracurricularMember extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = ['joined_at' => 'date', 'is_active' => 'boolean'];
+
+    public function extracurricular()
+    {
+        return $this->belongsTo(Extracurricular::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+}
+
+===== app\Models\Grade.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Grade extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'tanggal' => 'date',
+        'nilai'   => 'decimal:2',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    public function subject()
+    {
+        return $this->belongsTo(Subject::class);
+    }
+
+    public function teacher()
+    {
+        return $this->belongsTo(User::class, 'teacher_id');
+    }
+}
+
+===== app\Models\HealthRecord.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class HealthRecord extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = ['recorded_at' => 'date'];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+}
+
+===== app\Models\LearningMaterial.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class LearningMaterial extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $appends = ['file_url'];
+
+    public function getFileUrlAttribute(): ?string
+    {
+        if (!$this->file_path) return null;
+        return Storage::disk('public')->url($this->file_path);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+    public function subject()
+    {
+        return $this->belongsTo(Subject::class);
+    }
+    public function teacher()
+    {
+        return $this->belongsTo(User::class, 'teacher_id');
+    }
+}
+
+===== app\Models\LessonSchedule.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class LessonSchedule extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'jam_mulai'   => 'datetime:H:i',
+        'jam_selesai' => 'datetime:H:i',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    public function subject()
+    {
+        return $this->belongsTo(Subject::class);
+    }
+
+    public function teacher()
+    {
+        return $this->belongsTo(User::class, 'teacher_id');
+    }
+}
+
+===== app\Models\MutabaahYaumiyah.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class MutabaahYaumiyah extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $fillable = [
+        'company_id',
+        'santri_id',
+        'ustadz_id',
+        'signed_by',
+        'signed_at',
+        'kitab',
+        'jilid',
+        'halaman_dari',
+        'halaman_sampai',
+        'tanggal',
+        'sesi',
+        'keterangan',
+        'is_lanjut',
+        'catatan',
+    ];
+
+    protected $casts = [
+        'tanggal'        => 'date',
+        'signed_at'      => 'datetime',
+        'is_lanjut'      => 'boolean',
+        'jilid'          => 'integer',
+        'halaman_dari'   => 'integer',
+        'halaman_sampai' => 'integer',
+    ];
+
+    // ═══════════════════════════════════════════════════════════════════
+    // KONSTANTA
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Nilai yang berarti LANJUT — naik ke halaman berikutnya.
+     */
+    const NILAI_LANJUT = ['A+', 'A', 'A-', 'B+', 'B'];
+
+    /**
+     * Nilai yang berarti ULANG — tetap di halaman yang sama.
+     */
+    const NILAI_ULANG = ['B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-'];
+
+    /**
+     * Semua nilai yang valid (urutan terbaik ke terburuk).
+     */
+    const SEMUA_NILAI = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-'];
+
+    /**
+     * Sesi ngaji yang tersedia.
+     */
+    const SEMUA_SESI = ['pagi', 'sore'];
+
+    /**
+     * Jenis kitab yang tersedia.
+     */
+    const SEMUA_KITAB = ['iqro', 'quran'];
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BOOT — auto-set is_lanjut dari keterangan
+    // ═══════════════════════════════════════════════════════════════════
+
+    protected static function booted(): void
+    {
+        static::saving(function (MutabaahYaumiyah $model) {
+            // Hitung is_lanjut otomatis dari keterangan,
+            // KECUALI jika ustadz sengaja override is_lanjut secara eksplisit
+            // (isDirty('is_lanjut') = true berarti di-set manual dari request)
+            if (! $model->isDirty('is_lanjut') && $model->keterangan) {
+                $model->is_lanjut = self::hitungIsLanjut($model->keterangan);
+            }
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // HELPER STATIS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Hitung apakah nilai ini berarti lanjut atau ulang.
+     *
+     * Contoh:
+     *   MutabaahYaumiyah::hitungIsLanjut('B+');  // → true
+     *   MutabaahYaumiyah::hitungIsLanjut('C');   // → false
+     */
+    public static function hitungIsLanjut(string $keterangan): bool
+    {
+        return in_array($keterangan, self::NILAI_LANJUT);
+    }
+
+    /**
+     * Hitung halaman berikutnya berdasarkan record terakhir santri.
+     * Jika is_lanjut = true  → halaman naik (halaman_sampai + 1 atau halaman_dari + 1)
+     * Jika is_lanjut = false → halaman tetap (halaman_dari tidak berubah)
+     *
+     * Contoh:
+     *   MutabaahYaumiyah::halamanBerikutnya($record); // → 16
+     */
+    public static function halamanBerikutnya(self $record): int
+    {
+        if (! $record->is_lanjut) {
+            return $record->halaman_dari;
+        }
+
+        return ($record->halaman_sampai ?? $record->halaman_dari) + 1;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Pesantren tempat sesi ini berlangsung.
+     */
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    /**
+     * Santri yang ngaji.
+     */
+    public function santri()
+    {
+        return $this->belongsTo(User::class, 'santri_id');
+    }
+
+    /**
+     * Ustadz yang mengajar sesi ini.
+     */
+    public function ustadz()
+    {
+        return $this->belongsTo(User::class, 'ustadz_id');
+    }
+
+    /**
+     * Ustadz yang memberi paraf.
+     * null = belum diparaf.
+     */
+    public function penandatangan()
+    {
+        return $this->belongsTo(User::class, 'signed_by');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SCOPE
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** Filter by company */
+    public function scopeOfCompany(Builder $query, int $companyId): Builder
+    {
+        return $query->where('company_id', $companyId);
+    }
+
+    /** Filter by santri */
+    public function scopeOfSantri(Builder $query, int $santriId): Builder
+    {
+        return $query->where('santri_id', $santriId);
+    }
+
+    /** Filter by ustadz */
+    public function scopeOfUstadz(Builder $query, int $ustadzId): Builder
+    {
+        return $query->where('ustadz_id', $ustadzId);
+    }
+
+    /** Hanya yang sudah diparaf */
+    public function scopeSudahParaf(Builder $query): Builder
+    {
+        return $query->whereNotNull('signed_by');
+    }
+
+    /** Hanya yang belum diparaf */
+    public function scopeBelumParaf(Builder $query): Builder
+    {
+        return $query->whereNull('signed_by');
+    }
+
+    /** Filter by kitab */
+    public function scopeKitab(Builder $query, string $kitab): Builder
+    {
+        return $query->where('kitab', $kitab);
+    }
+
+    /** Filter by jilid */
+    public function scopeJilid(Builder $query, int $jilid): Builder
+    {
+        return $query->where('jilid', $jilid);
+    }
+
+    /** Filter by tanggal hari ini */
+    public function scopeHariIni(Builder $query): Builder
+    {
+        return $query->whereDate('tanggal', today());
+    }
+
+    /** Filter by bulan & tahun */
+    public function scopeBulan(Builder $query, int $bulan, int $tahun): Builder
+    {
+        return $query->whereMonth('tanggal', $bulan)
+            ->whereYear('tanggal', $tahun);
+    }
+
+    /** Filter by range tanggal */
+    public function scopeTanggalAntara(Builder $query, string $dari, string $sampai): Builder
+    {
+        return $query->whereBetween('tanggal', [$dari, $sampai]);
+    }
+
+    /** Hanya yang lanjut (naik halaman) */
+    public function scopeLanjut(Builder $query): Builder
+    {
+        return $query->where('is_lanjut', true);
+    }
+
+    /** Hanya yang mengulang */
+    public function scopeUlang(Builder $query): Builder
+    {
+        return $query->where('is_lanjut', false);
+    }
+
+    /** Filter by sesi */
+    public function scopeSesi(Builder $query, string $sesi): Builder
+    {
+        return $query->where('sesi', $sesi);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ACCESSOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Apakah sesi ini sudah diparaf?
+     *
+     * Contoh: $record->sudah_diparaf // → true / false
+     */
+    public function getSudahDiparafAttribute(): bool
+    {
+        return ! is_null($this->signed_by);
+    }
+
+    /**
+     * Label halaman yang dibaca.
+     *
+     * Contoh:
+     *   halaman_dari=5, halaman_sampai=null → "Hal. 5"
+     *   halaman_dari=5, halaman_sampai=7   → "Hal. 5–7"
+     */
+    public function getLabelHalamanAttribute(): string
+    {
+        if ($this->halaman_sampai && $this->halaman_sampai !== $this->halaman_dari) {
+            return "Hal. {$this->halaman_dari}–{$this->halaman_sampai}";
+        }
+
+        return "Hal. {$this->halaman_dari}";
+    }
+
+    /**
+     * Label lengkap posisi bacaan.
+     *
+     * Contoh:
+     *   kitab=iqro, jilid=2, hal 5–7 → "Iqro Jilid 2 – Hal. 5–7"
+     *   kitab=quran, jilid=7, hal 15 → "Quran Jilid 7 – Hal. 15"
+     */
+    public function getLabelPosisiAttribute(): string
+    {
+        $kitab = ucfirst($this->kitab);
+
+        return "{$kitab} Jilid {$this->jilid} – {$this->label_halaman}";
+    }
+
+    /**
+     * Nama sesi dengan format kapital.
+     *
+     * Contoh: 'pagi' → 'Pagi'
+     */
+    public function getLabelSesiAttribute(): string
+    {
+        return ucfirst($this->sesi);
+    }
+
+    /**
+     * Warna badge untuk keterangan (untuk kebutuhan frontend).
+     *
+     * Contoh: $record->warna_keterangan // → 'green' / 'yellow' / 'red'
+     */
+    public function getWarnaKeteranganAttribute(): string
+    {
+        return match (true) {
+            in_array($this->keterangan, ['A+', 'A', 'A-'])        => 'green',
+            in_array($this->keterangan, ['B+', 'B'])              => 'blue',
+            in_array($this->keterangan, ['B-', 'C+', 'C', 'C-']) => 'yellow',
+            default                                                => 'red',
+        };
+    }
+}
+
+===== app\Models\PpdbApplicant.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class PpdbApplicant extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = [
+        'birth_date'      => 'date',
+        'wants_boarding'  => 'boolean',
+    ];
+
+    public function period()
+    {
+        return $this->belongsTo(PpdbPeriod::class, 'ppdb_period_id');
+    }
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function testScores()
+    {
+        return $this->hasMany(PpdbTestScore::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+}
+
+===== app\Models\PpdbPeriod.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class PpdbPeriod extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'registration_start' => 'date',
+        'registration_end'   => 'date',
+        'is_active'          => 'boolean',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function applicants()
+    {
+        return $this->hasMany(PpdbApplicant::class);
+    }
+
+    public function isOpen(): bool
+    {
+        $today = now()->toDateString();
+        return $this->is_active
+            && $today >= $this->registration_start->toDateString()
+            && $today <= $this->registration_end->toDateString();
+    }
+}
+
+===== app\Models\PpdbTestScore.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class PpdbTestScore extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = ['score' => 'decimal:2', 'test_date' => 'date'];
+
+    public function applicant()
+    {
+        return $this->belongsTo(PpdbApplicant::class, 'ppdb_applicant_id');
+    }
+    public function testedBy()
+    {
+        return $this->belongsTo(User::class, 'tested_by');
+    }
+}
+
+===== app\Models\RoomAssignment.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class RoomAssignment extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'moved_in_at'  => 'date',
+        'moved_out_at' => 'date',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    public function room()
+    {
+        return $this->belongsTo(DormitoryRoom::class, 'room_id');
+    }
+
+    // Admin/guru yang melakukan penempatan
+    public function assignedBy()
+    {
+        return $this->belongsTo(User::class, 'assigned_by');
+    }
+
+    // ── Scope ────────────────────────────────────────────────
+
+    // Cuma penempatan yang masih berjalan (belum keluar/pindah)
+    public function scopeActive($query)
+    {
+        return $query->whereNull('moved_out_at');
+    }
+}
+
+===== app\Models\Student.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Student extends Model
+{
+    use HasFactory, SoftDeletes;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'birth_date'   => 'date',
+        'enrolled_at'  => 'date',
+        'is_boarding'  => 'boolean',
+        'is_active'    => 'boolean',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    // Sekolah tempat murid terdaftar
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // Kelas murid saat ini
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    // Seluruh histori absen murid ini
+    public function attendances()
+    {
+        return $this->hasMany(StudentAttendance::class);
+    }
+
+    // Absen hari ini saja — dipakai layar kiosk & dashboard wali
+    public function todayAttendance()
+    {
+        return $this->hasOne(StudentAttendance::class)->whereDate('date', now()->toDateString());
+    }
+
+    // Seluruh pengajuan izin/sakit murid ini
+    public function permissions()
+    {
+        return $this->hasMany(StudentPermission::class);
+    }
+
+    // Baris pivot wali-murid (dengan relationship, is_primary, dst)
+    public function studentGuardians()
+    {
+        return $this->hasMany(StudentGuardian::class);
+    }
+
+    // Semua akun wali/orang tua yang terhubung ke murid ini
+    public function guardians()
+    {
+        return $this->belongsToMany(User::class, 'student_guardians', 'student_id', 'user_id')
+            ->withPivot(['relationship', 'is_primary', 'can_submit_permission'])
+            ->withTimestamps();
+    }
+
+    // Seluruh histori penempatan kamar milik murid ini
+    public function roomAssignments()
+    {
+        return $this->hasMany(RoomAssignment::class);
+    }
+
+    // Penempatan kamar yang aktif sekarang (null kalau tidak sedang di asrama manapun)
+    public function activeRoomAssignment()
+    {
+        return $this->hasOne(RoomAssignment::class)->whereNull('moved_out_at');
+    }
+
+    public function tahfidzSetorans()
+    {
+        return $this->hasMany(TahfidzSetoran::class);
+    }
+
+    public function mutabaahRecords()
+    {
+        return $this->hasMany(MutabaahRecord::class);
+    }
+
+    public function boardingPermissions()
+    {
+        return $this->hasMany(BoardingPermission::class);
+    }
+
+    public function grades()
+    {
+        return $this->hasMany(Grade::class);
+    }
+
+    public function classPromotions()
+    {
+        return $this->hasMany(ClassPromotion::class);
+    }
+
+    public function assignmentSubmissions()
+    {
+        return $this->hasMany(AssignmentSubmission::class);
+    }
+
+    public function bills()
+    {
+        return $this->hasMany(StudentBill::class);
+    }
+
+    public function mutations()
+    {
+        return $this->hasMany(StudentMutation::class);
+    }
+
+    public function healthRecord()
+    {
+        return $this->hasOne(HealthRecord::class);
+    }
+
+    public function uksVisits()
+    {
+        return $this->hasMany(UksVisit::class);
+    }
+
+    public function extracurricularMemberships()
+    {
+        return $this->hasMany(ExtracurricularMember::class);
+    }
+
+    public function achievements()
+    {
+        return $this->hasMany(StudentAchievement::class);
+    }
+}
+
+===== app\Models\StudentAchievement.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class StudentAchievement extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = ['achieved_at' => 'date'];
+    protected $appends = ['certificate_url'];
+
+    public function getCertificateUrlAttribute(): ?string
+    {
+        if (!$this->certificate_path) return null;
+        return Storage::disk('public')->url($this->certificate_path);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function extracurricular()
+    {
+        return $this->belongsTo(Extracurricular::class);
+    }
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+}
+
+===== app\Models\StudentAttendance.php =====
+<?php
+
+namespace App\Models;
+
+use App\Enums\School\AttendanceStatus;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Storage;
+
+class StudentAttendance extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'date'   => 'date',
+        'status' => AttendanceStatus::class,
+    ];
+
+    // Otomatis ikut ke response JSON tanpa perlu di-append manual di controller
+    protected $appends = ['photo_evidence_url'];
+
+    /**
+     * URL publik foto bukti absen — photo_evidence di DB cuma nyimpan
+     * path relatif (misal "12_2026-08-20_073015.jpg"), bukan URL lengkap.
+     */
+    public function getPhotoEvidenceUrlAttribute(): ?string
+    {
+        if (!$this->photo_evidence) {
+            return null;
+        }
+
+        return Storage::disk('attendance_photos')->url($this->photo_evidence);
+    }
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function classRoom()
+    {
+        return $this->belongsTo(ClassRoom::class, 'class_id');
+    }
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    // Guru yang input absen ini lewat kiosk
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    // Kiosk asal data absen — nullable kalau diinput manual dari dashboard
+    public function device()
+    {
+        return $this->belongsTo(AttendanceDevice::class, 'device_id');
+    }
+}
+
+===== app\Models\StudentBill.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class StudentBill extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'due_date' => 'date',
+        'amount'   => 'decimal:2',
+    ];
+
+    protected $appends = ['total_paid', 'remaining_amount'];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function billType()
+    {
+        return $this->belongsTo(BillType::class);
+    }
+    public function createdBy()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+    public function payments()
+    {
+        return $this->hasMany(BillPayment::class);
+    }
+
+    public function getTotalPaidAttribute(): float
+    {
+        return (float) $this->payments()->sum('amount');
+    }
+
+    public function getRemainingAmountAttribute(): float
+    {
+        return max(0, (float) $this->amount - $this->total_paid);
+    }
+
+    /**
+     * Hitung ulang status berdasarkan total pembayaran — dipanggil setiap
+     * kali ada pembayaran baru dicatat, supaya status selalu akurat
+     * (bukan cuma di-set manual sekali pas create).
+     */
+    public function refreshStatus(): void
+    {
+        $totalPaid = $this->total_paid;
+
+        $status = $totalPaid <= 0
+            ? 'belum_lunas'
+            : ($totalPaid >= $this->amount ? 'lunas' : 'sebagian');
+
+        $this->update(['status' => $status]);
+    }
+}
+
+===== app\Models\StudentGuardian.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class StudentGuardian extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'is_primary'             => 'boolean',
+        'can_submit_permission'  => 'boolean',
+    ];
+
+    // ── Relasi ────────────────────────────────────────────────
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    // User dengan role = 'wali'
+    public function guardian()
+    {
+        return $this->belongsTo(User::class, 'user_id');
+    }
+}
+
+===== app\Models\StudentMutation.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class StudentMutation extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    protected $casts = ['effective_date' => 'date'];
+
+    protected $appends = ['document_url'];
+
+    public function getDocumentUrlAttribute(): ?string
+    {
+        if (!$this->document_path) return null;
+        return Storage::disk('public')->url($this->document_path);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function processedBy()
+    {
+        return $this->belongsTo(User::class, 'processed_by');
+    }
+}
+
+===== app\Models\StudentPermission.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Storage;
+
+class StudentPermission extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'date_permission' => 'date',
+        'reviewed_at'      => 'datetime',
+    ];
+
+    protected $appends = ['attachment_url'];
+
+    /**
+     * URL publik lampiran (foto surat dokter, dll) — nullable kalau
+     * wali tidak melampirkan apa-apa saat mengajukan izin.
+     */
+    public function getAttachmentUrlAttribute(): ?string
+    {
+        if (!$this->attachment) {
+            return null;
+        }
+
+        return Storage::disk('public')->url($this->attachment);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    /**
+     * Wali yang mengajukan izin ini.
+     */
+    public function submittedBy()
+    {
+        return $this->belongsTo(User::class, 'submitted_by');
+    }
+
+    /**
+     * Admin/guru yang me-review (approve/reject) izin ini.
+     */
+    public function reviewedBy()
+    {
+        return $this->belongsTo(User::class, 'reviewed_by');
+    }
+
+    // ── Scope ────────────────────────────────────────────────
+
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    public function scopeApproved($query)
+    {
+        return $query->where('status', 'approved');
+    }
+
+    public function scopeRejected($query)
+    {
+        return $query->where('status', 'rejected');
+    }
+}
+
+===== app\Models\Subject.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Subject extends Model
+{
+    use HasFactory;
+
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    /**
+     * Cek apakah mapel ini berlaku untuk kelas tertentu.
+     * grade_level_min/max null berarti berlaku untuk semua kelas.
+     */
+    public function appliesTo(int $gradeLevel): bool
+    {
+        if ($this->grade_level_min === null && $this->grade_level_max === null) {
+            return true;
+        }
+
+        $min = $this->grade_level_min ?? 1;
+        $max = $this->grade_level_max ?? 6;
+
+        return $gradeLevel >= $min && $gradeLevel <= $max;
+    }
+}
+
+===== app\Models\TahfidzSetoran.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class TahfidzSetoran extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'tanggal' => 'date',
+    ];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+
+    public function guru()
+    {
+        return $this->belongsTo(User::class, 'guru_id');
+    }
+}
+
+===== app\Models\UksVisit.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class UksVisit extends Model
+{
+    use HasFactory;
+
+
+    protected $guarded = [];
+
+    protected $casts = ['visited_at' => 'datetime'];
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+    public function student()
+    {
+        return $this->belongsTo(Student::class);
+    }
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+}
+
+===== ROUTE API SEKOLAH =====
+
+  GET|HEAD        api/school/admin/academic-events ................................. academic-events.index ΓÇ║ Api\School\Admin\AcademicEventController@index
+  POST            api/school/admin/academic-events ................................. academic-events.store ΓÇ║ Api\School\Admin\AcademicEventController@store
+  GET|HEAD        api/school/admin/academic-events/{academic_event} .................. academic-events.show ΓÇ║ Api\School\Admin\AcademicEventController@show
+  PUT|PATCH       api/school/admin/academic-events/{academic_event} .............. academic-events.update ΓÇ║ Api\School\Admin\AcademicEventController@update
+  DELETE          api/school/admin/academic-events/{academic_event} ............ academic-events.destroy ΓÇ║ Api\School\Admin\AcademicEventController@destroy
+  GET|HEAD        api/school/admin/achievements ....................................................... Api\School\Admin\StudentAchievementController@index
+  POST            api/school/admin/achievements ....................................................... Api\School\Admin\StudentAchievementController@store
+  DELETE          api/school/admin/achievements/{achievement} ....................................... Api\School\Admin\StudentAchievementController@destroy
+  POST            api/school/admin/assignments/{assignment}/checkout ................................... Api\School\Admin\RoomAssignmentController@checkout
+  GET|HEAD        api/school/admin/attendance-report ................................................... Api\School\Admin\AttendanceDeviceController@report
+  GET|HEAD        api/school/admin/bill-types ................................................ bill-types.index ΓÇ║ Api\School\Admin\BillTypeController@index
+  POST            api/school/admin/bill-types ................................................ bill-types.store ΓÇ║ Api\School\Admin\BillTypeController@store
+  GET|HEAD        api/school/admin/bill-types/{bill_type} ...................................... bill-types.show ΓÇ║ Api\School\Admin\BillTypeController@show
+  PUT|PATCH       api/school/admin/bill-types/{bill_type} .................................. bill-types.update ΓÇ║ Api\School\Admin\BillTypeController@update
+  DELETE          api/school/admin/bill-types/{bill_type} ................................ bill-types.destroy ΓÇ║ Api\School\Admin\BillTypeController@destroy
+  GET|HEAD        api/school/admin/boarding-permissions .......................................... Api\School\Admin\AdminBoardingPermissionController@index
+  PATCH           api/school/admin/boarding-permissions/{permission}/checkin ................... Api\School\Admin\AdminBoardingPermissionController@checkin
+  PATCH           api/school/admin/boarding-permissions/{permission}/review ..................... Api\School\Admin\AdminBoardingPermissionController@review
+  GET|HEAD        api/school/admin/class-promotions/history ............................................. Api\School\Admin\ClassPromotionController@history
+  GET|HEAD        api/school/admin/class-promotions/preview ............................................. Api\School\Admin\ClassPromotionController@preview
+  POST            api/school/admin/class-promotions/process ............................................. Api\School\Admin\ClassPromotionController@process
+  GET|HEAD        api/school/admin/classes ..................................................... classes.index ΓÇ║ Api\School\Admin\ClassRoomController@index
+  POST            api/school/admin/classes ..................................................... classes.store ΓÇ║ Api\School\Admin\ClassRoomController@store
+  GET|HEAD        api/school/admin/classes/{class} ............................................... classes.show ΓÇ║ Api\School\Admin\ClassRoomController@show
+  PUT|PATCH       api/school/admin/classes/{class} ........................................... classes.update ΓÇ║ Api\School\Admin\ClassRoomController@update
+  DELETE          api/school/admin/classes/{class} ......................................... classes.destroy ΓÇ║ Api\School\Admin\ClassRoomController@destroy
+  GET|HEAD        api/school/admin/classes/{class}/lesson-schedules ..................................... Api\School\Admin\LessonScheduleController@byClass
+  POST            api/school/admin/classes/{class}/teachers ........................................... Api\School\Admin\TeacherAssignmentController@attach
+  DELETE          api/school/admin/classes/{class}/teachers/{user} .................................... Api\School\Admin\TeacherAssignmentController@detach
+  GET|HEAD        api/school/admin/curriculums ............................................ curriculums.index ΓÇ║ Api\School\Admin\CurriculumController@index
+  POST            api/school/admin/curriculums ............................................ curriculums.store ΓÇ║ Api\School\Admin\CurriculumController@store
+  GET|HEAD        api/school/admin/curriculums/{curriculum} ................................. curriculums.show ΓÇ║ Api\School\Admin\CurriculumController@show
+  PUT|PATCH       api/school/admin/curriculums/{curriculum} ............................. curriculums.update ΓÇ║ Api\School\Admin\CurriculumController@update
+  DELETE          api/school/admin/curriculums/{curriculum} ........................... curriculums.destroy ΓÇ║ Api\School\Admin\CurriculumController@destroy
+  POST            api/school/admin/curriculums/{curriculum}/subjects .................................. Api\School\Admin\CurriculumSubjectController@attach
+  GET|HEAD        api/school/admin/curriculums/{curriculum}/subjects ................................... Api\School\Admin\CurriculumSubjectController@index
+  DELETE          api/school/admin/curriculums/{curriculum}/subjects/{curriculumSubject} .............. Api\School\Admin\CurriculumSubjectController@detach
+  GET|HEAD        api/school/admin/dashboard/summary .................................................... Api\School\Admin\AdminDashboardController@summary
+  GET|HEAD        api/school/admin/devices .............................................. devices.index ΓÇ║ Api\School\Admin\AttendanceDeviceController@index
+  POST            api/school/admin/devices .............................................. devices.store ΓÇ║ Api\School\Admin\AttendanceDeviceController@store
+  GET|HEAD        api/school/admin/devices/{device} ....................................... devices.show ΓÇ║ Api\School\Admin\AttendanceDeviceController@show
+  PUT|PATCH       api/school/admin/devices/{device} ................................... devices.update ΓÇ║ Api\School\Admin\AttendanceDeviceController@update
+  DELETE          api/school/admin/devices/{device} ................................. devices.destroy ΓÇ║ Api\School\Admin\AttendanceDeviceController@destroy
+  POST            api/school/admin/devices/{device}/regenerate-token .......................... Api\School\Admin\AttendanceDeviceController@regenerateToken
+  GET|HEAD        api/school/admin/dormitories ............................................. dormitories.index ΓÇ║ Api\School\Admin\DormitoryController@index
+  POST            api/school/admin/dormitories ............................................. dormitories.store ΓÇ║ Api\School\Admin\DormitoryController@store
+  GET|HEAD        api/school/admin/dormitories/{dormitory} ................................... dormitories.show ΓÇ║ Api\School\Admin\DormitoryController@show
+  PUT|PATCH       api/school/admin/dormitories/{dormitory} ............................... dormitories.update ΓÇ║ Api\School\Admin\DormitoryController@update
+  DELETE          api/school/admin/dormitories/{dormitory} ............................. dormitories.destroy ΓÇ║ Api\School\Admin\DormitoryController@destroy
+  GET|HEAD        api/school/admin/dormitories/{dormitory}/occupants .................................. Api\School\Admin\RoomAssignmentController@occupants
+  GET|HEAD        api/school/admin/dormitories/{dormitory}/rooms ................. dormitories.rooms.index ΓÇ║ Api\School\Admin\DormitoryRoomController@index
+  POST            api/school/admin/dormitories/{dormitory}/rooms ................. dormitories.rooms.store ΓÇ║ Api\School\Admin\DormitoryRoomController@store
+  GET|HEAD        api/school/admin/extracurriculars ............................. extracurriculars.index ΓÇ║ Api\School\Admin\ExtracurricularController@index
+  POST            api/school/admin/extracurriculars ............................. extracurriculars.store ΓÇ║ Api\School\Admin\ExtracurricularController@store
+  GET|HEAD        api/school/admin/extracurriculars/{extracurricular} ............. extracurriculars.show ΓÇ║ Api\School\Admin\ExtracurricularController@show
+  PUT|PATCH       api/school/admin/extracurriculars/{extracurricular} ......... extracurriculars.update ΓÇ║ Api\School\Admin\ExtracurricularController@update
+  DELETE          api/school/admin/extracurriculars/{extracurricular} ....... extracurriculars.destroy ΓÇ║ Api\School\Admin\ExtracurricularController@destroy
+  POST            api/school/admin/extracurriculars/{extracurricular}/members ........................ Api\School\Admin\ExtracurricularController@addMember
+  DELETE          api/school/admin/extracurriculars/{extracurricular}/members/{student} ........... Api\School\Admin\ExtracurricularController@removeMember
+  GET|HEAD        api/school/admin/finance-report .......................................................... Api\School\Admin\FinanceReportController@index
+  GET|HEAD        api/school/admin/grades-report ............................................................. Api\School\Admin\AdminGradeController@report
+  GET|HEAD        api/school/admin/lesson-schedules .............................. lesson-schedules.index ΓÇ║ Api\School\Admin\LessonScheduleController@index
+  POST            api/school/admin/lesson-schedules .............................. lesson-schedules.store ΓÇ║ Api\School\Admin\LessonScheduleController@store
+  GET|HEAD        api/school/admin/lesson-schedules/{lesson_schedule} .............. lesson-schedules.show ΓÇ║ Api\School\Admin\LessonScheduleController@show
+  PUT|PATCH       api/school/admin/lesson-schedules/{lesson_schedule} .......... lesson-schedules.update ΓÇ║ Api\School\Admin\LessonScheduleController@update
+  DELETE          api/school/admin/lesson-schedules/{lesson_schedule} ........ lesson-schedules.destroy ΓÇ║ Api\School\Admin\LessonScheduleController@destroy
+  GET|HEAD        api/school/admin/mutabaah-report ........................................................ Api\School\Admin\AdminMutabaahController@report
+  GET|HEAD        api/school/admin/permissions ......................................................... Api\School\Admin\StudentPermissionController@index
+  PATCH           api/school/admin/permissions/{permission}/review .................................... Api\School\Admin\StudentPermissionController@review
+  GET|HEAD        api/school/admin/ppdb-applicants ......................................................... Api\School\Admin\PpdbApplicantController@index
+  PATCH           api/school/admin/ppdb-applicants/{applicant}/announce ................................. Api\School\Admin\PpdbApplicantController@announce
+  POST            api/school/admin/ppdb-applicants/{applicant}/convert .......................... Api\School\Admin\PpdbApplicantController@convertToStudent
+  PATCH           api/school/admin/ppdb-applicants/{applicant}/daftar-ulang .......................... Api\School\Admin\PpdbApplicantController@daftarUlang
+  POST            api/school/admin/ppdb-applicants/{applicant}/test-scores ....................... Api\School\Admin\PpdbApplicantController@recordTestScore
+  GET|HEAD        api/school/admin/ppdb-periods .......................................... ppdb-periods.index ΓÇ║ Api\School\Admin\PpdbPeriodController@index
+  POST            api/school/admin/ppdb-periods .......................................... ppdb-periods.store ΓÇ║ Api\School\Admin\PpdbPeriodController@store
+  GET|HEAD        api/school/admin/ppdb-periods/{ppdb_period} .............................. ppdb-periods.show ΓÇ║ Api\School\Admin\PpdbPeriodController@show
+  PUT|PATCH       api/school/admin/ppdb-periods/{ppdb_period} .......................... ppdb-periods.update ΓÇ║ Api\School\Admin\PpdbPeriodController@update
+  DELETE          api/school/admin/ppdb-periods/{ppdb_period} ........................ ppdb-periods.destroy ΓÇ║ Api\School\Admin\PpdbPeriodController@destroy
+  GET|HEAD        api/school/admin/rooms/{room} ................................................ rooms.show ΓÇ║ Api\School\Admin\DormitoryRoomController@show
+  PUT|PATCH       api/school/admin/rooms/{room} ............................................ rooms.update ΓÇ║ Api\School\Admin\DormitoryRoomController@update
+  DELETE          api/school/admin/rooms/{room} .......................................... rooms.destroy ΓÇ║ Api\School\Admin\DormitoryRoomController@destroy
+  POST            api/school/admin/rooms/{room}/assign ................................................... Api\School\Admin\RoomAssignmentController@assign
+  GET|HEAD        api/school/admin/staff ............................................................. staff.index ΓÇ║ Api\School\Admin\StaffController@index
+  POST            api/school/admin/staff ............................................................. staff.store ΓÇ║ Api\School\Admin\StaffController@store
+  GET|HEAD        api/school/admin/staff/{staff} ....................................................... staff.show ΓÇ║ Api\School\Admin\StaffController@show
+  PUT|PATCH       api/school/admin/staff/{staff} ................................................... staff.update ΓÇ║ Api\School\Admin\StaffController@update
+  DELETE          api/school/admin/staff/{staff} ................................................................. Api\School\Admin\StaffController@destroy
+  POST            api/school/admin/staff/{staff}/reset-password ............................................ Api\School\Admin\StaffController@resetPassword
+  GET|HEAD        api/school/admin/student-bills ............................................................. Api\School\Admin\StudentBillController@index
+  POST            api/school/admin/student-bills/generate ................................................. Api\School\Admin\StudentBillController@generate
+  POST            api/school/admin/student-bills/{bill}/payments ..................................... Api\School\Admin\StudentBillController@recordPayment
+  GET|HEAD        api/school/admin/student-mutations ..................................................... Api\School\Admin\StudentMutationController@index
+  POST            api/school/admin/student-mutations/keluar ....................................... Api\School\Admin\StudentMutationController@recordKeluar
+  POST            api/school/admin/student-mutations/masuk ......................................... Api\School\Admin\StudentMutationController@recordMasuk
+  GET|HEAD        api/school/admin/students ..................................................... students.index ΓÇ║ Api\School\Admin\StudentController@index
+  POST            api/school/admin/students ..................................................... students.store ΓÇ║ Api\School\Admin\StudentController@store
+  GET|HEAD        api/school/admin/students/boarding-unassigned ...................... Api\School\Admin\RoomAssignmentController@unassignedBoardingStudents
+  GET|HEAD        api/school/admin/students/{student} ............................................. students.show ΓÇ║ Api\School\Admin\StudentController@show
+  PUT|PATCH       api/school/admin/students/{student} ......................................... students.update ΓÇ║ Api\School\Admin\StudentController@update
+  DELETE          api/school/admin/students/{student} ....................................... students.destroy ΓÇ║ Api\School\Admin\StudentController@destroy
+  POST            api/school/admin/students/{student}/guardians ......................................... Api\School\Admin\StudentController@attachGuardian
+  DELETE          api/school/admin/students/{student}/guardians/{user} .................................. Api\School\Admin\StudentController@detachGuardian
+  POST            api/school/admin/students/{student}/move-room ........................................ Api\School\Admin\RoomAssignmentController@moveRoom
+  GET|HEAD        api/school/admin/subjects ..................................................... subjects.index ΓÇ║ Api\School\Admin\SubjectController@index
+  POST            api/school/admin/subjects ..................................................... subjects.store ΓÇ║ Api\School\Admin\SubjectController@store
+  GET|HEAD        api/school/admin/subjects/{subject} ............................................. subjects.show ΓÇ║ Api\School\Admin\SubjectController@show
+  PUT|PATCH       api/school/admin/subjects/{subject} ......................................... subjects.update ΓÇ║ Api\School\Admin\SubjectController@update
+  DELETE          api/school/admin/subjects/{subject} ....................................... subjects.destroy ΓÇ║ Api\School\Admin\SubjectController@destroy
+  GET|HEAD        api/school/admin/tahfidz-report .......................................................... Api\School\Admin\AdminTahfidzController@report
+  GET|HEAD        api/school/admin/uks/health-records ............................................... Api\School\Admin\AdminUksController@listHealthRecords
+  POST            api/school/admin/uks/health-records ................................................ Api\School\Admin\AdminUksController@saveHealthRecord
+  GET|HEAD        api/school/admin/uks/visits .............................................................. Api\School\Admin\AdminUksController@listVisits
+  POST            api/school/admin/uks/visits ............................................................. Api\School\Admin\AdminUksController@recordVisit
+  GET|HEAD        api/school/guru/academic-events ....................................................... Api\School\Guru\GuruAcademicEventController@index
+  GET|HEAD        api/school/guru/assignments .............................................................. Api\School\Guru\GuruAssignmentController@index
+  POST            api/school/guru/assignments .............................................................. Api\School\Guru\GuruAssignmentController@store
+  PATCH           api/school/guru/assignments/submissions/{submission}/grade ............................... Api\School\Guru\GuruAssignmentController@grade
+  DELETE          api/school/guru/assignments/{assignment} ............................................... Api\School\Guru\GuruAssignmentController@destroy
+  GET|HEAD        api/school/guru/assignments/{assignment}/submissions ............................... Api\School\Guru\GuruAssignmentController@submissions
+  PATCH           api/school/guru/attendance/{attendance} ................................................. Api\School\Guru\GuruAttendanceController@update
+  GET|HEAD        api/school/guru/curriculums/active ...................................................... Api\School\Guru\GuruCurriculumController@active
+  GET|HEAD        api/school/guru/dashboard/summary ....................................................... Api\School\Guru\GuruDashboardController@summary
+  GET|HEAD        api/school/guru/grades ........................................................................ Api\School\Guru\GuruGradeController@index
+  POST            api/school/guru/grades ........................................................................ Api\School\Guru\GuruGradeController@store
+  POST            api/school/guru/grades/bulk ............................................................... Api\School\Guru\GuruGradeController@storeBulk
+  PUT             api/school/guru/grades/{grade} ............................................................... Api\School\Guru\GuruGradeController@update
+  DELETE          api/school/guru/grades/{grade} .............................................................. Api\School\Guru\GuruGradeController@destroy
+  GET|HEAD        api/school/guru/materials .................................................................. Api\School\Guru\GuruMaterialController@index
+  POST            api/school/guru/materials .................................................................. Api\School\Guru\GuruMaterialController@store
+  DELETE          api/school/guru/materials/{material} ..................................................... Api\School\Guru\GuruMaterialController@destroy
+  GET|HEAD        api/school/guru/mutabaah ................................................................... Api\School\Guru\GuruMutabaahController@index
+  POST            api/school/guru/mutabaah ................................................................... Api\School\Guru\GuruMutabaahController@store
+  PUT             api/school/guru/mutabaah/{record} ......................................................... Api\School\Guru\GuruMutabaahController@update
+  GET|HEAD        api/school/guru/my-classes .................................................................... Api\School\Guru\GuruClassController@index
+  GET|HEAD        api/school/guru/my-classes/{class}/attendance ............................................ Api\School\Guru\GuruAttendanceController@index
+  POST            api/school/guru/my-classes/{class}/attendance ............................................ Api\School\Guru\GuruAttendanceController@store
+  GET|HEAD        api/school/guru/my-classes/{class}/students ................................................ Api\School\Guru\GuruClassController@students
+  GET|HEAD        api/school/guru/my-extracurriculars ................................................. Api\School\Guru\GuruExtracurricularController@index
+  POST            api/school/guru/my-extracurriculars/{extracurricular}/attendance .......... Api\School\Guru\GuruExtracurricularController@storeAttendance
+  GET|HEAD        api/school/guru/my-extracurriculars/{extracurricular}/attendance ............ Api\School\Guru\GuruExtracurricularController@getAttendance
+  GET|HEAD        api/school/guru/my-extracurriculars/{extracurricular}/members ..................... Api\School\Guru\GuruExtracurricularController@members
+  GET|HEAD        api/school/guru/my-schedule .......................................................... Api\School\Guru\GuruLessonScheduleController@index
+  GET|HEAD        api/school/guru/permissions ....................................................... Api\School\Guru\GuruStudentPermissionController@index
+  PATCH           api/school/guru/permissions/{permission}/review .................................. Api\School\Guru\GuruStudentPermissionController@review
+  GET|HEAD        api/school/guru/subjects .................................................................... Api\School\Guru\GuruSubjectController@index
+  GET|HEAD        api/school/guru/tahfidz ..................................................................... Api\School\Guru\GuruTahfidzController@index
+  POST            api/school/guru/tahfidz ..................................................................... Api\School\Guru\GuruTahfidzController@store
+  PUT             api/school/guru/tahfidz/{setoran} .......................................................... Api\School\Guru\GuruTahfidzController@update
+  DELETE          api/school/guru/tahfidz/{setoran} ......................................................... Api\School\Guru\GuruTahfidzController@destroy
+  GET|HEAD        api/school/guru/uks/health-records/{student} ............................................. Api\School\Guru\GuruUksController@healthRecord
+  POST            api/school/guru/uks/visits ................................................................ Api\School\Guru\GuruUksController@recordVisit
+  GET|HEAD        api/school/guru/uks/visits ................................................................. Api\School\Guru\GuruUksController@listVisits
+  GET|HEAD        api/school/wali/academic-events ....................................................... Api\School\Wali\WaliAcademicEventController@index
+  POST            api/school/wali/assignments/{assignment}/submit ......................................... Api\School\Wali\WaliAssignmentController@submit
+  GET|HEAD        api/school/wali/boarding-permissions ............................................. Api\School\Wali\WaliBoardingPermissionController@index
+  POST            api/school/wali/boarding-permissions ............................................. Api\School\Wali\WaliBoardingPermissionController@store
+  GET|HEAD        api/school/wali/dashboard/summary ....................................................... Api\School\Wali\WaliDashboardController@summary
+  GET|HEAD        api/school/wali/my-children ................................................................. Api\School\Wali\WaliStudentController@index
+  GET|HEAD        api/school/wali/my-children/{student} ........................................................ Api\School\Wali\WaliStudentController@show
+  GET|HEAD        api/school/wali/my-children/{student}/achievements ........................... Api\School\Wali\WaliExtracurricularController@achievements
+  GET|HEAD        api/school/wali/my-children/{student}/assignments ........................................ Api\School\Wali\WaliAssignmentController@index
+  GET|HEAD        api/school/wali/my-children/{student}/attendance ......................................... Api\School\Wali\WaliAttendanceController@index
+  GET|HEAD        api/school/wali/my-children/{student}/bills .................................................... Api\School\Wali\WaliBillController@index
+  GET|HEAD        api/school/wali/my-children/{student}/extracurriculars .............................. Api\School\Wali\WaliExtracurricularController@index
+  GET|HEAD        api/school/wali/my-children/{student}/grades .................................................. Api\School\Wali\WaliGradeController@index
+  GET|HEAD        api/school/wali/my-children/{student}/health .................................................... Api\School\Wali\WaliUksController@index
+  GET|HEAD        api/school/wali/my-children/{student}/materials ............................................ Api\School\Wali\WaliMaterialController@index
+  GET|HEAD        api/school/wali/my-children/{student}/permissions ........................................ Api\School\Wali\WaliPermissionController@index
+  POST            api/school/wali/my-children/{student}/permissions ........................................ Api\School\Wali\WaliPermissionController@store
+  POST            api/school/wali/permissions/upload-attachment ................................. Api\School\Wali\WaliPermissionController@uploadAttachment
+
+                                                                                                                                       Showing [171] routes
+
+===== JUMLAH DATA PER TABEL =====
+class_rooms: 8
+students: 78
+student_guardians: 79
+class_teachers: 5
+attendance_devices: 7
+student_attendances: 484
+student_permissions: 0
+subjects: 2
+curricula: 2
+lesson_schedules: 0
+academic_events: 2
+grades: 0
+class_promotions: 0
+learning_materials: 0
+assignments: 0
+assignment_submissions: 0
+bill_types: 2
+student_bills: 0
+bill_payments: 0
+student_mutations: 3
+ppdb_periods: 2
+ppdb_applicants: 0
+health_records: 1
+uks_visits: 0
+extracurriculars: 1
+extracurricular_members: 0
+student_achievements: 0
+dormitories: 0
+dormitory_rooms: 0
+room_assignments: 0
+tahfidz_setorans: 0
+boarding_permissions: 0
+mutabaah_yaumiyahs: 0
+===== CONTOH 2 MURID & 2 ABSEN MURID =====
+{
+    "students": [
+        {
+            "id": 78,
+            "company_id": 7,
+            "class_id": 3,
+            "nis": "20260009",
+            "nisn": "0088104408",
+            "name": "Fatimah Lestari",
+            "gender": "P",
+            "birth_place": null,
+            "birth_date": "2017-08-16",
+            "photo_url": null,
+            "address": null,
+            "is_boarding": 0,
+            "enrolled_at": null,
+            "is_active": 1,
+            "created_at": "2026-10-31 09:03:50",
+            "updated_at": "2026-10-31 09:03:50",
+            "deleted_at": null
+        },
+        {
+            "id": 77,
+            "company_id": 7,
+            "class_id": 3,
+            "nis": "20260008",
+            "nisn": "0031418661",
+            "name": "Aulia Santoso",
+            "gender": "P",
+            "birth_place": null,
+            "birth_date": "2017-05-05",
+            "photo_url": null,
+            "address": null,
+            "is_boarding": 1,
+            "enrolled_at": null,
+            "is_active": 1,
+            "created_at": "2026-10-31 09:03:50",
+            "updated_at": "2026-10-31 09:03:50",
+            "deleted_at": null
+        }
+    ],
+    "attendances": [
+        {
+            "id": 484,
+            "company_id": 5,
+            "class_id": 2,
+            "student_id": 27,
+            "date": "2026-09-17",
+            "status": "terlambat",
+            "check_in_time": "19:58:10",
+            "photo_evidence": "27_2026-09-17_195809.jpg",
+            "recorded_by": null,
+            "device_id": 6,
+            "notes": null,
+            "created_at": "2026-09-17 19:58:10",
+            "updated_at": "2026-09-17 19:58:10"
+        },
+        {
+            "id": 483,
+            "company_id": 6,
+            "class_id": 5,
+            "student_id": 69,
+            "date": "2026-09-14",
+            "status": "hadir",
+            "check_in_time": "01:49:09",
+            "photo_evidence": "attendance-photos\/1e25ab41-cea4-39d9-8f5c-371471f90630.jpg",
+            "recorded_by": null,
+            "device_id": null,
+            "notes": null,
+            "created_at": "2026-09-14 20:48:44",
+            "updated_at": "2026-09-14 20:48:44"
+        }
+    ]
+}

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Extracurricular;
 use App\Models\ExtracurricularMember;
 use App\Models\Student;
+use App\Models\User;
 use Illuminate\Http\Request;
 
 class ExtracurricularController extends Controller
@@ -33,6 +34,8 @@ class ExtracurricularController extends Controller
         ]);
 
         $data['company_id'] = $request->user()->company_id;
+        $this->ensurePembinaSameSchool($data['pembina_id'] ?? null, $data['company_id']);
+
         $item = Extracurricular::create($data);
 
         return response()->json(['status' => true, 'message' => 'Ekstrakurikuler berhasil dibuat', 'data' => $item], 201);
@@ -60,6 +63,10 @@ class ExtracurricularController extends Controller
             'is_active'    => 'sometimes|boolean',
         ]);
 
+        if (array_key_exists('pembina_id', $data)) {
+            $this->ensurePembinaSameSchool($data['pembina_id'], $extracurricular->company_id);
+        }
+
         $extracurricular->update($data);
 
         return response()->json(['status' => true, 'message' => 'Ekstrakurikuler berhasil diperbarui', 'data' => $extracurricular]);
@@ -80,7 +87,7 @@ class ExtracurricularController extends Controller
         $data = $request->validate(['student_id' => 'required|exists:students,id']);
 
         $student = Student::findOrFail($data['student_id']);
-        abort_if($student->company_id !== $extracurricular->company_id, 403);
+        abort_if((int) $student->company_id !== (int) $extracurricular->company_id, 403);
 
         $member = ExtracurricularMember::updateOrCreate(
             ['extracurricular_id' => $extracurricular->id, 'student_id' => $data['student_id']],
@@ -99,5 +106,19 @@ class ExtracurricularController extends Controller
             ->update(['is_active' => false]);
 
         return response()->json(['status' => true, 'message' => 'Murid dikeluarkan dari ekstrakurikuler', 'data' => null]);
+    }
+
+    /** Pembina harus akun dari sekolah yang sama (bukan user tenant lain) */
+    private function ensurePembinaSameSchool($pembinaId, $companyId): void
+    {
+        if (!$pembinaId) {
+            return;
+        }
+
+        abort_unless(
+            User::where('id', $pembinaId)->where('company_id', $companyId)->exists(),
+            422,
+            'Pembina harus guru dari sekolah ini'
+        );
     }
 }

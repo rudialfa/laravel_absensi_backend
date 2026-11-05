@@ -80,6 +80,12 @@ class DormitoryRoomController extends Controller
             'is_active' => 'sometimes|boolean',
         ]);
 
+        // Kapasitas tidak boleh lebih kecil dari jumlah penghuni sekarang
+        if (isset($data['capacity'])) {
+            $occupants = $room->activeAssignments()->count();
+            abort_if($data['capacity'] < $occupants, 422, "Kamar ini dihuni {$occupants} santri, kapasitas tidak boleh kurang dari itu");
+        }
+
         $room->update($data);
 
         return response()->json([

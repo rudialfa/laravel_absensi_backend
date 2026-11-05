@@ -1,0 +1,1936 @@
+﻿
+===== app\Enums\School\ClassTeacherRole.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum ClassTeacherRole: string
+{
+    case WaliKelas = 'wali_kelas';
+    case GuruMapel = 'guru_mapel';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::WaliKelas => 'Wali Kelas',
+            self::GuruMapel => 'Guru Mata Pelajaran',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Enums\School\SchoolRole.php =====
+<?php
+
+namespace App\Enums\School;
+
+enum SchoolRole: string
+{
+    case Admin = 'admin';
+    case Guru  = 'guru';
+    case Wali  = 'wali';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Admin => 'Admin Sekolah',
+            self::Guru  => 'Guru',
+            self::Wali  => 'Wali / Orang Tua',
+        };
+    }
+
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+===== app\Http\Controllers\Api\AuthController.php =====
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Company;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Password;
+
+
+class AuthController extends Controller
+{
+
+    public function login(Request $request)
+    {
+        $request->validate([
+            'email'    => 'required|email',
+            'password' => 'required'
+        ]);
+
+        $user = User::with('company')->where('email', $request->email)->first();
+
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            return response()->json(['message' => 'Login gagal'], 401);
+        }
+
+        if (!$user->is_active) {
+            return response()->json(['message' => 'Akun Anda telah dinonaktifkan, hubungi admin sekolah'], 403);
+        }
+
+        if (!$user->company) {
+            return response()->json(['message' => 'User tidak terhubung ke organisasi'], 403);
+        }
+
+        if (!$user->company->is_active) {
+            return response()->json([
+                'message' => 'Sekolah/organisasi Anda sedang dinonaktifkan. Hubungi admin pusat.',
+            ], 403);
+        }
+
+        // hapus token lama
+        $user->tokens()->delete();
+        $token = $user->createToken('auth')->plainTextToken;
+
+        $type = $user->company->type;   // company, pesantren, hospital, school
+        $role = $user->role;            // hr, employee, ustadz, santri, teacher, dll
+
+        $dashboardKey = $type . '.' . $role;
+
+        return response()->json([
+            'token' => $token,
+            'user' => $user,
+            'context' => [
+                'app_type'  => $type,
+                'role'      => $role,
+                'dashboard' => $dashboardKey
+            ]
+        ]);
+    }
+
+
+
+
+    private function resolveDashboard($user)
+    {
+        return $user->company->type . '.' . $user->role;
+    }
+
+    // register organization
+    public function registerOrganization(Request $request)
+    {
+        $request->validate([
+            // company
+            'org_name'   => 'required',
+            'org_email'  => 'required|email|unique:companies,email',
+            'address'    => 'required',
+            'latitude'   => 'required',
+            'longitude'  => 'required',
+            'radius_km'  => 'required',
+            'time_in'    => 'required',
+            'time_out'   => 'required',
+            'type' => 'required|in:company,pesantren,school',
+
+            // BARU — cuma relevan kalau type = school, tapi divalidasi
+            // longgar (nullable) supaya type lain tetap jalan tanpa perlu
+            // kirim field ini sama sekali.
+            'is_boarding' => 'nullable|boolean',
+
+            // admin
+            'admin_name'  => 'required',
+            'admin_email' => 'required|email|unique:users,email',
+            'password'    => 'required|min:6'
+        ]);
+
+        DB::beginTransaction();
+
+        try {
+            // 1. Buat company
+            $company = Company::create([
+                'name'      => $request->org_name,
+                'email'     => $request->org_email,
+                'address'   => $request->address,
+                'latitude'  => $request->latitude,
+                'longitude' => $request->longitude,
+                'radius_km' => $request->radius_km,
+                'time_in'   => $request->time_in,
+                'time_out'  => $request->time_out,
+                'type'      => $request->type,
+                'timezone'  => 'Asia/Jakarta',
+                // BARU — default false kalau tidak dikirim (company/pesantren
+                // tidak pernah kirim field ini, jadi otomatis false, aman).
+                'is_boarding' => $request->boolean('is_boarding', false),
+            ]);
+
+            // 2. Tentukan role admin berdasarkan type organisasi
+            $adminRoleMap = [
+                'company'   => 'hr',
+                'pesantren' => 'ustadz',
+                'school'    => 'admin',
+                // 'hospital'  => 'hr'
+            ];
+
+            $adminRole = $adminRoleMap[$request->type];
+
+            // 3. Buat user admin
+            $admin = User::create([
+                'name'       => $request->admin_name,
+                'email'      => $request->admin_email,
+                'password'   => Hash::make($request->password),
+                'role'       => $adminRole,         // 🔥 BUKAN company
+                'company_id' => $company->id
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Organisasi berhasil didaftarkan',
+                'company' => $company,
+                'admin'   => [
+                    'id'    => $admin->id,
+                    'name'  => $admin->name,
+                    'email' => $admin->email,
+                    'role'  => $admin->role
+                ],
+                'dashboard_key' => $company->type . '.' . $admin->role
+            ], 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'Gagal mendaftarkan organisasi',
+                'error'   => $e->getMessage()
+            ], 500);
+        }
+    }
+
+
+
+
+    //logout
+    public function logout(Request $request)
+    {
+        $user = $request->user();
+
+        // BARU: hapus fcm_token supaya HP ini tidak menerima notifikasi
+        // akun yang sudah logout (contoh: HP dipakai bergantian)
+        $user->fcm_token = null;
+        $user->save();
+
+        $user->currentAccessToken()->delete();
+
+        return response(['message' => 'Logged out Sucessfully'], 200);
+    }
+
+    //update image profile & face_embedding
+    public function updateProfile(Request $request)
+    {
+        $request->validate([
+            'face_embedding' => 'required',
+        ]);
+
+        $user = $request->user();
+        $face_embedding = $request->face_embedding;
+
+        $user->face_embedding = $face_embedding;
+        $user->save();
+
+        return response([
+            'message' => 'Profile updated',
+            'user' => $user,
+        ], 200);
+    }
+
+
+    // me
+    public function me(Request $request)
+    {
+        $user = $request->user();
+        $company = null;
+
+        if ($user->company_id) {
+            $company = Company::find($user->company_id);
+        }
+
+        return response()->json([
+            'user'    => $user,
+            'company' => $company
+        ]);
+    }
+
+    // ============================================================
+    // POST /api/auth/update-fcm-token
+    // body: { fcm_token }
+    //
+    // Dipanggil aplikasi setelah login DAN setiap kali token berubah.
+    // ============================================================
+    public function updateFcmToken(Request $request)
+    {
+        $request->validate([
+            'fcm_token' => 'required|string|max:500',
+        ]);
+
+        $user  = $request->user();
+        $token = trim($request->fcm_token);
+
+        // BARU: 1 HP = 1 token. Kalau HP ini sebelumnya dipakai login akun lain,
+        // lepas token dari akun lain itu. Tanpa ini, akun lama tetap mengirim
+        // notifikasi ke HP ini (notifikasi nyasar ke orang lain).
+        User::where('fcm_token', $token)
+            ->where('id', '!=', $user->id)
+            ->update(['fcm_token' => null]);
+
+        $user->fcm_token = $token;
+        $user->save();
+
+        return response([
+            'status'  => true,
+            'message' => 'FCM token updated',
+        ], 200);
+    }
+
+    public function changePassword(Request $request)
+    {
+        $user = auth()->user();
+
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'new_password' => 'required|string|min:6|confirmed',
+        ]);
+
+        if (!Hash::check($validated['current_password'], $user->password)) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Password lama tidak sesuai'
+            ], 422);
+        }
+
+        $user->password = Hash::make($validated['new_password']);
+        $user->save();
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Password berhasil diganti'
+        ]);
+    }
+
+    public function show()
+    {
+        $user = auth()->user()->load('company');
+
+        if ($user->image_url) {
+            $user->image_url = asset($user->image_url);
+        }
+
+        if ($user->company && $user->company->image_url) {
+            $user->company->image_url = asset($user->company->image_url);
+        }
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Profile user',
+            'data' => $user,
+        ]);
+    }
+
+    /**
+     * UPDATE PROFILE
+     */
+    public function update(Request $request)
+    {
+        $user = $request->user();
+
+        $request->validate([
+            'name'  => 'nullable|string|max:255',
+            'phone' => 'nullable|string|max:20',
+            'email' => 'nullable|email|unique:users,email,' . $user->id,
+            'image' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+        ]);
+
+        if ($request->filled('name')) {
+            $user->name = $request->name;
+        }
+
+        if ($request->filled('email')) {
+            $user->email = $request->email;
+        }
+
+        if ($request->filled('phone')) {
+            $user->phone = $request->phone;
+        }
+
+        if ($request->hasFile('image')) {
+
+            if ($user->image_url && File::exists(public_path($user->image_url))) {
+                File::delete(public_path($user->image_url));
+            }
+
+            $image = $request->file('image');
+            $filename = time() . '_' . $image->hashName();
+            $image->move(public_path('image/profile'), $filename);
+
+            $user->image_url = 'image/profile/' . $filename;
+        }
+
+        $user->save();
+
+        $user->load('company');
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Profile berhasil diperbarui',
+            'data'    => $user,
+        ], 200);
+    }
+
+
+    public function forgotPassword(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email|exists:users,email'
+        ]);
+
+        $user  = User::where('email', $request->email)->first();
+        $token = Str::random(64);
+
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $request->email],
+            [
+                'email'      => $request->email,
+                'token'      => Hash::make($token),
+                'created_at' => now()
+            ]
+        );
+
+        $resetUrl = config('app.url') . '/api/reset-form?token=' . $token . '&email=' . urlencode($request->email);
+
+        Mail::send('emails.reset_password', [
+            'resetUrl' => $resetUrl,
+            'user'     => $user
+        ], function ($message) use ($user) {
+            $message->to($user->email)
+                ->subject('Reset Password - Absensi App');
+        });
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Link reset password telah dikirim ke email kamu'
+        ]);
+    }
+
+    public function resetPassword(Request $request)
+    {
+        $request->validate([
+            'token'                 => 'required',
+            'email'                 => 'required|email',
+            'password'              => 'required|min:6|confirmed',
+            'password_confirmation' => 'required'
+        ]);
+
+        $record = DB::table('password_reset_tokens')
+            ->where('email', $request->email)
+            ->first();
+
+        if (!$record) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Token tidak ditemukan'
+            ], 422);
+        }
+
+        if (Carbon::parse($record->created_at)->addMinutes(60)->isPast()) {
+            DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+            return response()->json([
+                'status'  => false,
+                'message' => 'Token sudah expired, silakan minta link baru'
+            ], 422);
+        }
+
+        if (!Hash::check($request->token, $record->token)) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Token tidak valid'
+            ], 422);
+        }
+
+        $user = User::where('email', $request->email)->first();
+        $user->forceFill([
+            'password'       => Hash::make($request->password),
+            'remember_token' => Str::random(60),
+        ])->save();
+
+        $user->tokens()->delete();
+
+        DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Password berhasil direset, silakan login'
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\HrCompany\HrCompanySettingController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\HrCompany;
+
+use App\Http\Controllers\Controller;
+use App\Models\Company;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
+
+class HrCompanySettingController extends Controller
+{
+    private function companyId(): int
+    {
+        return (int) auth()->user()->company_id;
+    }
+
+    private function getCompanyOrFail(): Company
+    {
+        return Company::findOrFail($this->companyId());
+    }
+
+    // =========================================================
+    // GET /api/company/hr/settings/company
+    //
+    // Ambil detail data perusahaan
+    // =========================================================
+    public function show()
+    {
+        $company = $this->getCompanyOrFail();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Data perusahaan',
+            'data'    => $company,
+        ]);
+    }
+
+    // =========================================================
+    // PUT /api/company/hr/settings/company
+    //
+    // Update data perusahaan:
+    //   name, email, address, latitude, longitude,
+    //   radius_km, time_in, time_out, timezone, type
+    // =========================================================
+    public function update(Request $request)
+    {
+        $company = $this->getCompanyOrFail();
+
+        $validated = $request->validate([
+            'name'      => ['sometimes', 'required', 'string', 'max:255'],
+            'email'     => ['sometimes', 'required', 'email', 'max:255'],
+            'address'   => ['sometimes', 'required', 'string', 'max:500'],
+            'latitude'  => ['sometimes', 'required', 'numeric'],
+            'longitude' => ['sometimes', 'required', 'numeric'],
+            'radius_km' => ['sometimes', 'required', 'numeric', 'min:0.01'],
+            'time_in'   => ['sometimes', 'required', 'date_format:H:i'],
+            'time_out'  => ['sometimes', 'required', 'date_format:H:i'],
+            'timezone'  => ['sometimes', 'required', 'string', 'timezone'],
+            'type'      => ['sometimes', 'required', 'in:company,school,pesantren'],
+        ]);
+
+        $company->update($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Data perusahaan berhasil diperbarui.',
+            'data'    => $company->fresh(),
+        ]);
+    }
+
+    // =========================================================
+    // POST /api/company/hr/settings/company/logo
+    //
+    // Upload/ganti logo perusahaan
+    // Body: multipart/form-data  image = file (jpg/jpeg/png/webp, max 2MB)
+    // Disimpan di: public/image/logo/
+    // Diakses via: asset('image/logo/filename.ext')
+    // =========================================================
+    public function uploadLogo(Request $request)
+    {
+        $request->validate([
+            'image' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
+        ]);
+
+        $company = $this->getCompanyOrFail();
+
+        // ── Hapus logo lama jika ada ──
+        if ($company->image_url) {
+            // image_url disimpan sebagai path relatif: 'image/logo/xxx.jpg'
+            $oldFullPath = public_path($company->image_url);
+            if (File::exists($oldFullPath)) {
+                File::delete($oldFullPath);
+            }
+        }
+
+        // ── Simpan file baru ke public/image/logo/ ──
+        $destinationPath = public_path('image/logo');
+
+        if (!File::exists($destinationPath)) {
+            File::makeDirectory($destinationPath, 0755, true);
+        }
+
+        $file     = $request->file('image');
+        $fileName = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+
+        $file->move($destinationPath, $fileName);
+
+        // Simpan path relatif (bukan full URL) agar portable
+        $imagePath = 'image/logo/' . $fileName;
+
+        $company->update(['image_url' => $imagePath]);
+
+        return response()->json([
+            'success'    => true,
+            'message'    => 'Logo perusahaan berhasil diupload.',
+            'image_url'  => $imagePath,
+            'image_full_url' => asset($imagePath),
+        ]);
+    }
+
+    // =========================================================
+    // GET /api/company/hr/settings/company/employees
+    // Query: ?search=&department=&per_page=15
+    //
+    // List semua karyawan perusahaan (untuk halaman pengaturan)
+    // =========================================================
+    public function employees(Request $request)
+    {
+        $companyId = $this->companyId();
+
+        $q = \App\Models\User::where('company_id', $companyId)
+            ->where('role', '!=', 'company')
+            ->select('id', 'name', 'email', 'phone', 'position', 'department', 'image_url', 'role');
+
+        if ($search = $request->get('search')) {
+            $q->where(function ($query) use ($search) {
+                $query->where('name', 'like', "%$search%")
+                    ->orWhere('email', 'like', "%$search%")
+                    ->orWhere('position', 'like', "%$search%");
+            });
+        }
+
+        if ($dept = $request->get('department')) {
+            $q->where('department', $dept);
+        }
+
+        $data = $q->orderBy('name')->paginate((int) ($request->get('per_page', 15)));
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Daftar karyawan',
+            'data'    => $data,
+        ]);
+    }
+
+    // =========================================================
+    // GET /api/company/hr/settings/company/departments
+    //
+    // List semua departemen unik di perusahaan
+    // =========================================================
+    public function departments()
+    {
+        $companyId = $this->companyId();
+
+        $departments = \App\Models\User::where('company_id', $companyId)
+            ->whereNotNull('department')
+            ->distinct()
+            ->pluck('department')
+            ->sort()
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Daftar departemen',
+            'data'    => $departments,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\School\Admin\StaffController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\School\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\School\StoreStaffRequest;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+class StaffController extends Controller
+{
+    /**
+     * GET /api/school/admin/staff?role=&search=&page=
+     * Daftar guru/wali di sekolah ini. Filter opsional ?role=guru atau ?role=wali
+     */
+    public function index(Request $request)
+    {
+        $staff = User::where('company_id', $request->user()->company_id)
+            ->whereIn('role', ['guru', 'wali'])
+            ->when($request->query('role'), fn($q, $role) => $q->where('role', $role))
+            ->when($request->query('search'), function ($q, $search) {
+                $q->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+            })
+            ->orderBy('name')
+            ->paginate(20);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data staff berhasil diambil',
+            'data'    => $staff,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/staff
+     * Buat akun baru untuk guru atau wali.
+     * Password sementara di-generate otomatis kalau tidak dikirim,
+     * supaya admin bisa langsung kasih tau ke guru/wali secara manual.
+     */
+    public function store(StoreStaffRequest $request)
+    {
+        $data = $request->validated();
+        $plainPassword = $data['password'] ?? Str::random(8);
+
+        $staff = User::create([
+            'name'       => $data['name'],
+            'email'      => $data['email'],
+            'phone'      => $data['phone'] ?? null,
+            'role'       => $data['role'],
+            'password'   => Hash::make($plainPassword),
+            'company_id' => $request->user()->company_id,
+        ]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Akun berhasil dibuat',
+            'data'    => [
+                'user'               => $staff,
+                'generated_password' => $data['password'] ? null : $plainPassword,
+            ],
+        ], 201);
+    }
+
+    /**
+     * GET /api/school/admin/staff/{staff}
+     */
+    public function show(Request $request, User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Detail staff berhasil diambil',
+            'data'    => $staff,
+        ]);
+    }
+
+    /**
+     * PUT /api/school/admin/staff/{staff}
+     */
+    public function update(Request $request, User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        $data = $request->validate([
+            'name'  => 'sometimes|string|max:150',
+            'email' => 'sometimes|email|unique:users,email,' . $staff->id,
+            'phone' => 'nullable|string|max:20',
+        ]);
+
+        $staff->update($data);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Data staff berhasil diperbarui',
+            'data'    => $staff,
+        ]);
+    }
+
+    /**
+     * POST /api/school/admin/staff/{staff}/reset-password
+     * Reset password guru/wali — dipakai kalau lupa password dan
+     * gak lewat alur forgot-password email biasa.
+     */
+    public function resetPassword(User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        $newPassword = Str::random(8);
+
+        $staff->update(['password' => Hash::make($newPassword)]);
+        $staff->tokens()->delete();
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Password berhasil direset',
+            'data'    => [
+                'generated_password' => $newPassword,
+            ],
+        ]);
+    }
+
+    /**
+     * DELETE /api/school/admin/staff/{staff}
+     * Nonaktifkan akun (bukan hapus permanen) — cegah kehilangan histori
+     * data yang sudah terhubung (absen yang di-record guru ini, dst).
+     */
+    public function destroy(User $staff)
+    {
+        Gate::authorize('manage-staff', $staff);
+
+        $staff->tokens()->delete();
+        $staff->update(['is_active' => false]);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Akun dinonaktifkan',
+            'data'    => null,
+        ]);
+    }
+}
+
+===== app\Http\Controllers\Api\System\CompanyController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\System;
+
+use App\Http\Controllers\Controller;
+use App\Models\Company;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Http\Request;
+
+class CompanyController extends Controller
+{
+    public function index()
+    {
+        return response()->json(Company::orderBy('name')->get());
+    }
+
+    public function show(Company $company)
+    {
+        return response()->json($company);
+    }
+
+    public function deactivate(Request $request, Company $company)
+    {
+        $data = $request->validate([
+            'reason' => 'required|string|max:255',
+        ]);
+
+        if (!$company->is_active) {
+            return response()->json(['message' => 'Sekolah ini sudah nonaktif.'], 422);
+        }
+
+        $company->update([
+            'is_active'      => false,
+            'suspended_at'   => now(),
+            'suspend_reason' => $data['reason'],
+        ]);
+
+        DB::table('personal_access_tokens')
+            ->whereIn('tokenable_id', $company->users()->pluck('id'))
+            ->where('tokenable_type', \App\Models\User::class)
+            ->delete();
+
+        return response()->json([
+            'message' => 'Sekolah berhasil dinonaktifkan. Semua sesi login user di sekolah ini sudah dilogout paksa.',
+            'company' => $company,
+        ]);
+    }
+
+    public function reactivate(Company $company)
+    {
+        if ($company->is_active) {
+            return response()->json(['message' => 'Sekolah ini sudah aktif.'], 422);
+        }
+
+        $company->update([
+            'is_active'      => true,
+            'suspended_at'   => null,
+            'suspend_reason' => null,
+        ]);
+
+        return response()->json([
+            'message' => 'Sekolah berhasil diaktifkan kembali. Data tetap utuh, user bisa login lagi seperti biasa.',
+            'company' => $company,
+        ]);
+    }
+}
+
+===== app\Http\Middleware\RoleMiddleware.php =====
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Support\Facades\Auth;
+
+class RoleMiddleware
+{
+ public function handle($request, Closure $next, $role)
+    {
+        if (!Auth::check()) {
+
+            // API request
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => 'Unauthenticated'
+                ], 401);
+            }
+
+            // WEB request
+            return redirect()->route('login.form');
+        }
+
+        // =========================
+        // 2. ROLE TIDAK SESUAI
+        // =========================
+        if (Auth::user()->role !== $role) {
+
+            // API request
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => 'Forbidden. Role tidak diizinkan.'
+                ], 403);
+            }
+
+            // WEB request
+            abort(403, 'Akses ditolak.');
+        }
+
+        return $next($request);
+    }
+}
+
+===== app\Models\AuditLog.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class AuditLog extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'meta' => 'array',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Helper singkat untuk mencatat log dari controller.
+     *
+     * AuditLog::record('verify_invoice', $invoice, "Invoice {$invoice->invoice_number} diverifikasi manual");
+     */
+    public static function record(string $action, $subject = null, ?string $description = null, array $meta = []): self
+    {
+        return static::create([
+            'user_id'      => auth()->id(),
+            'action'       => $action,
+            'subject_type' => $subject ? get_class($subject) : null,
+            'subject_id'   => $subject?->id,
+            'description'  => $description,
+            'meta'         => $meta,
+            'ip_address'   => request()->ip(),
+        ]);
+    }
+}
+
+===== app\Models\Company.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Company extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    public const TYPES = [
+        'company',
+        'school',
+        'pesantren',
+        'hospital',
+        'government',
+        'factory',
+        'retail',
+        'restaurant',
+        'training',
+        'organization',
+        'transport',
+        'remote',
+        'sports'
+    ];
+
+
+    public function users()
+    {
+        return $this->hasMany(User::class);
+    }
+    public function monthlyReports()
+    {
+        return $this->hasMany(MonthlyReport::class);
+    }
+
+        // ═══════════════════════════════════════════════════════════════════
+    // RELASI — PESANTREN (MutabaahYaumiyah)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Semua record ngaji (mutabaah yaumiyah) di pesantren ini.
+     *
+     * Contoh:
+     *   $pesantren->mutabaahYaumiyahs()->hariIni()->get();
+     *   $pesantren->mutabaahYaumiyahs()->bulan(3, 2026)->count();
+     *   $pesantren->mutabaahYaumiyahs()->ofSantri($santriId)->get();
+     */
+    public function mutabaahYaumiyahs()
+    {
+        return $this->hasMany(MutabaahYaumiyah::class);
+    }
+
+    public function subscriptions()
+    {
+        return $this->hasMany(CompanySubscription::class, 'company_id');
+    }
+
+    public function activeSubscription()
+    {
+        return $this->hasOne(CompanySubscription::class, 'company_id')
+            ->whereIn('status', ['trial', 'active'])
+            ->latest('expires_at');
+    }
+
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'company_id');
+    }
+
+    public function vaPayments()
+    {
+        return $this->hasMany(VaPayment::class, 'company_id');
+    }
+
+    // Cek cepat apakah fitur boleh diakses
+    public function isSubscriptionActive(): bool
+    {
+        return $this->activeSubscription?->isActive() ?? false;
+    }
+
+    // Cek apakah company pernah trial
+    public function hasUsedTrial(): bool
+    {
+        return $this->subscriptions()
+            ->where('has_used_trial', true)
+            ->exists();
+    }
+
+    public function billingRole(): string
+    {
+        return config("subscription.billing_roles.{$this->type}")
+            ?? config('subscription.default_billing_role', 'hr');
+    }
+
+    public function classes()
+    {
+        return $this->hasMany(ClassRoom::class);
+    }
+
+    public function students()
+    {
+        return $this->hasMany(Student::class);
+    }
+
+    public function attendanceDevices()
+    {
+        return $this->hasMany(AttendanceDevice::class);
+    }
+
+    public function studentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class);
+    }
+}
+
+===== app\Models\CompanySubscription.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+
+class CompanySubscription extends Model
+{
+    use HasFactory;
+
+    protected $guarded = [];
+
+    protected $casts = [
+        'started_at'     => 'datetime',
+        'expires_at'     => 'datetime',
+        'has_used_trial' => 'boolean',
+    ];
+
+    // Masa tenggang setelah expires_at sebelum status jadi "expired"
+    public const GRACE_PERIOD_DAYS = 3;
+
+    // ============================================================
+    // RELATIONS
+    // ============================================================
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class, 'company_id');
+    }
+
+    public function plan()
+    {
+        return $this->belongsTo(SubscriptionPlan::class, 'plan_id');
+    }
+
+    public function lastInvoice()
+    {
+        return $this->belongsTo(SubscriptionInvoice::class, 'last_invoice_id');
+    }
+
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'subscription_id');
+    }
+
+    // ============================================================
+    // SCOPES
+    // ============================================================
+
+    /** Subscription yang masih "penuh aktif" (belum masuk grace) */
+    public function scopeActive($query)
+    {
+        return $query->whereIn('status', ['trial', 'active']);
+    }
+
+    /** Subscription yang sudah benar-benar dikunci (bukan grace) */
+    public function scopeLocked($query)
+    {
+        return $query->whereIn('status', ['expired', 'cancelled']);
+    }
+
+    public function scopeExpiringSoon($query, int $days = 3)
+    {
+        return $query
+            ->whereIn('status', ['trial', 'active'])
+            ->whereBetween('expires_at', [now(), now()->addDays($days)]);
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    /**
+     * Apakah subscription masih boleh akses fitur?
+     * trial/active → aktif selama belum lewat expires_at.
+     * grace        → tetap dianggap aktif sampai expires_at + GRACE_PERIOD_DAYS.
+     * INI yang dipakai untuk unlock/lock fitur (bukan scopeActive di atas,
+     * yang cuma buat query/reporting "subscription murni aktif").
+     */
+    public function isActive(): bool
+    {
+        if ($this->status === 'cancelled') {
+            return false;
+        }
+
+        if (in_array($this->status, ['trial', 'active'])) {
+            return Carbon::now()->lessThan($this->expires_at);
+        }
+
+        if ($this->status === 'grace') {
+            return Carbon::now()->lessThan(
+                $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            );
+        }
+
+        return false; // expired
+    }
+
+    public function isLocked(): bool
+    {
+        return ! $this->isActive();
+    }
+
+    public function isGrace(): bool
+    {
+        return $this->status === 'grace';
+    }
+
+    /**
+     * Sisa hari. Untuk trial/active → sampai expires_at.
+     * Untuk grace → sampai batas akhir masa tenggang (expires_at + GRACE_PERIOD_DAYS).
+     */
+    public function daysRemaining(): int
+    {
+        if (in_array($this->status, ['expired', 'cancelled'])) {
+            return 0;
+        }
+
+        $target = $this->status === 'grace'
+            ? $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS)
+            : $this->expires_at;
+
+        return max(0, (int) Carbon::now()->diffInDays($target, false));
+    }
+
+    /**
+     * Sinkronkan status di DB berdasarkan expires_at saat ini:
+     * trial/active yang lewat expires_at → grace → (lewat grace period) → expired.
+     * Dipanggil setiap kali status dibaca (self-healing), jadi tidak
+     * bergantung 100% ke scheduler harian.
+     */
+    public function syncStatus(): self
+    {
+        if (in_array($this->status, ['expired', 'cancelled'])) {
+            return $this;
+        }
+
+        if (Carbon::now()->greaterThanOrEqualTo($this->expires_at)) {
+            $graceUntil = $this->expires_at->copy()->addDays(self::GRACE_PERIOD_DAYS);
+            $newStatus  = Carbon::now()->lessThan($graceUntil) ? 'grace' : 'expired';
+
+            if ($newStatus !== $this->status) {
+                $this->update(['status' => $newStatus]);
+            }
+        }
+
+        return $this;
+    }
+
+    /** Tandai expired (dipanggil scheduler command) */
+    public function markAsExpired(): void
+    {
+        $this->update(['status' => 'expired']);
+    }
+
+    /**
+     * Aktifkan setelah pembayaran berhasil.
+     * Jika masih aktif (termasuk grace), perpanjang dari expires_at lama —
+     * bukan dari hari ini, supaya tidak rugi sisa hari yang belum kepakai.
+     */
+    public function activate(SubscriptionPlan $plan, SubscriptionInvoice $invoice): void
+    {
+        $base = $this->isActive()
+            ? $this->expires_at->copy()
+            : Carbon::now();
+
+        $this->update([
+            'plan_id'         => $plan->id,
+            'status'          => 'active',
+            'started_at'      => $this->started_at ?? Carbon::now(),
+            'expires_at'      => $base->addDays($plan->duration_days),
+            'last_invoice_id' => $invoice->id,
+        ]);
+    }
+}
+
+===== app\Models\User.php =====
+<?php
+
+namespace App\Models;
+
+use App\Models\ShiftGroup;
+use App\Models\UserShiftOverride;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Auth\Passwords\CanResetPassword;
+// use Illuminate\Contracts\Auth\CanResetPassword as CanResetPasswordContract;
+
+class User extends Authenticatable
+{
+    use HasApiTokens, HasFactory, Notifiable, CanResetPassword;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $guarded = [];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [
+        'password',
+        'remember_token',
+        'face_embedding',
+    ];
+
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
+        'salary' => 'decimal:2',
+    ];
+
+
+    // kode
+    // ═══════════════════════════════════════════════════════════════════
+    // ACCESSOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Tipe aplikasi berdasarkan company type.
+     * Contoh: 'company', 'pesantren', 'school'
+     */
+    public function getAppTypeAttribute(): ?string
+    {
+        return $this->company?->type;
+    }
+
+    /**
+     * Key untuk routing dashboard.
+     * Contoh: 'pesantren.ustadz', 'company.hr', 'company.employee'
+     */
+    public function getDashboardKeyAttribute(): ?string
+    {
+        return $this->company?->type . '.' . $this->role;
+    }
+
+    public function isBillingManager(): bool
+    {
+        if (! $this->company) {
+            return false;
+        }
+
+        return $this->role === $this->company->billingRole();
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI — UMUM
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Pesantren / perusahaan tempat user ini terdaftar.
+     */
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI — HR / COMPANY
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Semua record absensi milik user ini.
+     */
+    public function attendances(): HasMany
+    {
+        return $this->hasMany(Attendance::class);
+    }
+
+    /**
+     * Laporan bulanan milik user ini.
+     */
+    public function monthlyReports(): HasMany
+    {
+        return $this->hasMany(MonthlyReport::class);
+    }
+
+    /**
+     * Laporan harian milik user ini.
+     */
+    public function dailyReports(): HasMany
+    {
+        return $this->hasMany(DailyReport::class);
+    }
+
+    /**
+     * Skor performa milik user ini.
+     */
+    public function performanceScores(): HasMany
+    {
+        return $this->hasMany(PerformanceScore::class);
+    }
+
+    /**
+     * Shift group yang diikuti user ini (many-to-many).
+     */
+    public function shiftGroups()
+    {
+        return $this->belongsToMany(ShiftGroup::class, 'shift_group_users')
+            ->withPivot(['start_date', 'end_date'])
+            ->withTimestamps();
+    }
+
+    /**
+     * Override shift individual untuk user ini.
+     */
+    public function shiftOverrides(): HasMany
+    {
+        return $this->hasMany(UserShiftOverride::class);
+    }
+
+    /**
+     * Jadwal yang dimiliki / ditugaskan ke user ini.
+     */
+    public function schedules(): HasMany
+    {
+        return $this->hasMany(Schedule::class, 'user_id');
+    }
+
+    /**
+     * Jadwal yang dibuat oleh user ini (sebagai HR / creator).
+     */
+    public function createdSchedules(): HasMany
+    {
+        return $this->hasMany(Schedule::class, 'created_by');
+    }
+
+    /**
+     * Jadwal yang diikuti user ini sebagai peserta.
+     */
+    public function scheduleParticipations(): HasMany
+    {
+        return $this->hasMany(ScheduleParticipant::class, 'user_id');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RELASI — PESANTREN (MutabaahYaumiyah)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * [Santri] Semua riwayat ngaji milik santri ini.
+     *
+     * Contoh:
+     *   $santri->mutabaahSebagaiSantri()->bulan(3, 2026)->get();
+     *   $santri->mutabaahSebagaiSantri()->hariIni()->get();
+     */
+    public function mutabaahSebagaiSantri(): HasMany
+    {
+        return $this->hasMany(MutabaahYaumiyah::class, 'santri_id');
+    }
+
+    /**
+     * [Ustadz] Semua sesi ngaji yang diajar oleh ustadz ini.
+     *
+     * Contoh:
+     *   $ustadz->mutabaahSebagaiUstadz()->hariIni()->get();
+     *   $ustadz->mutabaahSebagaiUstadz()->bulan(3, 2026)->count();
+     */
+    public function mutabaahSebagaiUstadz(): HasMany
+    {
+        return $this->hasMany(MutabaahYaumiyah::class, 'ustadz_id');
+    }
+
+    /**
+     * [Ustadz] Semua sesi yang sudah diparaf oleh ustadz ini.
+     */
+    public function mutabaahYangDiparaf(): HasMany
+    {
+        return $this->hasMany(MutabaahYaumiyah::class, 'signed_by');
+    }
+
+    /**
+     * [Santri] Record ngaji terakhir — posisi terkini santri.
+     * Berguna untuk auto-fill jilid & halaman saat ustadz input sesi baru.
+     *
+     * Contoh:
+     *   $santri->progressNgaji;           // → MutabaahYaumiyah|null
+     *   $santri->progressNgaji->jilid;    // → 2
+     *   $santri->progressNgaji->halaman_dari; // → 15
+     */
+    public function progressNgaji()
+    {
+        return $this->hasOne(MutabaahYaumiyah::class, 'santri_id')
+            ->latestOfMany();
+    }
+
+
+    // Untuk user role = 'wali': semua anak yang terhubung ke akun ini
+    public function guardedStudents()
+    {
+        return $this->belongsToMany(Student::class, 'student_guardians', 'user_id', 'student_id')
+            ->withPivot(['relationship', 'is_primary', 'can_submit_permission'])
+            ->withTimestamps();
+    }
+
+    // Baris pivot mentah wali-murid milik user ini
+    public function studentGuardianRows()
+    {
+        return $this->hasMany(StudentGuardian::class);
+    }
+
+    // Untuk user role = 'guru': semua kelas yang diampu (wali kelas / guru mapel)
+    public function teachingClasses()
+    {
+        return $this->belongsToMany(ClassRoom::class, 'class_teachers', 'user_id', 'class_id')
+            ->withPivot(['role_in_class', 'subject'])
+            ->withTimestamps();
+    }
+
+    // Untuk user role = 'guru': kelas di mana dia jadi wali kelas
+    public function homeroomClasses()
+    {
+        return $this->hasMany(ClassRoom::class, 'homeroom_teacher_id');
+    }
+
+    // Izin/sakit murid yang pernah diajukan oleh user ini (role wali)
+    public function submittedStudentPermissions()
+    {
+        return $this->hasMany(StudentPermission::class, 'submitted_by');
+    }
+
+    // Absen murid yang pernah diinput user ini lewat kiosk (role guru)
+    public function recordedStudentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class, 'recorded_by');
+    }
+}
+
+===== app\Services\Notifiers\SubscriptionNotifier.php =====
+<?php
+
+namespace App\Services\Notifiers;
+
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Models\User;
+use App\Services\NotificationService;
+use Carbon\Carbon;
+use Illuminate\Support\Collection;
+
+/**
+ * Notifikasi LANGGANAN (trial, invoice, pembayaran VA, masa aktif).
+ *
+ * Penerima: semua user aktif di company yang isBillingManager() = true
+ * (HR untuk company, dan role penanggung jawab billing untuk tipe lain
+ * sesuai config subscription.billing_roles).
+ */
+class SubscriptionNotifier
+{
+    private const HARI  = [0 => 'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    private const BULAN = [1 => 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+    public function __construct(private NotificationService $notif) {}
+
+    // ============================================================
+    // PENERIMA
+    // ============================================================
+
+    /** @return Collection<User> */
+    public function billingManagersOf(int $companyId): Collection
+    {
+        return User::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->get()
+            ->filter(fn(User $u) => $u->isBillingManager())
+            ->values();
+    }
+
+    // ============================================================
+    // FORMAT
+    // ============================================================
+
+    public static function tgl(?Carbon $d, bool $withTime = false): string
+    {
+        if (!$d) return '-';
+
+        $d = $d->copy()->timezone(config('app.timezone'));
+
+        $text = self::HARI[$d->dayOfWeek] . ', ' . $d->day . ' ' . self::BULAN[$d->month] . ' ' . $d->year;
+
+        return $withTime ? $text . ' ' . $d->format('H:i') . ' WIB' : $text;
+    }
+
+    public static function rupiah($amount): string
+    {
+        return 'Rp ' . number_format((float) $amount, 0, ',', '.');
+    }
+
+    // ============================================================
+    // ✅ PEMBAYARAN BERHASIL
+    // Dipanggil dari SubscriptionService::activateFromInvoice()
+    // (webhook Midtrans, cek VA manual, verifikasi superadmin).
+    // ============================================================
+
+    public function paymentSuccess(SubscriptionInvoice $invoice, CompanySubscription $subscription): void
+    {
+        $invoice->loadMissing(['plan', 'vaPayment']);
+
+        $users = $this->billingManagersOf($invoice->company_id);
+
+        if ($users->isEmpty()) return;
+
+        $bank = $invoice->vaPayment ? ' via VA ' . strtoupper($invoice->vaPayment->bank) : '';
+
+        $this->notif->sendLater(
+            $users,
+            'subscription.payment_success',
+            '✅ Pembayaran berhasil',
+            self::rupiah($invoice->total_amount) . $bank . ' untuk paket ' . ($invoice->plan->name ?? '-')
+                . ' sudah diterima. Langganan aktif sampai ' . self::tgl($subscription->expires_at) . '.',
+            [
+                'category'  => 'subscription',
+                'action'    => 'subscription_invoice',
+                'reference' => $invoice,
+                'data'      => [
+                    'key'            => 'paid:' . $invoice->id,
+                    'invoice_id'     => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
+                    'expires_at'     => $subscription->expires_at?->toDateString(),
+                ],
+            ],
+        );
+    }
+}
+
+===== app\Services\SubscriptionService.php =====
+<?php
+
+namespace App\Services;
+
+use App\Models\Company;
+use App\Models\CompanySubscription;
+use App\Models\SubscriptionInvoice;
+use App\Models\SubscriptionPlan;
+use App\Services\Notifiers\SubscriptionNotifier;
+use Illuminate\Support\Facades\Log;
+
+class SubscriptionService
+{
+    public function startTrial(Company $company): CompanySubscription
+    {
+        $subscription = $company->subscriptions()->first();
+
+        if ($subscription && $subscription->has_used_trial) {
+            throw new \Exception('Perusahaan sudah pernah memakai trial.');
+        }
+
+        $trialPlan = SubscriptionPlan::where('is_free', true)
+            ->where('is_active', true)
+            ->firstOrFail();
+
+        $data = [
+            'plan_id'        => $trialPlan->id,
+            'status'         => 'trial',
+            'started_at'     => now(),
+            'expires_at'     => now()->addDays($trialPlan->duration_days ?: 7),
+            'has_used_trial' => true,
+        ];
+
+        if ($subscription) {
+            $subscription->update($data);
+            return $subscription->fresh();
+        }
+
+        return CompanySubscription::create(array_merge($data, ['company_id' => $company->id]));
+    }
+
+    public function getStatus(Company $company): array
+    {
+        $subscription = $company->subscriptions()->with('plan')->first();
+
+        if (! $subscription) {
+            return [
+                'status'         => 'expired',
+                'is_active'      => false,
+                'days_remaining' => 0,
+                'started_at'     => null,
+                'expires_at'     => null,
+                'plan'           => null,
+            ];
+        }
+
+        $subscription->syncStatus();
+
+        return [
+            'status'         => $subscription->status,
+            'is_active'      => $subscription->isActive(),
+            'days_remaining' => $subscription->daysRemaining(),
+            'started_at'     => $subscription->started_at->toIso8601String(),
+            'expires_at'     => $subscription->expires_at->toIso8601String(),
+            'plan'           => [
+                'name'          => $subscription->plan->name,
+                'slug'          => $subscription->plan->slug,
+                'duration_days' => $subscription->plan->duration_days,
+            ],
+        ];
+    }
+
+    /**
+     * Dipanggil setelah invoice dinyatakan lunas
+     * (webhook Midtrans, cek VA manual, verifikasi superadmin).
+     */
+    public function activateFromInvoice(SubscriptionInvoice $invoice): CompanySubscription
+    {
+        $company      = $invoice->company;
+        $plan         = $invoice->plan;
+        $subscription = $company->subscriptions()->first();
+
+        if (! $subscription) {
+            $subscription = CompanySubscription::create([
+                'company_id' => $company->id,
+                'plan_id'    => $plan->id,
+                'status'     => 'expired',
+                'started_at' => now(),
+                'expires_at' => now(),
+            ]);
+        }
+
+        $subscription->activate($plan, $invoice);
+
+        $fresh = $subscription->fresh();
+
+        // 🔔 Notifikasi "Pembayaran berhasil" ke penanggung jawab billing.
+        // Dibungkus try supaya kalau notifikasi gagal, aktivasi langganan tetap jalan.
+        try {
+            app(SubscriptionNotifier::class)->paymentSuccess($invoice->fresh(), $fresh);
+        } catch (\Throwable $e) {
+            Log::error('Notifikasi pembayaran gagal', [
+                'invoice_id' => $invoice->id,
+                'error'      => $e->getMessage(),
+            ]);
+        }
+
+        return $fresh;
+    }
+
+    /**
+     * Sinkronkan status semua langganan yang sudah lewat expires_at:
+     * trial/active → grace → expired. Dipakai oleh command subscriptions:expire.
+     *
+     * @return int jumlah langganan yang statusnya berubah
+     */
+    public function expireAll(): int
+    {
+        $count = 0;
+
+        CompanySubscription::whereIn('status', ['trial', 'active', 'grace'])
+            ->where('expires_at', '<=', now())
+            ->get()
+            ->each(function (CompanySubscription $sub) use (&$count) {
+                $before = $sub->status;
+
+                if ($sub->syncStatus()->status !== $before) {
+                    $count++;
+                }
+            });
+
+        return $count;
+    }
+}
+
+===== app\Support\CompanySettings.php =====
+<?php
+
+namespace App\Support;
+
+use App\Models\Company;
+use Carbon\Carbon;
+use Illuminate\Support\Arr;
+
+/**
+ * Baca & simpan pengaturan hari kerja + notifikasi per company.
+ *
+ * Disimpan di kolom JSON companies.work_days & companies.notification_settings.
+ * Kalau kosong, otomatis pakai DEFAULT di bawah — jadi company lama tetap jalan
+ * tanpa perlu diisi dulu.
+ *
+ * Pemakaian:
+ *   CompanySettings::workDays($company)             // [1,2,3,4,5]
+ *   CompanySettings::isWorkDay($company, $date)     // true / false
+ *   CompanySettings::notif($company, 'checkin_reminder.minutes_before')  // 15
+ */
+class CompanySettings
+{
+    /** ISO: 1=Senin ... 7=Minggu */
+    public const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5];
+
+    public const DAY_LABELS = [
+        1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis',
+        5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu',
+    ];
+
+    public const DEFAULT_NOTIFICATION = [
+        // Karyawan — pengingat absen
+        'checkin_reminder' => [
+            'enabled'        => true,
+            'minutes_before' => 15,   // 15 menit sebelum jam masuk
+        ],
+        'late_reminder' => [
+            'enabled'       => true,
+            'minutes_after' => 30,    // 30 menit setelah jam masuk, kalau belum absen
+        ],
+        'checkout_reminder' => [
+            'enabled'       => true,
+            'minutes_after' => 0,     // tepat di jam pulang
+        ],
+
+        // Karyawan — shift & libur
+        'shift_tomorrow' => [
+            'enabled' => true,
+            'time'    => '20:00',     // malam sebelumnya
+        ],
+        'holiday_reminder' => [
+            'enabled' => true,
+            'time'    => '17:00',     // H-1
+        ],
+
+        // HR — persetujuan
+        'hr_instant_approval' => [
+            'enabled' => true,        // notif setiap ada pengajuan baru
+        ],
+        'hr_daily_digest' => [
+            'enabled' => true,
+            'time'    => '08:00',     // ringkasan pengajuan yang belum diputuskan
+        ],
+    ];
+
+    // ----------------------------------------------------------
+    // HARI KERJA
+    // ----------------------------------------------------------
+
+    private static function decode($value): ?array
+    {
+        if (is_array($value)) return $value;
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+            return is_array($decoded) ? $decoded : null;
+        }
+        return null;
+    }
+
+    public static function workDays(Company $company): array
+    {
+        $days = self::decode($company->getAttribute('work_days'));
+
+        if (!$days) {
+            return self::DEFAULT_WORK_DAYS;
+        }
+
+        $days = array_values(array_unique(array_map('intval', $days)));
+        sort($days);
+
+        return array_values(array_filter($days, fn ($d) => $d >= 1 && $d <= 7));
+    }
+
+    public static function isWorkDay(Company $company, $date): bool
+    {
+        $d = $date instanceof Carbon ? $date : Carbon::parse($date);
+
+        return in_array($d->dayOfWeekIso, self::workDays($company), true);
+    }
+
+    public static function workDaysLabel(Company $company): string
+    {
+        $days = self::workDays($company);
+
+        if ($days === [1, 2, 3, 4, 5])    return 'Senin – Jumat';
+        if ($days === [1, 2, 3, 4, 5, 6]) return 'Senin – Sabtu';
+        if ($days === [1, 2, 3, 4, 5, 6, 7]) return 'Setiap hari';
+
+        return implode(', ', array_map(fn ($d) => self::DAY_LABELS[$d], $days));
+    }
+
+    // ----------------------------------------------------------
+    // NOTIFIKASI
+    // ----------------------------------------------------------
+
+    /** Pengaturan lengkap (default + yang sudah diubah HR) */
+    public static function notification(Company $company): array
+    {
+        $saved = self::decode($company->getAttribute('notification_settings')) ?? [];
+
+        return array_replace_recursive(self::DEFAULT_NOTIFICATION, $saved);
+    }
+
+    /** Ambil satu nilai, contoh: notif($company, 'hr_daily_digest.time') */
+    public static function notif(Company $company, string $key, $default = null)
+    {
+        return Arr::get(self::notification($company), $key, $default);
+    }
+
+    // ----------------------------------------------------------
+    // SIMPAN
+    // ----------------------------------------------------------
+
+    public static function save(Company $company, ?array $workDays, ?array $notification): void
+    {
+        if ($workDays !== null) {
+            $workDays = array_values(array_unique(array_map('intval', $workDays)));
+            sort($workDays);
+            $company->forceFill(['work_days' => json_encode($workDays)]);
+        }
+
+        if ($notification !== null) {
+            // Hanya simpan kunci yang dikenal (abaikan kiriman asing)
+            $merged = array_replace_recursive(self::notification($company), $notification);
+            $clean  = array_intersect_key($merged, self::DEFAULT_NOTIFICATION);
+
+            $company->forceFill(['notification_settings' => json_encode($clean)]);
+        }
+
+        $company->save();
+    }
+
+    /** Format untuk response API */
+    public static function toApiArray(Company $company): array
+    {
+        $days = self::workDays($company);
+
+        return [
+            'work_days'        => $days,
+            'work_days_label'  => self::workDaysLabel($company),
+            'work_days_detail' => collect(self::DAY_LABELS)->map(fn ($label, $num) => [
+                'day'      => $num,
+                'label'    => $label,
+                'is_work'  => in_array($num, $days, true),
+            ])->values(),
+            'time_in'          => $company->time_in,
+            'time_out'         => $company->time_out,
+            'notification'     => self::notification($company),
+        ];
+    }
+}
+===== ROLE DI DATABASE =====
+[{"role":"user","total":10},{"role":"company","total":1},{"role":"hr","total":1},{"role":"employee","total":2},{"role":"ustadz","total":1},{"role":"santri","total":1},{"role":"superadmin","total":1},{"role":"admin","total":3},{"role":"guru","total":7},{"role":"wali","total":70}]
+===== TYPE DI DATABASE =====
+[{"type":"company","total":2},{"type":"pesantren","total":1},{"type":"school","total":4}]

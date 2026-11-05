@@ -52,10 +52,22 @@ class PpdbPeriodController extends Controller
         $data = $request->validate([
             'name'                => 'sometimes|string|max:150',
             'registration_start'  => 'sometimes|date',
-            'registration_end'    => 'sometimes|date|after_or_equal:registration_start',
+            'registration_end'    => 'sometimes|date',
             'quota'               => 'nullable|integer|min:1',
             'is_active'           => 'sometimes|boolean',
         ]);
+
+        // Cek tanggal memakai nilai akhir (field yang tidak dikirim pakai nilai lama)
+        $start = $data['registration_start'] ?? $ppdbPeriod->registration_start->toDateString();
+        $end = $data['registration_end'] ?? $ppdbPeriod->registration_end->toDateString();
+        abort_if(strtotime($end) < strtotime($start), 422, 'Tanggal tutup pendaftaran harus sama atau setelah tanggal buka');
+
+        // 1 sekolah hanya boleh 1 periode aktif (sama seperti saat membuat periode)
+        if (($data['is_active'] ?? false) === true) {
+            PpdbPeriod::where('company_id', $ppdbPeriod->company_id)
+                ->where('id', '!=', $ppdbPeriod->id)
+                ->update(['is_active' => false]);
+        }
 
         $ppdbPeriod->update($data);
 
@@ -65,6 +77,14 @@ class PpdbPeriodController extends Controller
     public function destroy(PpdbPeriod $ppdbPeriod)
     {
         $this->authorize('update', $ppdbPeriod);
+
+        // Periode dihapus = semua pendaftar & nilai tesnya ikut terhapus (cascade)
+        abort_if(
+            $ppdbPeriod->applicants()->exists(),
+            422,
+            'Periode ini sudah punya pendaftar, tidak bisa dihapus. Nonaktifkan saja.'
+        );
+
         $ppdbPeriod->delete();
         return response()->json(['status' => true, 'message' => 'Periode PPDB dihapus', 'data' => null]);
     }

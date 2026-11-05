@@ -12,7 +12,7 @@ return [
     'billing_roles' => [
         'company'      => 'hr',
         'pesantren'    => 'ustadz',
-        'school'       => 'teacher',
+        'school'       => 'admin',   // FIX: sebelumnya 'teacher' (role ini tidak ada; admin sekolah = 'admin')
         'hospital'     => 'doctor',
 
         // Belum dikonfirmasi — sementara pakai default di bawah,

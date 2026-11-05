@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\StudentAttendance;
 use App\Models\StudentPermission;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class StudentPermissionController extends Controller
 {
@@ -37,32 +38,45 @@ class StudentPermissionController extends Controller
     {
         $this->authorize('review', $permission);
 
+        // Cegah review ulang: izin yang sudah disetujui lalu "ditolak" akan meninggalkan
+        // absen izin/sakit yang sudah terlanjur tercatat.
+        abort_unless($permission->status === 'pending', 422, 'Pengajuan ini sudah pernah diproses');
+
         $data = $request->validate([
             'status' => 'required|in:approved,rejected',
         ]);
 
-        $permission->update([
-            'status'      => $data['status'],
-            'reviewed_by' => $request->user()->id,
-            'reviewed_at' => now(),
-        ]);
+        $student = $permission->student;
 
-        // Kalau disetujui, otomatis catat di student_attendances hari itu
-        if ($data['status'] === 'approved') {
-            StudentAttendance::updateOrCreate(
-                [
-                    'student_id' => $permission->student_id,
-                    'date'       => $permission->date_permission,
-                ],
-                [
-                    'company_id'  => $permission->student->company_id,
-                    'class_id'    => $permission->student->class_id,
-                    'status'      => $permission->type,
-                    'recorded_by' => $request->user()->id,
-                    'notes'       => 'Otomatis dari pengajuan izin #' . $permission->id,
-                ]
-            );
+        // student_attendances.class_id wajib diisi — murid tanpa kelas tidak bisa dicatat absennya
+        if ($data['status'] === 'approved' && (!$student || !$student->class_id)) {
+            abort(422, 'Murid belum ditempatkan di kelas, tempatkan dulu sebelum menyetujui izin');
         }
+
+        DB::transaction(function () use ($permission, $data, $request, $student) {
+            $permission->update([
+                'status'      => $data['status'],
+                'reviewed_by' => $request->user()->id,
+                'reviewed_at' => now(),
+            ]);
+
+            // Kalau disetujui, otomatis catat di student_attendances hari itu
+            if ($data['status'] === 'approved') {
+                StudentAttendance::updateOrCreate(
+                    [
+                        'student_id' => $permission->student_id,
+                        'date'       => $permission->date_permission->toDateString(),
+                    ],
+                    [
+                        'company_id'  => $student->company_id,
+                        'class_id'    => $student->class_id,
+                        'status'      => $permission->type,
+                        'recorded_by' => $request->user()->id,
+                        'notes'       => 'Otomatis dari pengajuan izin #' . $permission->id,
+                    ]
+                );
+            }
+        });
 
         return response()->json([
             'status'  => true,

@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api\School\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Dormitory;
+use App\Models\RoomAssignment;
+use App\Models\User;
 use Illuminate\Http\Request;
 
 class DormitoryController extends Controller
@@ -39,6 +41,7 @@ class DormitoryController extends Controller
         ]);
 
         $data['company_id'] = $request->user()->company_id;
+        $this->ensurePengasuhSameSchool($data['pengasuh_id'] ?? null, $data['company_id']);
 
         $dormitory = Dormitory::create($data);
 
@@ -82,6 +85,15 @@ class DormitoryController extends Controller
             'is_active'    => 'sometimes|boolean',
         ]);
 
+        if (array_key_exists('pengasuh_id', $data)) {
+            $this->ensurePengasuhSameSchool($data['pengasuh_id'], $dormitory->company_id);
+        }
+
+        // Ganti putra/putri hanya boleh kalau asrama sedang kosong
+        if (isset($data['gender']) && $data['gender'] !== $dormitory->gender) {
+            abort_if($this->occupantCount($dormitory) > 0, 422, 'Asrama masih dihuni, jenis putra/putri tidak bisa diubah');
+        }
+
         $dormitory->update($data);
 
         return response()->json([
@@ -98,6 +110,13 @@ class DormitoryController extends Controller
     {
         $this->authorize('delete', $dormitory);
 
+        // Kamar & riwayat penempatan ikut terhapus (cascade) — tolak kalau masih ada penghuni
+        abort_if(
+            $this->occupantCount($dormitory) > 0,
+            422,
+            'Asrama masih memiliki penghuni aktif, pindahkan santri terlebih dahulu'
+        );
+
         $dormitory->delete();
 
         return response()->json([
@@ -105,5 +124,26 @@ class DormitoryController extends Controller
             'message' => 'Asrama dihapus',
             'data'    => null,
         ]);
+    }
+
+    private function occupantCount(Dormitory $dormitory): int
+    {
+        return RoomAssignment::whereNull('moved_out_at')
+            ->whereIn('room_id', $dormitory->rooms()->select('id'))
+            ->count();
+    }
+
+    /** Pengasuh harus akun dari sekolah yang sama */
+    private function ensurePengasuhSameSchool($pengasuhId, $companyId): void
+    {
+        if (!$pengasuhId) {
+            return;
+        }
+
+        abort_unless(
+            User::where('id', $pengasuhId)->where('company_id', $companyId)->exists(),
+            422,
+            'Pengasuh harus akun dari sekolah ini'
+        );
     }
 }

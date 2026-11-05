@@ -39,8 +39,16 @@ class StudentBill extends Model
         return $this->hasMany(BillPayment::class);
     }
 
+    /**
+     * Total yang sudah dibayar. Kalau relasi payments sudah di-load (with('payments')),
+     * pakai data itu — tidak query ulang per tagihan (hindari N+1 di daftar tagihan).
+     */
     public function getTotalPaidAttribute(): float
     {
+        if ($this->relationLoaded('payments')) {
+            return (float) $this->payments->sum('amount');
+        }
+
         return (float) $this->payments()->sum('amount');
     }
 
@@ -51,16 +59,17 @@ class StudentBill extends Model
 
     /**
      * Hitung ulang status berdasarkan total pembayaran — dipanggil setiap
-     * kali ada pembayaran baru dicatat, supaya status selalu akurat
+     * kali ada pembayaran baru dicatat / dihapus, supaya status selalu akurat
      * (bukan cuma di-set manual sekali pas create).
      */
     public function refreshStatus(): void
     {
-        $totalPaid = $this->total_paid;
+        // Selalu hitung dari database (relasi yang sudah di-load bisa basi)
+        $totalPaid = (float) $this->payments()->sum('amount');
 
         $status = $totalPaid <= 0
             ? 'belum_lunas'
-            : ($totalPaid >= $this->amount ? 'lunas' : 'sebagian');
+            : ($totalPaid >= (float) $this->amount ? 'lunas' : 'sebagian');
 
         $this->update(['status' => $status]);
     }

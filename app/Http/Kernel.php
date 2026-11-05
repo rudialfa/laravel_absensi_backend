@@ -34,11 +34,15 @@ class Kernel extends HttpKernel
             \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
             \Illuminate\Session\Middleware\StartSession::class,
             \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+            // BARU: mode maintenance dari Pengaturan Sistem (superadmin tetap bisa masuk)
+            \App\Http\Middleware\CheckSystemMaintenance::class,
             \App\Http\Middleware\VerifyCsrfToken::class,
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
         ],
 
         'api' => [
+            // BARU: mode maintenance dari Pengaturan Sistem → 503 JSON code "maintenance"
+            \App\Http\Middleware\CheckSystemMaintenance::class,
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
             \Illuminate\Routing\Middleware\ThrottleRequests::class . ':api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
@@ -68,7 +72,10 @@ class Kernel extends HttpKernel
         'context' => \App\Http\Middleware\ContextMiddleware::class,
         'verify.device' => \App\Http\Middleware\VerifyDeviceToken::class,
 
-        // BARU: kunci akses kalau langganan perusahaan habis (lewat masa toleransi 3 hari)
+        // BARU: kunci akses kalau langganan perusahaan habis (lewat masa toleransi — diatur di Pengaturan Sistem)
         'subscription' => \App\Http\Middleware\CheckSubscription::class,
+
+        // BARU: tolak & logout akun yang sudah dinonaktifkan (dipakai panel superadmin)
+        'active' => \App\Http\Middleware\EnsureUserIsActive::class,
     ];
 }

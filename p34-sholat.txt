@@ -1,0 +1,1567 @@
+﻿
+===== app\Http\Controllers\Api\Santri\SantriPrayerController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\Santri;
+
+use App\Http\Controllers\Controller;
+use App\Models\Prayer;
+use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+
+class SantriPrayerController extends Controller
+{
+    private const API_BASE = 'https://api.aladhan.com/v1';
+    private const METHOD   = 20; // KEMENAG — Kementerian Agama Republik Indonesia
+
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+
+    private function ensureSantri(): void
+    {
+        if (!auth()->check() || auth()->user()->role !== 'santri') {
+            abort(response()->json([
+                'status'  => false,
+                'message' => 'Akses ditolak (khusus Santri)',
+            ], 403));
+        }
+    }
+
+    private function city(): string
+    {
+        return auth()->user()->company?->city ?? 'Magelang';
+    }
+
+    private function timezone(): string
+    {
+        return auth()->user()->company?->timezone ?? 'Asia/Jakarta';
+    }
+
+    /**
+     * Hapus timezone label dari string waktu API.
+     * "06:03 (WIB)" → "06:03"
+     */
+    private function stripTz(string $time): string
+    {
+        return substr(trim(preg_replace('/\s*\(.*?\)/', '', $time)), 0, 5);
+    }
+
+    /**
+     * Format Prayer model → array response.
+     */
+    private function prayerArray(Prayer $p): array
+    {
+        return [
+            'id'     => $p->id,
+            'date'   => (string) $p->date,
+            'city'   => $p->city,
+            'source' => $p->source,
+            'waktu'  => [
+                'fajr'    => $p->fajr    ? $this->stripTz($p->fajr)    : null,
+                'dzuhur'  => $p->dzuhur  ? $this->stripTz($p->dzuhur)  : null,
+                'ashar'   => $p->ashar   ? $this->stripTz($p->ashar)   : null,
+                'maghrib' => $p->maghrib ? $this->stripTz($p->maghrib) : null,
+                'isya'    => $p->isya    ? $this->stripTz($p->isya)    : null,
+            ],
+        ];
+    }
+
+    /**
+     * Cari nama waktu sholat berikutnya dari array waktu.
+     */
+    private function cariBerikutnya(array $waktu, string $now): ?string
+    {
+        foreach ($waktu as $nama => $jam) {
+            if ($jam && $now < $jam) return $nama;
+        }
+        return null;
+    }
+
+    /**
+     * Simpan satu hari ke DB dari timings Aladhan.
+     */
+    private function simpanKeDb(string $date, string $city, array $timings): Prayer
+    {
+        return Prayer::updateOrCreate(
+            ['date' => $date, 'city' => $city],
+            [
+                'fajr'    => $timings['Fajr']    ?? null,
+                'dzuhur'  => $timings['Dhuhr']   ?? null,
+                'ashar'   => $timings['Asr']      ?? null,
+                'maghrib' => $timings['Maghrib']  ?? null,
+                'isya'    => $timings['Isha']     ?? null,
+                'source'  => 'aladhan_api',
+            ]
+        );
+    }
+
+    /**
+     * Fetch satu hari dari /timingsByCity/{date}.
+     * DB format: YYYY-MM-DD → API expects: DD-MM-YYYY
+     */
+    private function fetchOneDay(string $date, string $city): ?Prayer
+    {
+        try {
+            $apiDate  = Carbon::parse($date)->format('d-m-Y');
+            $response = Http::timeout(8)->get(self::API_BASE . "/timingsByCity/{$apiDate}", [
+                'city'    => $city,
+                'country' => 'ID',
+                'method'  => self::METHOD,
+            ]);
+
+            if (!$response->successful()) return null;
+            $timings = $response->json('data.timings');
+            if (!$timings) return null;
+
+            return $this->simpanKeDb($date, $city, $timings);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Ambil dari DB dulu, jika tidak ada fetch dari API.
+     */
+    private function getPrayer(string $date, string $city): ?Prayer
+    {
+        return Prayer::where('date', $date)->where('city', $city)->first()
+            ?? $this->fetchOneDay($date, $city);
+    }
+
+    /**
+     * Hitung sisa menit ke waktu sholat berikutnya.
+     */
+    private function hitungSisaMenit(string $date, string $waktu, string $timezone): int
+    {
+        try {
+            $nextTime = Carbon::parse($date . ' ' . $waktu, $timezone);
+            return max(0, (int) now($timezone)->diffInMinutes($nextTime, false));
+        } catch (\Exception $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Format sisa menit jadi label readable.
+     * 75 → "1 jam 15 menit" | 45 → "45 menit"
+     */
+    private function formatSisa(int $menit): string
+    {
+        if ($menit >= 60) {
+            return floor($menit / 60) . ' jam ' . ($menit % 60) . ' menit';
+        }
+        return $menit . ' menit';
+    }
+
+    // ============================================================
+    // TODAY — GET /api/pesantren/prayers/today
+    // Jadwal sholat hari ini + waktu sholat berikutnya
+    // ============================================================
+    public function today(): JsonResponse
+    {
+        $this->ensureSantri();
+
+        $today  = now($this->timezone())->toDateString();
+        $city   = $this->city();
+        $prayer = $this->getPrayer($today, $city);
+
+        if (!$prayer) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Jadwal sholat tidak tersedia. Periksa koneksi internet atau coba lagi nanti.',
+            ], 503);
+        }
+
+        $waktu      = $this->prayerArray($prayer)['waktu'];
+        $now        = now($this->timezone())->format('H:i');
+        $berikutnya = $this->cariBerikutnya($waktu, $now);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Jadwal sholat hari ini',
+            'data'    => array_merge($this->prayerArray($prayer), [
+                'berikutnya' => $berikutnya, // null jika isya sudah lewat
+                'sekarang'   => $now,
+            ]),
+        ]);
+    }
+
+    // ============================================================
+    // BY DATE — GET /api/pesantren/prayers/{date}
+    // Jadwal sholat tanggal tertentu (format: YYYY-MM-DD)
+    // ============================================================
+    public function byDate(string $date): JsonResponse
+    {
+        $this->ensureSantri();
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Format tanggal tidak valid. Gunakan format YYYY-MM-DD.',
+            ], 422);
+        }
+
+        $city   = $this->city();
+        $prayer = $this->getPrayer($date, $city);
+
+        if (!$prayer) {
+            return response()->json([
+                'status'  => false,
+                'message' => "Jadwal sholat tanggal {$date} tidak tersedia.",
+            ], 503);
+        }
+
+        return response()->json([
+            'status'  => true,
+            'message' => "Jadwal sholat tanggal {$date}",
+            'data'    => $this->prayerArray($prayer),
+        ]);
+    }
+
+    // ============================================================
+    // NEXT — GET /api/pesantren/prayers/next
+    // Waktu sholat berikutnya real-time dari Aladhan API
+    //
+    // Untuk countdown di dashboard santri.
+    // Pakai /nextTimingsByCity — server Aladhan yang hitung
+    // berdasarkan waktu sekarang, tidak perlu hitung manual.
+    // Ada fallback otomatis ke DB jika API tidak tersedia.
+    // ============================================================
+    public function next(): JsonResponse
+    {
+        $this->ensureSantri();
+
+        $city    = $this->city();
+        $today   = now($this->timezone())->toDateString();
+        $apiDate = Carbon::parse($today)->format('d-m-Y');
+
+        try {
+            $response = Http::timeout(8)->get(
+                self::API_BASE . "/nextTimingsByCity/{$apiDate}",
+                ['city' => $city, 'country' => 'ID', 'method' => self::METHOD]
+            );
+
+            if (!$response->successful()) throw new \Exception('API tidak merespons');
+
+            $timings = $response->json('data.timings');
+            if (empty($timings)) throw new \Exception('Data waktu tidak valid');
+
+            // timings berisi 1 entry: misal {"Dhuhr": "12:04"}
+            $namaAsli  = array_key_first($timings);
+            $waktuNext = $this->stripTz($timings[$namaAsli]);
+
+            $namaMap = [
+                'Fajr'    => 'fajr',
+                'Dhuhr'   => 'dzuhur',
+                'Asr'     => 'ashar',
+                'Maghrib' => 'maghrib',
+                'Isha'    => 'isya',
+            ];
+            $namaLokal = $namaMap[$namaAsli] ?? strtolower($namaAsli);
+            $sisaMenit = $this->hitungSisaMenit($today, $waktuNext, $this->timezone());
+
+            return response()->json([
+                'status'  => true,
+                'message' => 'Waktu sholat berikutnya',
+                'data'    => [
+                    'nama'       => $namaLokal,
+                    'nama_asli'  => $namaAsli,
+                    'waktu'      => $waktuNext,
+                    'sisa_menit' => $sisaMenit,
+                    'sisa_label' => $this->formatSisa($sisaMenit),
+                    'sekarang'   => now($this->timezone())->format('H:i'),
+                    'city'       => $city,
+                    'tanggal'    => $today,
+                    'source'     => 'aladhan_api',
+                ],
+            ]);
+        } catch (\Exception $e) {
+            // Fallback: hitung manual dari DB
+            $prayer = $this->getPrayer($today, $city);
+            if (!$prayer) {
+                return response()->json([
+                    'status'  => false,
+                    'message' => 'Waktu sholat berikutnya tidak tersedia.',
+                ], 503);
+            }
+
+            $waktu      = $this->prayerArray($prayer)['waktu'];
+            $now        = now($this->timezone())->format('H:i');
+            $berikutnya = $this->cariBerikutnya($waktu, $now);
+
+            if (!$berikutnya) {
+                return response()->json([
+                    'status'  => true,
+                    'message' => 'Semua waktu sholat hari ini sudah lewat',
+                    'data'    => [
+                        'nama'       => null,
+                        'waktu'      => null,
+                        'sisa_menit' => 0,
+                        'sisa_label' => '-',
+                        'sekarang'   => $now,
+                        'city'       => $city,
+                        'tanggal'    => $today,
+                        'source'     => 'database_fallback',
+                    ],
+                ]);
+            }
+
+            $sisaMenit = $this->hitungSisaMenit($today, $waktu[$berikutnya], $this->timezone());
+
+            return response()->json([
+                'status'  => true,
+                'message' => 'Waktu sholat berikutnya (dari cache)',
+                'data'    => [
+                    'nama'       => $berikutnya,
+                    'waktu'      => $waktu[$berikutnya],
+                    'sisa_menit' => $sisaMenit,
+                    'sisa_label' => $this->formatSisa($sisaMenit),
+                    'sekarang'   => $now,
+                    'city'       => $city,
+                    'tanggal'    => $today,
+                    'source'     => 'database_fallback',
+                ],
+            ]);
+        }
+    }
+
+    // ============================================================
+    // MONTHLY — GET /api/pesantren/prayers/monthly?month=3&year=2026
+    // Jadwal sholat satu bulan penuh
+    //
+    // Pakai GET /calendarByCity/{year}/{month} — satu API call
+    // dapat 30 hari sekaligus.
+    // Jika DB sudah lengkap langsung return dari DB (tidak hit API).
+    // ============================================================
+    public function monthly(Request $request): JsonResponse
+    {
+        $this->ensureSantri();
+
+        $month = (int) $request->get('month', now($this->timezone())->month);
+        $year  = (int) $request->get('year',  now($this->timezone())->year);
+        $city  = $this->city();
+
+        if ($month < 1 || $month > 12) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Bulan tidak valid (1-12).',
+            ], 422);
+        }
+
+        $daysInMonth = Carbon::createFromDate($year, $month, 1)->daysInMonth;
+
+        // Cek DB dulu
+        $existing = Prayer::where('city', $city)
+            ->whereMonth('date', $month)
+            ->whereYear('date',  $year)
+            ->orderBy('date')
+            ->get()
+            ->keyBy(fn($p) => $p->date->format('Y-m-d'));
+
+        // DB sudah lengkap — langsung return
+        if ($existing->count() >= $daysInMonth) {
+            return response()->json([
+                'status'  => true,
+                'message' => "Jadwal sholat bulan {$month}/{$year}",
+                'data'    => [
+                    'month'   => $month,
+                    'year'    => $year,
+                    'city'    => $city,
+                    'total'   => $existing->count(),
+                    'source'  => 'database',
+                    'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+                ],
+            ]);
+        }
+
+        // Fetch satu bulan sekaligus — /calendarByCity/{year}/{month}
+        try {
+            $response = Http::timeout(15)->get(
+                self::API_BASE . "/calendarByCity/{$year}/{$month}",
+                ['city' => $city, 'country' => 'ID', 'method' => self::METHOD]
+            );
+
+            if (!$response->successful()) throw new \Exception('API gagal');
+
+            $days = $response->json('data');
+            if (!is_array($days) || empty($days)) throw new \Exception('Data kosong');
+
+            $result = [];
+            foreach ($days as $day) {
+                $timings  = $day['timings'] ?? [];
+                $readable = $day['date']['readable'] ?? null;
+                $dateStr  = $readable
+                    ? Carbon::createFromFormat('d M Y', $readable)->format('Y-m-d')
+                    : Carbon::createFromTimestamp($day['date']['timestamp'] ?? 0)->format('Y-m-d');
+
+                $prayer   = $this->simpanKeDb($dateStr, $city, $timings);
+                $result[] = $this->prayerArray($prayer);
+            }
+
+            return response()->json([
+                'status'  => true,
+                'message' => "Jadwal sholat bulan {$month}/{$year}",
+                'data'    => [
+                    'month'   => $month,
+                    'year'    => $year,
+                    'city'    => $city,
+                    'total'   => count($result),
+                    'source'  => 'aladhan_api',
+                    'prayers' => $result,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            if ($existing->isNotEmpty()) {
+                return response()->json([
+                    'status'  => true,
+                    'message' => "Jadwal sholat bulan {$month}/{$year} (sebagian dari cache)",
+                    'data'    => [
+                        'month'   => $month,
+                        'year'    => $year,
+                        'city'    => $city,
+                        'total'   => $existing->count(),
+                        'source'  => 'database_partial',
+                        'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+                    ],
+                ]);
+            }
+
+            return response()->json([
+                'status'  => false,
+                'message' => 'Jadwal sholat bulanan tidak tersedia. Periksa koneksi internet.',
+            ], 503);
+        }
+    }
+}
+
+===== app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php =====
+<?php
+
+namespace App\Http\Controllers\Api\Ustadz;
+
+use App\Http\Controllers\Controller;
+use App\Models\Prayer;
+use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+
+class PesantrenPrayerController extends Controller
+{
+    private const API_BASE = 'https://api.aladhan.com/v1';
+    private const METHOD   = 20; // KEMENAG — Kementerian Agama Republik Indonesia
+
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
+
+    private function ensureUstadz(): void
+    {
+        if (!auth()->check() || auth()->user()->role !== 'ustadz') {
+            abort(response()->json([
+                'status'  => false,
+                'message' => 'Akses ditolak (khusus Ustadz)',
+            ], 403));
+        }
+    }
+
+    private function city(): string
+    {
+        return auth()->user()->company?->city ?? 'Magelang';
+    }
+
+    private function timezone(): string
+    {
+        return auth()->user()->company?->timezone ?? 'Asia/Jakarta';
+    }
+
+    /**
+     * Hapus timezone label dari string waktu API.
+     * "06:03 (WIB)" → "06:03"
+     */
+    private function stripTz(string $time): string
+    {
+        return substr(trim(preg_replace('/\s*\(.*?\)/', '', $time)), 0, 5);
+    }
+
+    /**
+     * Format Prayer model → array response.
+     */
+    private function prayerArray(Prayer $p): array
+    {
+        return [
+            'id'     => $p->id,
+            'date'   => (string) $p->date,
+            'city'   => $p->city,
+            'source' => $p->source,
+            'waktu'  => [
+                'fajr'    => $p->fajr    ? $this->stripTz($p->fajr)    : null,
+                'dzuhur'  => $p->dzuhur  ? $this->stripTz($p->dzuhur)  : null,
+                'ashar'   => $p->ashar   ? $this->stripTz($p->ashar)   : null,
+                'maghrib' => $p->maghrib ? $this->stripTz($p->maghrib) : null,
+                'isya'    => $p->isya    ? $this->stripTz($p->isya)    : null,
+            ],
+        ];
+    }
+
+    /**
+     * Cari nama waktu sholat berikutnya dari array waktu.
+     * Return null jika semua sudah lewat.
+     */
+    private function cariBerikutnya(array $waktu, string $now): ?string
+    {
+        foreach ($waktu as $nama => $jam) {
+            if ($jam && $now < $jam) return $nama;
+        }
+        return null;
+    }
+
+    /**
+     * Simpan satu hari ke DB dari timings Aladhan.
+     */
+    private function simpanKeDb(string $date, string $city, array $timings): Prayer
+    {
+        return Prayer::updateOrCreate(
+            ['date' => $date, 'city' => $city],
+            [
+                'fajr'    => $timings['Fajr']    ?? null,
+                'dzuhur'  => $timings['Dhuhr']   ?? null,
+                'ashar'   => $timings['Asr']      ?? null,
+                'maghrib' => $timings['Maghrib']  ?? null,
+                'isya'    => $timings['Isha']     ?? null,
+                'source'  => 'aladhan_api',
+            ]
+        );
+    }
+
+    /**
+     * Fetch satu hari dari /timingsByCity/{date}.
+     * DB format: YYYY-MM-DD → API expects: DD-MM-YYYY
+     */
+    private function fetchOneDay(string $date, string $city): ?Prayer
+    {
+        try {
+            $apiDate  = Carbon::parse($date)->format('d-m-Y');
+            $response = Http::timeout(8)->get(self::API_BASE . "/timingsByCity/{$apiDate}", [
+                'city'    => $city,
+                'country' => 'ID',
+                'method'  => self::METHOD,
+            ]);
+
+            if (!$response->successful()) return null;
+            $timings = $response->json('data.timings');
+            if (!$timings) return null;
+
+            return $this->simpanKeDb($date, $city, $timings);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Ambil dari DB dulu, jika tidak ada fetch dari API.
+     */
+    private function getPrayer(string $date, string $city): ?Prayer
+    {
+        return Prayer::where('date', $date)->where('city', $city)->first()
+            ?? $this->fetchOneDay($date, $city);
+    }
+
+    /**
+     * Hitung sisa menit dari sekarang ke waktu sholat berikutnya.
+     */
+    private function hitungSisaMenit(string $date, string $waktu, string $timezone): int
+    {
+        try {
+            $nextTime = Carbon::parse($date . ' ' . $waktu, $timezone);
+            return max(0, (int) now($timezone)->diffInMinutes($nextTime, false));
+        } catch (\Exception $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Format sisa menit jadi label readable.
+     * 75 → "1 jam 15 menit" | 45 → "45 menit"
+     */
+    private function formatSisa(int $menit): string
+    {
+        if ($menit >= 60) {
+            return floor($menit / 60) . ' jam ' . ($menit % 60) . ' menit';
+        }
+        return $menit . ' menit';
+    }
+
+    // ============================================================
+    // TODAY — GET /api/pesantren/prayers/today
+    // Jadwal sholat hari ini + waktu sholat berikutnya
+    // ============================================================
+    public function today(): JsonResponse
+    {
+        $this->ensureUstadz();
+
+        $today  = now($this->timezone())->toDateString();
+        $city   = $this->city();
+        $prayer = $this->getPrayer($today, $city);
+
+        if (!$prayer) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Jadwal sholat tidak tersedia. Periksa koneksi internet atau coba lagi nanti.',
+            ], 503);
+        }
+
+        $waktu      = $this->prayerArray($prayer)['waktu'];
+        $now        = now($this->timezone())->format('H:i');
+        $berikutnya = $this->cariBerikutnya($waktu, $now);
+
+        return response()->json([
+            'status'  => true,
+            'message' => 'Jadwal sholat hari ini',
+            'data'    => array_merge($this->prayerArray($prayer), [
+                'berikutnya' => $berikutnya, // null jika isya sudah lewat
+                'sekarang'   => $now,
+            ]),
+        ]);
+    }
+
+    // ============================================================
+    // BY DATE — GET /api/pesantren/prayers/{date}
+    // Jadwal sholat tanggal tertentu (format: YYYY-MM-DD)
+    // ============================================================
+    public function byDate(string $date): JsonResponse
+    {
+        $this->ensureUstadz();
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Format tanggal tidak valid. Gunakan format YYYY-MM-DD.',
+            ], 422);
+        }
+
+        $city   = $this->city();
+        $prayer = $this->getPrayer($date, $city);
+
+        if (!$prayer) {
+            return response()->json([
+                'status'  => false,
+                'message' => "Jadwal sholat tanggal {$date} tidak tersedia.",
+            ], 503);
+        }
+
+        return response()->json([
+            'status'  => true,
+            'message' => "Jadwal sholat tanggal {$date}",
+            'data'    => $this->prayerArray($prayer),
+        ]);
+    }
+
+    // ============================================================
+    // NEXT — GET /api/pesantren/prayers/next
+    // Waktu sholat berikutnya real-time dari Aladhan API
+    //
+    // Pakai /nextTimingsByCity — server Aladhan yang hitung
+    // berdasarkan waktu sekarang, tidak perlu hitung manual.
+    // Ada fallback ke DB jika API tidak tersedia.
+    //
+    // Response: { nama, waktu, sisa_menit, sisa_label, sekarang }
+    // ============================================================
+    public function next(): JsonResponse
+    {
+        $this->ensureUstadz();
+
+        $city    = $this->city();
+        $today   = now($this->timezone())->toDateString();
+        $apiDate = Carbon::parse($today)->format('d-m-Y');
+
+        try {
+            $response = Http::timeout(8)->get(
+                self::API_BASE . "/nextTimingsByCity/{$apiDate}",
+                ['city' => $city, 'country' => 'ID', 'method' => self::METHOD]
+            );
+
+            if (!$response->successful()) throw new \Exception('API tidak merespons');
+
+            $timings = $response->json('data.timings');
+            if (empty($timings)) throw new \Exception('Data waktu tidak valid');
+
+            // timings berisi 1 entry: misal {"Dhuhr": "12:04"}
+            $namaAsli  = array_key_first($timings);
+            $waktuNext = $this->stripTz($timings[$namaAsli]);
+
+            $namaMap = [
+                'Fajr'    => 'fajr',
+                'Dhuhr'   => 'dzuhur',
+                'Asr'     => 'ashar',
+                'Maghrib' => 'maghrib',
+                'Isha'    => 'isya',
+            ];
+            $namaLokal = $namaMap[$namaAsli] ?? strtolower($namaAsli);
+            $sisaMenit = $this->hitungSisaMenit($today, $waktuNext, $this->timezone());
+
+            return response()->json([
+                'status'  => true,
+                'message' => 'Waktu sholat berikutnya',
+                'data'    => [
+                    'nama'       => $namaLokal,
+                    'nama_asli'  => $namaAsli,
+                    'waktu'      => $waktuNext,
+                    'sisa_menit' => $sisaMenit,
+                    'sisa_label' => $this->formatSisa($sisaMenit),
+                    'sekarang'   => now($this->timezone())->format('H:i'),
+                    'city'       => $city,
+                    'tanggal'    => $today,
+                    'source'     => 'aladhan_api',
+                ],
+            ]);
+        } catch (\Exception $e) {
+            // Fallback: hitung manual dari DB
+            $prayer = $this->getPrayer($today, $city);
+            if (!$prayer) {
+                return response()->json([
+                    'status'  => false,
+                    'message' => 'Waktu sholat berikutnya tidak tersedia.',
+                ], 503);
+            }
+
+            $waktu      = $this->prayerArray($prayer)['waktu'];
+            $now        = now($this->timezone())->format('H:i');
+            $berikutnya = $this->cariBerikutnya($waktu, $now);
+
+            if (!$berikutnya) {
+                return response()->json([
+                    'status'  => true,
+                    'message' => 'Semua waktu sholat hari ini sudah lewat',
+                    'data'    => [
+                        'nama'       => null,
+                        'waktu'      => null,
+                        'sisa_menit' => 0,
+                        'sisa_label' => '-',
+                        'sekarang'   => $now,
+                        'city'       => $city,
+                        'tanggal'    => $today,
+                        'source'     => 'database_fallback',
+                    ],
+                ]);
+            }
+
+            $sisaMenit = $this->hitungSisaMenit($today, $waktu[$berikutnya], $this->timezone());
+
+            return response()->json([
+                'status'  => true,
+                'message' => 'Waktu sholat berikutnya (dari cache)',
+                'data'    => [
+                    'nama'       => $berikutnya,
+                    'waktu'      => $waktu[$berikutnya],
+                    'sisa_menit' => $sisaMenit,
+                    'sisa_label' => $this->formatSisa($sisaMenit),
+                    'sekarang'   => $now,
+                    'city'       => $city,
+                    'tanggal'    => $today,
+                    'source'     => 'database_fallback',
+                ],
+            ]);
+        }
+    }
+
+    // ============================================================
+    // MONTHLY — GET /api/pesantren/prayers/monthly?month=3&year=2026
+    // Jadwal sholat satu bulan penuh
+    //
+    // Pakai GET /calendarByCity/{year}/{month} — satu API call
+    // dapat 30 hari sekaligus, jauh lebih efisien dari loop per hari.
+    // Jika DB sudah lengkap langsung return dari DB (tidak hit API).
+    // ============================================================
+    public function monthly(Request $request): JsonResponse
+    {
+        $this->ensureUstadz();
+
+        $month = (int) $request->get('month', now($this->timezone())->month);
+        $year  = (int) $request->get('year',  now($this->timezone())->year);
+        $city  = $this->city();
+
+        if ($month < 1 || $month > 12) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Bulan tidak valid (1-12).',
+            ], 422);
+        }
+
+        $daysInMonth = Carbon::createFromDate($year, $month, 1)->daysInMonth;
+
+        // Cek DB dulu
+        $existing = Prayer::where('city', $city)
+            ->whereMonth('date', $month)
+            ->whereYear('date',  $year)
+            ->orderBy('date')
+            ->get()
+            ->keyBy(fn($p) => $p->date->format('Y-m-d'));
+
+        // DB sudah lengkap — langsung return
+        if ($existing->count() >= $daysInMonth) {
+            return response()->json([
+                'status'  => true,
+                'message' => "Jadwal sholat bulan {$month}/{$year}",
+                'data'    => [
+                    'month'   => $month,
+                    'year'    => $year,
+                    'city'    => $city,
+                    'total'   => $existing->count(),
+                    'source'  => 'database',
+                    'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+                ],
+            ]);
+        }
+
+        // Fetch satu bulan sekaligus — /calendarByCity/{year}/{month}
+        try {
+            $response = Http::timeout(15)->get(
+                self::API_BASE . "/calendarByCity/{$year}/{$month}",
+                ['city' => $city, 'country' => 'ID', 'method' => self::METHOD]
+            );
+
+            if (!$response->successful()) throw new \Exception('API gagal');
+
+            $days = $response->json('data');
+            if (!is_array($days) || empty($days)) throw new \Exception('Data kosong');
+
+            $result = [];
+            foreach ($days as $day) {
+                $timings  = $day['timings'] ?? [];
+                $readable = $day['date']['readable'] ?? null;
+                $dateStr  = $readable
+                    ? Carbon::createFromFormat('d M Y', $readable)->format('Y-m-d')
+                    : Carbon::createFromTimestamp($day['date']['timestamp'] ?? 0)->format('Y-m-d');
+
+                $prayer   = $this->simpanKeDb($dateStr, $city, $timings);
+                $result[] = $this->prayerArray($prayer);
+            }
+
+            return response()->json([
+                'status'  => true,
+                'message' => "Jadwal sholat bulan {$month}/{$year}",
+                'data'    => [
+                    'month'   => $month,
+                    'year'    => $year,
+                    'city'    => $city,
+                    'total'   => count($result),
+                    'source'  => 'aladhan_api',
+                    'prayers' => $result,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            // Fallback: return yang ada di DB saja
+            if ($existing->isNotEmpty()) {
+                return response()->json([
+                    'status'  => true,
+                    'message' => "Jadwal sholat bulan {$month}/{$year} (sebagian dari cache)",
+                    'data'    => [
+                        'month'   => $month,
+                        'year'    => $year,
+                        'city'    => $city,
+                        'total'   => $existing->count(),
+                        'source'  => 'database_partial',
+                        'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+                    ],
+                ]);
+            }
+
+            return response()->json([
+                'status'  => false,
+                'message' => 'Jadwal sholat bulanan tidak tersedia. Periksa koneksi internet.',
+            ], 503);
+        }
+    }
+
+    // ============================================================
+    // METHODS — GET /api/pesantren/prayers/methods
+    // Daftar semua metode kalkulasi sholat Aladhan
+    //
+    // Untuk dropdown di PesantrenSettingController —
+    // ustadz bisa pilih metode yang sesuai dengan daerahnya.
+    // ============================================================
+    public function methods(): JsonResponse
+    {
+        $this->ensureUstadz();
+
+        try {
+            $response = Http::timeout(8)->get(self::API_BASE . '/methods');
+            if (!$response->successful()) throw new \Exception('API gagal');
+
+            $data = $response->json('data');
+
+            $methods = collect($data)
+                ->filter(fn($m) => isset($m['id']))
+                ->map(fn($m) => [
+                    'id'       => $m['id'],
+                    'name'     => $m['name'],
+                    'params'   => $m['params']   ?? [],
+                    'location' => $m['location'] ?? null,
+                ])
+                ->sortBy('id')
+                ->values();
+
+            return response()->json([
+                'status'       => true,
+                'message'      => 'Daftar metode kalkulasi sholat',
+                'method_aktif' => self::METHOD,
+                'data'         => $methods,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status'  => false,
+                'message' => 'Daftar metode tidak tersedia.',
+            ], 503);
+        }
+    }
+}
+
+===== app\Http\Controllers\Backend\Admin\PrayerController.php =====
+<?php
+
+namespace App\Http\Controllers\Backend\Admin;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\Prayer;
+
+class PrayerController extends Controller
+{
+    public function index()
+    {
+        $prayers = Prayer::orderBy('date', 'desc')->paginate(20);
+        return view('pages.admin.prayers.index', compact('prayers'));
+    }
+
+    public function create()
+    {
+        return view('pages.admin.prayers.create');
+    }
+
+    public function store(Request $request)
+    {
+        $request->validate([
+            'city' => 'required|string',
+            'date' => 'required|date',
+            'fajr' => 'nullable|date_format:H:i',
+            'dzuhur' => 'nullable|date_format:H:i',
+            'ashar' => 'nullable|date_format:H:i',
+            'maghrib' => 'nullable|date_format:H:i',
+            'isya' => 'nullable|date_format:H:i',
+            'source' => 'nullable|string',
+        ]);
+
+        Prayer::create($request->all());
+
+        return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule added!');
+    }
+
+    public function edit($id)
+    {
+        $prayer = Prayer::findOrFail($id);
+        return view('pages.admin.prayers.edit', compact('prayer'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $prayer = Prayer::findOrFail($id);
+        
+        $request->validate([
+            'city' => 'required|string',
+            'date' => 'required|date',
+            'fajr' => 'nullable|date_format:H:i',
+            'dzuhur' => 'nullable|date_format:H:i',
+            'ashar' => 'nullable|date_format:H:i',
+            'maghrib' => 'nullable|date_format:H:i',
+            'isya' => 'nullable|date_format:H:i',
+            'source' => 'nullable|string',
+        ]);
+
+        $prayer->update($request->all());
+
+        return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule updated!');
+    }
+
+    public function destroy($id)
+    {
+        Prayer::findOrFail($id)->delete();
+        return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule deleted!');
+    }
+}
+
+===== app\Models\Company.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Company extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+    public const TYPES = [
+        'company',
+        'school',
+        'pesantren',
+        'hospital',
+        'government',
+        'factory',
+        'retail',
+        'restaurant',
+        'training',
+        'organization',
+        'transport',
+        'remote',
+        'sports'
+    ];
+
+
+    public function users()
+    {
+        return $this->hasMany(User::class);
+    }
+    public function monthlyReports()
+    {
+        return $this->hasMany(MonthlyReport::class);
+    }
+
+        // ═══════════════════════════════════════════════════════════════════
+    // RELASI — PESANTREN (MutabaahYaumiyah)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Semua record ngaji (mutabaah yaumiyah) di pesantren ini.
+     *
+     * Contoh:
+     *   $pesantren->mutabaahYaumiyahs()->hariIni()->get();
+     *   $pesantren->mutabaahYaumiyahs()->bulan(3, 2026)->count();
+     *   $pesantren->mutabaahYaumiyahs()->ofSantri($santriId)->get();
+     */
+    public function mutabaahYaumiyahs()
+    {
+        return $this->hasMany(MutabaahYaumiyah::class);
+    }
+
+    public function subscriptions()
+    {
+        return $this->hasMany(CompanySubscription::class, 'company_id');
+    }
+
+    public function activeSubscription()
+    {
+        return $this->hasOne(CompanySubscription::class, 'company_id')
+            ->whereIn('status', ['trial', 'active'])
+            ->latest('expires_at');
+    }
+
+    public function invoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class, 'company_id');
+    }
+
+    public function vaPayments()
+    {
+        return $this->hasMany(VaPayment::class, 'company_id');
+    }
+
+    // Cek cepat apakah fitur boleh diakses
+    public function isSubscriptionActive(): bool
+    {
+        return $this->activeSubscription?->isActive() ?? false;
+    }
+
+    // Cek apakah company pernah trial
+    public function hasUsedTrial(): bool
+    {
+        return $this->subscriptions()
+            ->where('has_used_trial', true)
+            ->exists();
+    }
+
+    public function billingRole(): string
+    {
+        return config("subscription.billing_roles.{$this->type}")
+            ?? config('subscription.default_billing_role', 'hr');
+    }
+
+    public function classes()
+    {
+        return $this->hasMany(ClassRoom::class);
+    }
+
+    public function students()
+    {
+        return $this->hasMany(Student::class);
+    }
+
+    public function attendanceDevices()
+    {
+        return $this->hasMany(AttendanceDevice::class);
+    }
+
+    public function studentAttendances()
+    {
+        return $this->hasMany(StudentAttendance::class);
+    }
+}
+
+===== app\Models\Prayer.php =====
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Prayer extends Model
+{
+    use HasFactory;
+    protected $guarded = [];
+
+}
+
+===== config\services.php =====
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Third Party Services
+    |--------------------------------------------------------------------------
+    |
+    | This file is for storing the credentials for third party services such
+    | as Mailgun, Postmark, AWS and more. This file provides the de facto
+    | location for this type of information, allowing packages to have
+    | a conventional file to locate the various service credentials.
+    |
+    */
+
+    'mailgun' => [
+        'domain' => env('MAILGUN_DOMAIN'),
+        'secret' => env('MAILGUN_SECRET'),
+        'endpoint' => env('MAILGUN_ENDPOINT', 'api.mailgun.net'),
+        'scheme' => 'https',
+    ],
+
+    'postmark' => [
+        'token' => env('POSTMARK_TOKEN'),
+    ],
+
+    'ses' => [
+        'key' => env('AWS_ACCESS_KEY_ID'),
+        'secret' => env('AWS_SECRET_ACCESS_KEY'),
+        'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+    ],
+
+];
+
+===== resources\views\pages\admin\prayers\create.blade.php =====
+@extends('layouts.app')
+
+@section('title', 'Add Prayers ')
+
+@push('style')
+    <!-- CSS Libraries -->
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/bootstrap-daterangepicker/daterangepicker.css') }}">
+    <link rel="stylesheet"
+        href="{{ asset('backend/asset/library/bootstrap-colorpicker/dist/css/bootstrap-colorpicker.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/select2/dist/css/select2.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/selectric/public/selectric.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/bootstrap-timepicker/css/bootstrap-timepicker.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/bootstrap-tagsinput/dist/bootstrap-tagsinput.css') }}">
+@endpush
+
+@section('main')
+    <div class="main-content">
+        <section class="section">
+            <div class="section-header">
+                <h1>Add Prayers</h1>
+                <div class="section-header-breadcrumb">
+                    <div class="breadcrumb-item active"><a href="#">Dashboard</a></div>
+                    <div class="breadcrumb-item"><a href="#">Forms</a></div>
+                    <div class="breadcrumb-item">Prayers</div>
+                </div>
+            </div>
+
+            <div class="section-body">
+                <h2 class="section-title">Add Prayers</h2>
+
+
+
+                <div class="card">
+                    <form method="POST" action="{{ route('admin.prayers.store') }}">
+                        @csrf
+
+                        <div class="card-header">
+                            <h4>Form Create Prayer</h4>
+                        </div>
+
+                        <div class="card-body">
+
+                            <div class="form-group">
+                                <label>City</label>
+                                <input type="text" name="city" class="form-control" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Date</label>
+                                <input type="date" name="date" class="form-control" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Subuh</label>
+                                <input type="time" name="fajr" class="form-control">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Dzuhur</label>
+                                <input type="time" name="dzuhur" class="form-control">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Asar</label>
+                                <input type="time" name="ashar" class="form-control">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Maghrib</label>
+                                <input type="time" name="maghrib" class="form-control">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Isya</label>
+                                <input type="time" name="isya" class="form-control">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Source</label>
+                                <input type="text" name="source" class="form-control" value="aladhan_api">
+                            </div>
+
+                        </div>
+
+                        <div class="card-footer text-right">
+                            <button class="btn btn-primary">Save</button>
+                            <a href="{{ route('admin.prayers.index') }}" class="btn btn-secondary">Back</a>
+                        </div>
+
+                    </form>
+                </div>
+
+            </div>
+        </section>
+    </div>
+@endsection
+
+@push('scripts')
+@endpush
+
+===== resources\views\pages\admin\prayers\edit.blade.php =====
+@extends('layouts.app')
+
+@section('title', 'Edit Prayers')
+
+@push('style')
+    <!-- CSS Libraries -->
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/bootstrap-daterangepicker/daterangepicker.css') }}">
+    <link rel="stylesheet"
+        href="{{ asset('backend/asset/library/bootstrap-colorpicker/dist/css/bootstrap-colorpicker.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/select2/dist/css/select2.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/selectric/public/selectric.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/bootstrap-timepicker/css/bootstrap-timepicker.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('backend/asset/library/bootstrap-tagsinput/dist/bootstrap-tagsinput.css') }}">
+@endpush
+
+@section('main')
+    <div class="main-content">
+        <section class="section">
+            <div class="section-header">
+                <h1>Edit Prayers</h1>
+                <div class="section-header-breadcrumb">
+                    <div class="breadcrumb-item active"><a href="#">Dashboard</a></div>
+                    <div class="breadcrumb-item"><a href="#">Forms</a></div>
+                    <div class="breadcrumb-item">Prayers</div>
+                </div>
+            </div>
+
+            <div class="section-body">
+                <h2 class="section-title">Prayers</h2>
+
+
+                <div class="card">
+                    <form method="POST" action="{{ route('admin.prayers.update', $prayer->id) }}">
+                        @csrf
+                        @method('PUT')
+
+                        <div class="card-header">
+                            <h4>Form Edit Prayer</h4>
+                        </div>
+
+                        <div class="card-body">
+
+                            <div class="form-group">
+                                <label>City</label>
+                                <input type="text" name="city" class="form-control" value="{{ $prayer->city }}"
+                                    required>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Date</label>
+                                <input type="date" name="date" class="form-control" value="{{ $prayer->date }}"
+                                    required>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Subuh</label>
+                                <input type="time" name="fajr" class="form-control"
+                                    value="{{ $prayer->fajr ? date('H:i', strtotime($prayer->fajr)) : '' }}">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Dzuhur</label>
+                                <input type="time" name="dzuhur" class="form-control"
+                                    value="{{ $prayer->dzuhur ? date('H:i', strtotime($prayer->dzuhur)) : '' }}">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Asar</label>
+                                <input type="time" name="ashar" class="form-control"
+                                    value="{{ $prayer->ashar ? date('H:i', strtotime($prayer->ashar)) : '' }}">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Maghrib</label>
+                                <input type="time" name="maghrib" class="form-control"
+                                    value="{{ $prayer->maghrib ? date('H:i', strtotime($prayer->maghrib)) : '' }}">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Isya</label>
+                                <input type="time" name="isya" class="form-control"
+                                    value="{{ $prayer->isya ? date('H:i', strtotime($prayer->isya)) : '' }}">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Source</label>
+                                <input type="text" name="source" class="form-control" value="{{ $prayer->source }}">
+                            </div>
+
+                        </div>
+
+                        <div class="card-footer text-right">
+                            <button class="btn btn-primary">Update</button>
+                            <a href="{{ route('admin.prayers.index') }}" class="btn btn-secondary">Back</a>
+                        </div>
+
+                    </form>
+                </div>
+
+            </div>
+        </section>
+    </div>
+@endsection
+
+@push('scripts')
+@endpush
+
+===== resources\views\pages\admin\prayers\index.blade.php =====
+@extends('layouts.app')
+
+@section('title', 'Manajement Prayers')
+
+@push('style')
+<!-- CSS Libraries -->
+<link rel="stylesheet" href="{{ asset('backend/asset/library/selectric/public/selectric.css') }}">
+@endpush
+
+@section('main')
+<div class="main-content">
+    <section class="section">
+        <div class="section-header">
+            <h1>Manajement Prayers</h1>
+            <div class="section-header-button">
+                <a href="{{ route('admin.prayers.create') }}" class="btn btn-primary">Add New</a>
+            </div>
+            <div class="section-header-breadcrumb">
+                <div class="breadcrumb-item active"><a href="#">Dashboard</a></div>
+                <div class="breadcrumb-item"><a href="#">Prayers</a></div>
+                <div class="breadcrumb-item">All Prayers</div>
+            </div>
+        </div>
+        <div class="section-body">
+            <div class="row">
+                <div class="col-12">
+                    @include('layouts.alert')
+                </div>
+            </div>
+            <h2 class="section-title">Prayers</h2>
+            <p class="section-lead">
+                You can manage all Prayers, such as editing, deleting and more.
+            </p>
+
+
+            <div class="row mt-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h4>All Posts</h4>
+                        </div>
+                        <div class="card-body">
+
+                            <div class="float-right">
+                                <form method="GET" action="{{ route('admin.prayers.index') }}">
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" placeholder="Search" name="name">
+                                        <div class="input-group-append">
+                                            <button class="btn btn-primary"><i class="fas fa-search"></i></button>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+
+                            <div class="clearfix mb-3"></div>
+
+                            <div class="table-responsive">
+                                <table class="table-striped table">
+                                    <thead>
+                        <tr>
+                            <th>City</th>
+                            <th>Date</th>
+                            <th>Subuh</th>
+                            <th>Dzuhur</th>
+                            <th>Asar</th>
+                            <th>Maghrib</th>
+                            <th>Isya</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                                   <tbody>
+                        @foreach($prayers as $p)
+                        <tr>
+                            <td>{{ $p->city }}</td>
+                            <td>{{ $p->date }}</td>
+                            <td>{{ $p->fajr }}</td>
+                            <td>{{ $p->dzuhur }}</td>
+                            <td>{{ $p->ashar }}</td>
+                            <td>{{ $p->maghrib }}</td>
+                            <td>{{ $p->isya }}</td>
+                             <td>
+                                                    <div class="d-flex justify-content-center">
+                                                        <a href='{{ route('admin.prayers.edit', $p->id) }}'
+                                                            class="btn btn-sm btn-info btn-icon">
+                                                            <i class="fas fa-edit"></i>
+                                                            Edit
+                                                        </a>
+
+                                                        <form action="{{ route('admin.prayers.destroy', $p->id) }}"
+                                                            method="POST" class="ml-2">
+                                                            <input type="hidden" name="_method" value="DELETE" />
+                                                            <input type="hidden" name="_token"
+                                                                value="{{ csrf_token() }}" />
+                                                            <button class="btn btn-sm btn-danger btn-icon confirm-delete">
+                                                                <i class="fas fa-times"></i> Delete
+                                                            </button>
+                                                        </form>
+                                                    </div>
+                                                </td>
+                        </tr>
+                        @endforeach
+                    </tbody>
+                                </table>
+
+
+                                </table>
+                            </div>
+                            <div class="float-right">
+                                {{ $prayers->withQueryString()->links() }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+@endsection
+
+@push('scripts')
+<!-- JS Libraies -->
+<script src="{{ asset('backend/asset/library/selectric/public/jquery.selectric.min.js') }}"></script>
+
+<!-- Page Specific JS File -->
+<script src="{{ asset('backend/asset/js/page/features-posts.js') }}"></script>
+@endpush
+
+===== CARI PEMAKAIAN Prayer =====
+app\Http\Controllers\Api\Santri\Santridashboardcontroller.php:128: $prayer = Prayer::where('date', $today)->where('city', $city)->first();
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:14: private const API_BASE = 'https://api.aladhan.com/v1';
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:82: * Simpan satu hari ke DB dari timings Aladhan.
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:86: return Prayer::updateOrCreate(
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:94: 'source'  => 'aladhan_api',
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:128: return Prayer::where('date', $date)->where('city', $city)->first()
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:158: // TODAY — GET /api/pesantren/prayers/today
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:191: // BY DATE — GET /api/pesantren/prayers/{date}
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:223: // NEXT — GET /api/pesantren/prayers/next
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:224: // Waktu sholat berikutnya real-time dari Aladhan API
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:227: // Pakai /nextTimingsByCity — server Aladhan yang hitung
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:276: 'source'     => 'aladhan_api',
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:330: // MONTHLY — GET /api/pesantren/prayers/monthly?month=3&year=2026
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:355: $existing = Prayer::where('city', $city)
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:373: 'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:410: 'source'  => 'aladhan_api',
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:411: 'prayers' => $result,
+app\Http\Controllers\Api\Santri\SantriPrayerController.php:425: 'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+app\Http\Controllers\Api\Ustadz\PesantrenDashboardController.php:149: $prayer = Prayer::where('city', $company->city)
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:14: private const API_BASE = 'https://api.aladhan.com/v1';
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:83: * Simpan satu hari ke DB dari timings Aladhan.
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:87: return Prayer::updateOrCreate(
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:95: 'source'  => 'aladhan_api',
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:129: return Prayer::where('date', $date)->where('city', $city)->first()
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:159: // TODAY — GET /api/pesantren/prayers/today
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:192: // BY DATE — GET /api/pesantren/prayers/{date}
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:224: // NEXT — GET /api/pesantren/prayers/next
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:225: // Waktu sholat berikutnya real-time dari Aladhan API
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:227: // Pakai /nextTimingsByCity — server Aladhan yang hitung
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:278: 'source'     => 'aladhan_api',
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:332: // MONTHLY — GET /api/pesantren/prayers/monthly?month=3&year=2026
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:357: $existing = Prayer::where('city', $city)
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:375: 'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:412: 'source'  => 'aladhan_api',
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:413: 'prayers' => $result,
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:428: 'prayers' => $existing->values()->map(fn($p) => $this->prayerArray($p)),
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:441: // METHODS — GET /api/pesantren/prayers/methods
+app\Http\Controllers\Api\Ustadz\PesantrenPrayerController.php:442: // Daftar semua metode kalkulasi sholat Aladhan
+app\Http\Controllers\Backend\Admin\PrayerController.php:13: $prayers = Prayer::orderBy('date', 'desc')->paginate(20);
+app\Http\Controllers\Backend\Admin\PrayerController.php:14: return view('pages.admin.prayers.index', compact('prayers'));
+app\Http\Controllers\Backend\Admin\PrayerController.php:19: return view('pages.admin.prayers.create');
+app\Http\Controllers\Backend\Admin\PrayerController.php:35: Prayer::create($request->all());
+app\Http\Controllers\Backend\Admin\PrayerController.php:37: return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule added!');
+app\Http\Controllers\Backend\Admin\PrayerController.php:42: $prayer = Prayer::findOrFail($id);
+app\Http\Controllers\Backend\Admin\PrayerController.php:43: return view('pages.admin.prayers.edit', compact('prayer'));
+app\Http\Controllers\Backend\Admin\PrayerController.php:48: $prayer = Prayer::findOrFail($id);
+app\Http\Controllers\Backend\Admin\PrayerController.php:63: return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule updated!');
+app\Http\Controllers\Backend\Admin\PrayerController.php:68: Prayer::findOrFail($id)->delete();
+app\Http\Controllers\Backend\Admin\PrayerController.php:69: return redirect()->route('admin.prayers.index')->with('success', 'Prayer schedule deleted!');
+routes\api.php:833: Route::prefix('prayers')->group(function () {
+routes\api.php:926: Route::prefix('prayers')->group(function () {
+===== ROUTE SHOLAT =====
+
+  GET|HEAD        api/pesantren/prayers/methods .............................................................. Api\Ustadz\PesantrenPrayerController@methods
+  GET|HEAD        api/pesantren/prayers/monthly ................................................................. Api\Santri\SantriPrayerController@monthly
+  GET|HEAD        api/pesantren/prayers/next ....................................................................... Api\Santri\SantriPrayerController@next
+  GET|HEAD        api/pesantren/prayers/today ..................................................................... Api\Santri\SantriPrayerController@today
+  GET|HEAD        api/pesantren/prayers/{date} ................................................................... Api\Santri\SantriPrayerController@byDate
+
+
+===== DATA (hanya baca) =====
+
+   Illuminate\Database\QueryException  SQLSTATE[HY000] [2002] No connection could be made because the target machine actively refused it (Connection: mysql, SQL: select count(*) as aggregate from `prayers`).
+

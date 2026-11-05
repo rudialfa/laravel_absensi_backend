@@ -20,6 +20,13 @@ class Kernel extends ConsoleKernel
         // Sebelumnya 'notifications:tick' tertulis dua kali → notifikasi bisa terkirim dobel.
         // 'holidays:remind' juga tidak dipakai lagi (pengingat libur H-1 sudah ada di notifications:tick).
 
+        // 💓 Detak scheduler: dipakai halaman superadmin "Antrian Job" untuk tahu cron hidup atau mati
+        $schedule->call(function () {
+            \Illuminate\Support\Facades\Cache::forever('scheduler:heartbeat', now()->timestamp);
+        })
+            ->everyMinute()
+            ->name('scheduler-heartbeat');
+
         // 🧹 Hapus foto absen lama (sekolah)
         $schedule->command('school:cleanup-attendance-photos')
             ->dailyAt('02:00')
@@ -33,6 +40,25 @@ class Kernel extends ConsoleKernel
             ->timezone('Asia/Jakarta')
             ->withoutOverlapping(5)
             ->appendOutputTo(storage_path('logs/notifications-tick.log'));
+
+        // 📣 Pengumuman (notifikasi massal) dari superadmin yang sudah tiba jadwalnya
+        $schedule->command('broadcasts:send')
+            ->everyMinute()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(30)
+            ->appendOutputTo(storage_path('logs/broadcasts.log'));
+
+        // 🕌 Siapkan jadwal sholat bulan ini & bulan depan untuk semua kota tenant (tgl 1 & 25)
+        $schedule->command('prayers:sync --months=2')
+            ->monthlyOn(1, '01:30')
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(60)
+            ->appendOutputTo(storage_path('logs/prayers.log'));
+        $schedule->command('prayers:sync --months=2')
+            ->monthlyOn(25, '01:30')
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(60)
+            ->appendOutputTo(storage_path('logs/prayers.log'));
 
         // 🧾 Rapikan status langganan, invoice, dan VA yang sudah lewat waktu
         $schedule->command('subscriptions:expire')
@@ -59,7 +85,7 @@ class Kernel extends ConsoleKernel
 
         // Kosongkan file log scheduler setiap Minggu jam 03:00 supaya tidak membengkak
         $schedule->call(function () {
-            foreach (['notifications-tick.log', 'subscriptions.log'] as $file) {
+            foreach (['notifications-tick.log', 'subscriptions.log', 'broadcasts.log', 'prayers.log'] as $file) {
                 $path = storage_path('logs/' . $file);
                 if (file_exists($path)) {
                     file_put_contents($path, '');

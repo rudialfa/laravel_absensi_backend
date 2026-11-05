@@ -1,0 +1,268 @@
+﻿===== .\app\Console\Kernel.php =====
+<?php
+
+namespace App\Console;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+
+class Kernel extends ConsoleKernel
+{
+    /**
+     * Jadwal tugas otomatis.
+     *
+     * Supaya jalan, scheduler harus dihidupkan:
+     *   - Di komputer (development) : php artisan schedule:work   (biarkan jendela terbuka)
+     *   - Di server Linux           : cron  * * * * * cd /path/project && php artisan schedule:run >> /dev/null 2>&1
+     */
+    protected function schedule(Schedule $schedule): void
+    {
+        // CATATAN: setiap command cukup didaftarkan SATU kali.
+        // Sebelumnya 'notifications:tick' tertulis dua kali → notifikasi bisa terkirim dobel.
+        // 'holidays:remind' juga tidak dipakai lagi (pengingat libur H-1 sudah ada di notifications:tick).
+
+        // 🧹 Hapus foto absen lama (sekolah)
+        $schedule->command('school:cleanup-attendance-photos')
+            ->dailyAt('02:00')
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping();
+
+        // 🔔 Semua notifikasi terjadwal (pengingat absen, shift besok, libur H-1,
+        //    ringkasan HR, pengingat jadwal). Jam & on/off diatur HR per company.
+        $schedule->command('notifications:tick')
+            ->everyMinute()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(5)
+            ->appendOutputTo(storage_path('logs/notifications-tick.log'));
+
+        // 🧾 Rapikan status langganan, invoice, dan VA yang sudah lewat waktu
+        $schedule->command('subscriptions:expire')
+            ->hourly()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(10)
+            ->appendOutputTo(storage_path('logs/subscriptions.log'));
+
+        // 💳 Notifikasi langganan (trial, masa aktif, masa toleransi, invoice)
+        $schedule->command('subscriptions:notify')
+            ->everyFifteenMinutes()
+            ->timezone('Asia/Jakarta')
+            ->withoutOverlapping(10)
+            ->appendOutputTo(storage_path('logs/subscriptions.log'));
+
+        // Bersihkan notifikasi lama (lebih dari 90 hari) setiap hari jam 02:00
+        $schedule->call(function () {
+            \App\Models\AppNotification::where('created_at', '<', now()->subDays(90))->delete();
+        })
+            ->dailyAt('02:00')
+            ->timezone('Asia/Jakarta')
+            ->name('cleanup-old-notifications')
+            ->withoutOverlapping();
+
+        // Kosongkan file log scheduler setiap Minggu jam 03:00 supaya tidak membengkak
+        $schedule->call(function () {
+            foreach (['notifications-tick.log', 'subscriptions.log'] as $file) {
+                $path = storage_path('logs/' . $file);
+                if (file_exists($path)) {
+                    file_put_contents($path, '');
+                }
+            }
+        })
+            ->weeklyOn(0, '03:00')
+            ->timezone('Asia/Jakarta')
+            ->name('truncate-scheduler-logs');
+    }
+
+    /**
+     * Daftarkan semua command di app/Console/Commands.
+     */
+    protected function commands(): void
+    {
+        $this->load(__DIR__ . '/Commands');
+
+        require base_path('routes/console.php');
+    }
+}
+
+===== .\config\queue.php =====
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Queue Connection Name
+    |--------------------------------------------------------------------------
+    |
+    | Laravel's queue API supports an assortment of back-ends via a single
+    | API, giving you convenient access to each back-end using the same
+    | syntax for every one. Here you may define a default connection.
+    |
+    */
+
+    'default' => env('QUEUE_CONNECTION', 'sync'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue Connections
+    |--------------------------------------------------------------------------
+    |
+    | Here you may configure the connection information for each server that
+    | is used by your application. A default configuration has been added
+    | for each back-end shipped with Laravel. You are free to add more.
+    |
+    | Drivers: "sync", "database", "beanstalkd", "sqs", "redis", "null"
+    |
+    */
+
+    'connections' => [
+
+        'sync' => [
+            'driver' => 'sync',
+        ],
+
+        'database' => [
+            'driver' => 'database',
+            'table' => 'jobs',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'after_commit' => false,
+        ],
+
+        'beanstalkd' => [
+            'driver' => 'beanstalkd',
+            'host' => 'localhost',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'block_for' => 0,
+            'after_commit' => false,
+        ],
+
+        'sqs' => [
+            'driver' => 'sqs',
+            'key' => env('AWS_ACCESS_KEY_ID'),
+            'secret' => env('AWS_SECRET_ACCESS_KEY'),
+            'prefix' => env('SQS_PREFIX', 'https://sqs.us-east-1.amazonaws.com/your-account-id'),
+            'queue' => env('SQS_QUEUE', 'default'),
+            'suffix' => env('SQS_SUFFIX'),
+            'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+            'after_commit' => false,
+        ],
+
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => env('REDIS_QUEUE', 'default'),
+            'retry_after' => 90,
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Job Batching
+    |--------------------------------------------------------------------------
+    |
+    | The following options configure the database and table that store job
+    | batching information. These options can be updated to any database
+    | connection and table which has been defined by your application.
+    |
+    */
+
+    'batching' => [
+        'database' => env('DB_CONNECTION', 'mysql'),
+        'table' => 'job_batches',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Failed Queue Jobs
+    |--------------------------------------------------------------------------
+    |
+    | These options configure the behavior of failed queue job logging so you
+    | can control which database and table are used to store the jobs that
+    | have failed. You may change them to any database / table you wish.
+    |
+    */
+
+    'failed' => [
+        'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
+        'database' => env('DB_CONNECTION', 'mysql'),
+        'table' => 'failed_jobs',
+    ],
+
+];
+
+===== .\database\migrations\2019_08_19_000000_create_failed_jobs_table.php =====
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('failed_jobs', function (Blueprint $table) {
+            $table->id();
+            $table->string('uuid')->unique();
+            $table->text('connection');
+            $table->text('queue');
+            $table->longText('payload');
+            $table->longText('exception');
+            $table->timestamp('failed_at')->useCurrent();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('failed_jobs');
+    }
+};
+
+===== .\database\migrations\2026_08_25_135802_create_jobs_table.php =====
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('jobs', function (Blueprint $table) {
+            $table->bigIncrements('id');
+            $table->string('queue')->index();
+            $table->longText('payload');
+            $table->unsignedTinyInteger('attempts');
+            $table->unsignedInteger('reserved_at')->nullable();
+            $table->unsignedInteger('available_at');
+            $table->unsignedInteger('created_at');
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('jobs');
+    }
+};
+
+===== TABEL QUEUE =====
+
+   Illuminate\Database\QueryException  SQLSTATE[HY000] [2002] No connection could be made because the target machine actively refused it (Connection: mysql, SQL: select table_name as `name`, (data_length + index_length) as `size`, table_comment as `comment`, engine as `engine`, table_collation as `collation` from information_schema.tables where table_schema = 'db_absen_with_hartodev' and table_type in ('BASE TABLE', 'SYSTEM VERSIONED') order by table_name).
+
