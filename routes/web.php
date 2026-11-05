@@ -55,6 +55,8 @@ use App\Http\Controllers\Web\SuperAdmin\SuperAdminAuditLogController;
 use App\Http\Controllers\Web\SuperAdmin\SuperAdminJobController;
 use App\Http\Controllers\Web\SuperAdmin\SuperAdminSettingController;
 
+use App\Http\Controllers\Web\SuperAdmin\SuperAdminHeaderController;
+use App\Http\Controllers\Web\SuperAdmin\SuperAdminProfileController;
 
 /*
 |--------------------------------------------------------------------------
@@ -448,4 +450,13 @@ Route::middleware(['auth', 'active', 'context:system,superadmin'])
         Route::post('/toggle-maintenance', 'toggleMaintenance')->name('toggle-maintenance');
         Route::post('/clear-cache', 'clearCache')->name('clear-cache');
     });
+
+    // ---------- Header: profil & inbox ----------
+    Route::get('/profile', [SuperAdminProfileController::class, 'show'])->name('profile.show');
+    Route::put('/profile', [SuperAdminProfileController::class, 'update'])->name('profile.update');
+    Route::put('/profile/password', [SuperAdminProfileController::class, 'password'])->name('profile.password');
+
+    Route::get('/inbox', [SuperAdminHeaderController::class, 'inbox'])->name('header.inbox');
+    Route::post('/inbox/read-all', [SuperAdminHeaderController::class, 'readAll'])->name('header.inbox.read-all');
+    Route::post('/inbox/{id}/read', [SuperAdminHeaderController::class, 'read'])->whereNumber('id')->name('header.inbox.read');
     }); // ← akhir grup SUPERADMIN (JANGAN dihapus)
