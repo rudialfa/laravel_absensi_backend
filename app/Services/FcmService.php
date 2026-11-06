@@ -124,11 +124,13 @@ class FcmService
                     'priority'     => 'HIGH',
                     'notification' => [
                         'channel_id' => config('fcm.android_channel_id'),
-                        'sound'      => 'default',
+                        // Nama file di android/app/src/main/res/raw (tanpa ekstensi).
+                        // Android 8+ memakai suara milik channel; nilai ini untuk Android lama.
+                        'sound'      => config('fcm.android_sound', 'default'),
                     ],
                 ],
                 'apns' => [
-                    'payload' => ['aps' => ['sound' => 'default']],
+                    'payload' => ['aps' => ['sound' => config('fcm.ios_sound', 'default')]],
                 ],
             ],
         ];
